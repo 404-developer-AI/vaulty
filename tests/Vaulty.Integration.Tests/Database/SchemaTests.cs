@@ -39,7 +39,7 @@ public sealed class SchemaTests(PostgresDatabase db) : IClassFixture<PostgresDat
             """
             SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'vaulty' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-               AND NOT c.relrowsecurity AND c.relname NOT IN ('secrets', @history)
+               AND NOT c.relrowsecurity AND c.relname NOT IN ('secrets', 'data_protection_keys', @history)
             """, new { history = DatabaseMigrator.HistoryTable })).ToList();
         Assert.Empty(withoutRls);
 

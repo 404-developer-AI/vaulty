@@ -7,6 +7,7 @@ namespace Vaulty.Core.Abstractions;
 /// message or exception shows as <c>[redacted]</c>. Read the value with <see cref="Reveal"/> where it is used, and dispose
 /// the secret to wipe the bytes.
 /// </summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(RedactedSecretJsonConverter))]
 public sealed class Secret : IDisposable
 {
     public const string Redacted = "[redacted]";
@@ -40,6 +41,21 @@ public sealed class Secret : IDisposable
         if (_disposed) return;
         CryptographicOperations.ZeroMemory(_value);
         _disposed = true;
+    }
+}
+
+/// <summary>Serializes every <see cref="Secret"/> as "[redacted]"; secrets are never read from JSON.</summary>
+public sealed class RedactedSecretJsonConverter : System.Text.Json.Serialization.JsonConverter<Secret>
+{
+    public override Secret Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert,
+        System.Text.Json.JsonSerializerOptions options) =>
+        throw new System.Text.Json.JsonException("Secrets are never deserialized.");
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Secret value,
+        System.Text.Json.JsonSerializerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteStringValue(Secret.Redacted);
     }
 }
 

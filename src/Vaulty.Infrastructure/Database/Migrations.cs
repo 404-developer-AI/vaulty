@@ -105,3 +105,10 @@ public static class VaultyDataSource
         return builder.Build();
     }
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000002_DataProtection")]
+public sealed class DataProtectionMigration : SqlMigration
+{
+    protected override string ScriptName => "0002_data_protection";
+}

@@ -18,3 +18,10 @@ All notable changes to this project are documented in this file. The format foll
 - PostgreSQL schema `vaulty` (forward-only SQL migrations applied by `vaulty-migrate`): row-level security on every
   organization table, items and chunk index hash-partitioned on the tenant (64 partitions), per-role grants without
   DDL or `BYPASSRLS`, an append-only audit log with a per-organization SHA-256 hash chain and an independent verifier.
+- Key hierarchy: host master key from a systemd credential (development key outside the repository), HKDF derivations
+  for secrets, session key ring, export and KEK, per-tenant subkeys (protected object, chunk ids, metadata,
+  repository); software key wrapper with a versioned, authenticated header; specification and test vectors in
+  `docs/format/keys-v1.md`.
+- Secrets store in PostgreSQL bound to name, version and host, with versions, pruning and a short cache; master key
+  rekey that re-encrypts secrets, the session key ring and wrapped tenant keys in one transaction; session key ring
+  stored sealed in the database; secrets are redacted in logs and JSON.
