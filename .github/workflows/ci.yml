@@ -114,7 +114,7 @@ jobs:
           echo "terms in list: $count"
           [ "$count" -gt 0 ] || { echo "::error::The CONFIDENTIAL_TERMS secret is empty or missing."; exit 1; }
 
-      - name: Self-test: a commit containing a listed term is blocked
+      - name: "Self-test: a commit containing a listed term is blocked"
         run: |
           term="$(grep -Ev '^\s*(#|$)' ~/.config/vaulty/confidential-terms.txt | head -n 1)"
           work="$RUNNER_TEMP/selftest"
