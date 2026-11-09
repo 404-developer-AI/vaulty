@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Wrapper around pgbackrest that takes the repository credentials from systemd credentials
+# instead of /etc/pgbackrest.conf.
+#
+# Used as PostgreSQL's archive_command and by the vaulty-pgbackrest-* timers:
+#   archive_command = '/opt/vaulty/current/bin/vaulty-pgbackrest archive-push %p'
+#
+# $CREDENTIALS_DIRECTORY is set by systemd for the unit that declared LoadCredentialEncrypted=
+# (see systemd/postgresql-credentials.conf) and is inherited by child processes of the server.
+set -euo pipefail
+
+if [ -z "${CREDENTIALS_DIRECTORY:-}" ]; then
+  echo "vaulty-pgbackrest: CREDENTIALS_DIRECTORY is not set; run from a systemd unit with the pgBackRest credentials" >&2
+  exit 2
+fi
+
+read_cred() {
+  local f="${CREDENTIALS_DIRECTORY}/$1"
+  [ -r "$f" ] || { echo "vaulty-pgbackrest: credential '$1' is missing" >&2; exit 2; }
+  cat "$f"
+}
+
+PGBACKREST_REPO1_S3_KEY="$(read_cred pgbackrest-s3-key)"
+PGBACKREST_REPO1_S3_KEY_SECRET="$(read_cred pgbackrest-s3-key-secret)"
+PGBACKREST_REPO1_CIPHER_PASS="$(read_cred pgbackrest-cipher-pass)"
+export PGBACKREST_REPO1_S3_KEY PGBACKREST_REPO1_S3_KEY_SECRET PGBACKREST_REPO1_CIPHER_PASS
+
+exec /usr/bin/pgbackrest --stanza=vaulty "$@"

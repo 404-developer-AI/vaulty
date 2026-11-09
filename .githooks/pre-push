@@ -32,7 +32,7 @@ else
 fi
 
 status=0
-while read -r local_ref local_sha remote_ref remote_sha; do
+while read -r _local_ref local_sha _remote_ref remote_sha; do
   [ -z "$local_sha" ] && continue
   [ "$local_sha" = "$ZERO" ] && continue   # branch deletion, nothing to scan
 

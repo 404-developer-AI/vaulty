@@ -124,8 +124,13 @@ jobs:
           printf 'notes: %s\n' "$term" > "$work/notes.txt"
           git -C "$work" add notes.txt
           git -C "$work" commit -q -m "chore: self-test"
-          if (cd "$work" && "$GITHUB_WORKSPACE/.githooks/confidentiality-scan.sh" --range 0000000000000000000000000000000000000000 HEAD) 2>/dev/null; then
-            echo "::error::The scanner accepted a commit with a listed term."
+          set +e
+          (cd "$work" && bash "$GITHUB_WORKSPACE/.githooks/confidentiality-scan.sh" --range 0000000000000000000000000000000000000000 HEAD) 2>/dev/null
+          status=$?
+          set -e
+          # Exit code 1 means findings; anything else (2 = configuration error, 126 = not executable) is a broken check.
+          if [ "$status" -ne 1 ]; then
+            echo "::error::The scanner did not block a commit with a listed term (exit code $status)."
             exit 1
           fi
           echo "self-test passed: the listed term was blocked"
@@ -134,7 +139,7 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: .githooks/confidentiality-scan.sh --range "${BASE:-0000000000000000000000000000000000000000}" "$HEAD_SHA"
+        run: bash .githooks/confidentiality-scan.sh --range "${BASE:-0000000000000000000000000000000000000000}" "$HEAD_SHA"
 
   branding:
     name: branding

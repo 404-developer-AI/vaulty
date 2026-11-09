@@ -22,8 +22,12 @@ appsettings.Staging.json
 *.secrets.json
 
 # .NET
-bin/
-obj/
+/src/**/bin/
+/tests/**/bin/
+/tools/**/bin/
+/src/**/obj/
+/tests/**/obj/
+/tools/**/obj/
 *.user
 .vs/
 TestResults/
