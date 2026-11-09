@@ -7,6 +7,7 @@ using Temporalio.Client;
 using Temporalio.Worker;
 using Vaulty.Core.Abstractions;
 using Vaulty.Core.Storage;
+using Vaulty.Graph;
 using Vaulty.Graph.Http;
 using Vaulty.Infrastructure.Backup;
 using Vaulty.Infrastructure.Database;
@@ -37,18 +38,27 @@ internal sealed class BackupHarness : IAsyncDisposable
     private CancellationTokenSource? _stop;
     private Task? _running;
 
+    private readonly Func<string, byte[]?> _source;
+
     public BackupHarness(TemporalFixture fixture, MailboxSimulator simulator)
+        : this(fixture, simulator.Url, id => simulator.Items.TryGetValue(id, out var item) ? item.Data : null)
+    {
+    }
+
+    /// <param name="source">The source bytes of an item by its source id, to compare restored content with (null: not compared).</param>
+    public BackupHarness(TemporalFixture fixture, string graphUrl, Func<string, byte[]?> source)
     {
         _fixture = fixture;
-        Simulator = simulator;
+        _source = source;
         DataSource = VaultyDataSource.Create(fixture.Database.Worker);
         Storage = new MemoryBackupStorage(Store);
         Keys = new TenantKeyProvider(DataSource, new StaticMasterKeySource(MasterKey), Storage, TimeProvider.System);
-        Graph = new GraphServices(new ScriptedTokens(), new GraphThrottle(), new Uri($"{simulator.Url}/v1.0/"));
+        var host = new Uri(graphUrl).Host;
+        Graph = new GraphServices(new ScriptedTokens(), new GraphThrottle(), new Uri($"{graphUrl}/v1.0/"),
+            downloads: throttle => new GraphDownloadClient(throttle, allowedHostSuffixes: [host], allowHttpForTests: true));
     }
 
     public string Queue { get; } = $"backup-test-{Guid.NewGuid():N}";
-    public MailboxSimulator Simulator { get; }
     public NpgsqlDataSource DataSource { get; }
     public InMemoryObjectStore Store { get; } = new();
     public MemoryBackupStorage Storage { get; }
@@ -62,12 +72,15 @@ internal sealed class BackupHarness : IAsyncDisposable
     {
         var activities = new MailboxActivities(DataSource, Graph, new BackupStore(DataSource, TimeProvider.System), Storage, Keys, TimeProvider.System,
             NullLogger<MailboxActivities>.Instance);
+        var drives = new DriveActivities(DataSource, Graph, new BackupStore(DataSource, TimeProvider.System), Storage, Keys, TimeProvider.System,
+            NullLogger<DriveActivities>.Instance);
         _worker = new TemporalWorker(_fixture.Server.Client, new TemporalWorkerOptions(Queue)
         {
             Interceptors = [new JobMirrorInterceptor()],
             GracefulShutdownTimeout = TimeSpan.Zero,
             StickyQueueScheduleToStartTimeout = TimeSpan.FromSeconds(1),
-        }.AddAllActivities(activities).AddAllActivities(new JobActivities(DataSource)).AddWorkflow<MailboxBackupWorkflow>().AddWorkflow<FolderBackupWorkflow>());
+        }.AddAllActivities(activities).AddAllActivities(new JobActivities(DataSource)).AddWorkflow<MailboxBackupWorkflow>().AddWorkflow<FolderBackupWorkflow>()
+          .AddAllActivities(drives).AddWorkflow<DriveBackupWorkflow>().AddWorkflow<DriveSyncWorkflow>());
         _stop = new CancellationTokenSource();
         _running = _worker.ExecuteAsync(_stop.Token);
     }
@@ -116,6 +129,27 @@ internal sealed class BackupHarness : IAsyncDisposable
         return id;
     }
 
+    public async Task<Guid> SeedDriveAsync(string driveId)
+    {
+        var id = Guid.NewGuid();
+        await using var owner = new NpgsqlConnection(_fixture.Database.Migrator);
+        await owner.ExecuteAsync(
+            """
+            INSERT INTO vaulty.protected_objects (id, organization_id, tenant_id, kind, sub_kind, source_id, display_name)
+            VALUES (@id, @org, @tenant, 'drive', 'onedrive', @driveId, 'OneDrive')
+            """, new { id, org = Org, tenant = Tenant, driveId });
+        return id;
+    }
+
+    public async Task<(BackupOutcome Outcome, Guid SnapshotId)> DriveBackupAsync(Guid objectId)
+    {
+        var jobId = await JobRecords.CreateAsync(DataSource, Org, Vaulty.Core.Domain.JobKind.Backup, Tenant, objectId, null);
+        var input = new BackupInput(jobId, Org, Tenant, objectId, Guid.CreateVersion7());
+        var handle = await _fixture.Server.Client.StartWorkflowAsync((DriveBackupWorkflow w) => w.RunAsync(input),
+            new WorkflowOptions($"backup-{objectId:N}-{input.SnapshotId:N}", Queue) { ExecutionTimeout = TimeSpan.FromMinutes(10) });
+        return (await handle.GetResultAsync(), input.SnapshotId);
+    }
+
     public async Task<(BackupOutcome Outcome, Guid SnapshotId)> BackupAsync(Guid objectId, Func<WorkflowHandle<MailboxBackupWorkflow, BackupOutcome>, Task>? whileRunning = null)
     {
         var jobId = await JobRecords.CreateAsync(DataSource, Org, Vaulty.Core.Domain.JobKind.Backup, Tenant, objectId, null);
@@ -138,11 +172,11 @@ internal sealed class BackupHarness : IAsyncDisposable
         {
             foreach (var entry in (await reader.ReadManifestAsync(manifestId)).Entries)
             {
-                if (entry.Content is not null && compareWithSource && Simulator.Items.TryGetValue(entry.SourceId, out var source))
+                if (entry.Content is not null && compareWithSource && _source(entry.SourceId) is { } source)
                 {
                     using var buffer = new MemoryStream();
                     await reader.ReadContentAsync(entry.Content, buffer);
-                    Assert.Equal(source.Data, buffer.ToArray());
+                    Assert.Equal(source, buffer.ToArray());
                 }
                 entries.Add((entry.SourceId, entry.Kind, entry.MetadataJson, entry.Content?.ContentHashHex ?? ""));
             }

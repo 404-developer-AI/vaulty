@@ -70,3 +70,14 @@ All notable changes to this project are documented in this file. The format foll
 - Backup planning: a scheduler that starts due backups per tenant within budgets (20 mailboxes, 10 drives), only once the
   storage connection test passed and consent is granted; a default policy per tenant (every 6 hours, 90 days) that can be
   changed, with folder exclusions; "Back up now".
+- OneDrive backup: drive delta of the whole drive with paging and page checkpoints, streaming downloads through the
+  pre-authenticated download URL (never with a token) that resume with a Range request after a broken connection,
+  QuickXorHash or SHA-256 checked for every file (a mismatch is recorded as an exception), up to three older versions of
+  a changed file, sharing permissions and links as metadata, OneNote notebooks as packages, renamed or moved files kept
+  without downloading them again, files under a deleted folder removed with it, long paths and refused characters
+  flagged, files over 250 GB reported as exceptions; the same atomic commit and partial rules as mailboxes.
+
+### Changed
+
+- The repository engine reuses one pack buffer per writer and pooled chunk buffers, so streaming a 2 GB file adds less
+  than 30 MB of memory. The stored format is unchanged.

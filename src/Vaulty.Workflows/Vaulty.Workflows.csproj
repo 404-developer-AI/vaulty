@@ -5,6 +5,7 @@
     <ProjectReference Include="../Vaulty.Repository/Vaulty.Repository.csproj" />
     <ProjectReference Include="../Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />
     <ProjectReference Include="../Vaulty.Connectors.Exchange/Vaulty.Connectors.Exchange.csproj" />
+    <ProjectReference Include="../Vaulty.Connectors.Drive/Vaulty.Connectors.Drive.csproj" />
   </ItemGroup>
 
   <ItemGroup>

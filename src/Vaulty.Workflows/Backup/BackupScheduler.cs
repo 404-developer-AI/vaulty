@@ -42,6 +42,9 @@ public sealed class BackupStarter(ITemporalClient client, NpgsqlDataSource dataS
                 case "mailbox":
                     await client.StartWorkflowAsync((MailboxBackupWorkflow w) => w.RunAsync(input), options).ConfigureAwait(false);
                     break;
+                case "drive":
+                    await client.StartWorkflowAsync((DriveBackupWorkflow w) => w.RunAsync(input), options).ConfigureAwait(false);
+                    break;
                 default:
                     await JobRecords.FinishAsync(dataSource, organizationId, jobId, JobState.Failed, $"Backups of {kind} objects are not available.",
                         cancellationToken).ConfigureAwait(false);

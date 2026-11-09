@@ -59,12 +59,13 @@ public sealed class DedicatedAppCredentialProvider(NpgsqlDataSource dataSource, 
 /// <summary>The Graph pipeline of one process: one throttle shared by all tenants, one token cache, one client.</summary>
 public sealed class GraphServices
 {
-    public GraphServices(IGraphTokenProvider tokens, GraphThrottle? throttle = null, Uri? graphBaseUri = null, HttpMessageHandler? network = null)
+    public GraphServices(IGraphTokenProvider tokens, GraphThrottle? throttle = null, Uri? graphBaseUri = null, HttpMessageHandler? network = null,
+        Func<GraphThrottle, GraphDownloadClient>? downloads = null)
     {
         Tokens = tokens;
         Throttle = throttle ?? new GraphThrottle();
         Client = new GraphClient(GraphPipeline.Create(tokens, Throttle, network), graphBaseUri);
-        Downloads = new GraphDownloadClient(Throttle);
+        Downloads = downloads?.Invoke(Throttle) ?? new GraphDownloadClient(Throttle);
     }
 
     public IGraphTokenProvider Tokens { get; }

@@ -128,6 +128,29 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
         return result;
     }
 
+    /// <summary>The stored content of the current version of items, for versions whose metadata changed but whose content did not.</summary>
+    public async Task<Dictionary<string, ItemContent>> CurrentContentAsync(BackupTarget target, IReadOnlyCollection<string> sourceIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sourceIds);
+        var result = new Dictionary<string, ItemContent>(StringComparer.Ordinal);
+        if (sourceIds.Count == 0) return result;
+        await using var session = await Session(target, cancellationToken).ConfigureAwait(false);
+        var rows = await session.Connection.QueryAsync<(string SourceId, byte[]? ContentHash, long Size, byte[]? ContentChunks)>(new CommandDefinition(
+            """
+            SELECT DISTINCT ON (source_id) source_id, content_hash, size, content_chunks FROM vaulty.items
+             WHERE tenant_id = @TenantId AND protected_object_id = @ProtectedObjectId AND source_id = ANY(@ids) AND deleted_in_snapshot_id IS NULL
+               AND (state = 'committed' OR first_snapshot_id = @SnapshotId)
+             ORDER BY source_id, (first_snapshot_id = @SnapshotId) DESC, created_at DESC
+            """, new { target.TenantId, target.ProtectedObjectId, target.SnapshotId, ids = sourceIds.ToArray() }, session.Transaction,
+            cancellationToken: cancellationToken)).ConfigureAwait(false);
+        foreach (var row in rows.Where(r => r.ContentChunks is not null && r.ContentHash is not null))
+        {
+            result[row.SourceId] = new ItemContent(row.Size, row.ContentHash!, Chunks(row.ContentChunks!));
+        }
+        return result;
+    }
+
     public async Task StageVersionsAsync(BackupTarget target, RepositoryKeys keys, IReadOnlyList<ItemVersion> versions,
         CancellationToken cancellationToken = default)
     {
@@ -172,6 +195,45 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
             "UPDATE vaulty.item_failures SET resolved_at = now() WHERE protected_object_id = @ProtectedObjectId AND source_id = ANY(@ids) AND resolved_at IS NULL",
             new { target.ProtectedObjectId, ids = sourceIds.ToArray() }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Stages the removal of every item whose parent is no longer part of the snapshot (the content of a deleted folder, the
+    /// older versions of a deleted file), repeated until nothing changes. Items under one of <paramref name="roots"/> are kept.
+    /// Returns the number of items removed this way.
+    /// </summary>
+    public async Task<int> StageOrphanRemovalsAsync(BackupTarget target, IReadOnlyCollection<string> roots, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(roots);
+        List<(string SourceId, string? ParentSourceId)> members;
+        await using (var session = await Session(target, cancellationToken).ConfigureAwait(false))
+        {
+            members = (await session.Connection.QueryAsync<(string SourceId, string? ParentSourceId)>(new CommandDefinition(
+                """
+                SELECT DISTINCT ON (i.source_id) i.source_id, i.parent_source_id
+                  FROM vaulty.items i
+                 WHERE i.tenant_id = @TenantId AND i.protected_object_id = @ProtectedObjectId AND i.deleted_in_snapshot_id IS NULL
+                   AND (i.state = 'committed' OR i.first_snapshot_id = @SnapshotId)
+                   AND NOT EXISTS (SELECT 1 FROM vaulty.pending_removals r WHERE r.snapshot_id = @SnapshotId AND r.source_id = i.source_id)
+                 ORDER BY i.source_id, (i.first_snapshot_id = @SnapshotId) DESC, i.created_at DESC
+                """, target, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false)).ToList();
+        }
+        var alive = members.Select(m => m.SourceId).ToHashSet(StringComparer.Ordinal);
+        alive.UnionWith(roots);
+        var orphans = new List<string>();
+        for (var changed = true; changed;)
+        {
+            changed = false;
+            foreach (var member in members)
+            {
+                if (!alive.Contains(member.SourceId) || member.ParentSourceId is null || alive.Contains(member.ParentSourceId)) continue;
+                alive.Remove(member.SourceId);
+                orphans.Add(member.SourceId);
+                changed = true;
+            }
+        }
+        await StageRemovalsAsync(target, orphans, cancellationToken).ConfigureAwait(false);
+        return orphans.Count;
     }
 
     /// <summary>Records a failure. The same error three times makes the item a poison item.</summary>

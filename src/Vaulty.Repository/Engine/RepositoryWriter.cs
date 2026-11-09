@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using Vaulty.Core.Abstractions;
@@ -93,23 +94,35 @@ public sealed class RepositoryWriter
             return id;
         }
 
-        var record = ChunkCodec.Encode(_keys, id, plaintext.Span);
-        _faults.Hit("chunk.encoded");
-        if (_pack is null)
+        var buffer = ArrayPool<byte>.Shared.Rent(ChunkCodec.MaxRecordSize(plaintext.Length));
+        int length;
+        bool compressed;
+        try
         {
-            _pack = new MemoryStream(Math.Min(_options.PackTargetSize + 1024, 80 * 1024 * 1024));
-            var header = new byte[PackFormat.HeaderSize];
-            PackFormat.WriteHeader(header, _keys.TenantId);
-            _pack.Write(header);
+            length = ChunkCodec.EncodeInto(_keys, id, plaintext.Span, buffer);
+            compressed = (buffer[32] & ChunkCodec.FlagCompressed) != 0;
+            _faults.Hit("chunk.encoded");
+            if (_pack is null || _pack.Length == 0)
+            {
+                // One pack buffer per writer, reused after every flush.
+                _pack ??= new MemoryStream(Math.Min(_options.PackTargetSize + ChunkCodec.MaxRecordSize(_options.Chunker.MaxSize) + 1024, 80 * 1024 * 1024));
+                Span<byte> header = stackalloc byte[PackFormat.HeaderSize];
+                PackFormat.WriteHeader(header, _keys.TenantId);
+                _pack.Write(header);
+            }
+            _pack.Write(buffer, 0, length);
         }
-        var offset = _pack.Length;
-        _pack.Write(record);
-        _pending.Add(new ChunkLocation(id, string.Empty, offset, record.Length, plaintext.Length));
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+        var offset = _pack.Length - length;
+        _pending.Add(new ChunkLocation(id, string.Empty, offset, length, plaintext.Length));
         _pendingIds.Add(id);
         Statistics.ChunksNew++;
         Statistics.BytesNew += plaintext.Length;
-        Statistics.BytesStored += record.Length;
-        if ((record[32] & ChunkCodec.FlagCompressed) != 0) Statistics.ChunksCompressed++;
+        Statistics.BytesStored += length;
+        if (compressed) Statistics.ChunksCompressed++;
 
         if (_pack.Length >= _options.PackTargetSize) await FlushAsync(cancellationToken).ConfigureAwait(false);
         return id;
@@ -119,16 +132,34 @@ public sealed class RepositoryWriter
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {
         if (_pack is null || _pending.Count == 0) return;
-        var body = _pack.ToArray();
-        var trailer = PackFormat.Trailer(_pending.Count, SHA256.HashData(body));
-        var packBytes = new byte[body.Length + trailer.Length];
-        body.CopyTo(packBytes, 0);
-        trailer.CopyTo(packBytes, body.Length);
+        // The trailer is appended to the same buffer: the pack is stored straight from it, without copies.
+        var bodyLength = (int)_pack.Length;
+        _pack.Write(PackFormat.Trailer(_pending.Count, SHA256.HashData(_pack.GetBuffer().AsSpan(0, bodyLength))));
+        var packBytes = new ArraySegment<byte>(_pack.GetBuffer(), 0, (int)_pack.Length);
         var packSha = SHA256.HashData(packBytes);
         var packHash = Convert.ToHexStringLower(packSha);
         var packKey = RepositoryLayout.Pack(_keys.TenantId, packHash);
         var entries = _pending.Select(e => e with { PackHash = packHash }).ToList();
+        try
+        {
+            await StorePackAsync(packKey, packHash, packBytes, packSha, entries, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // A failed flush can be retried: the buffer goes back to the body without the trailer.
+            _pack.SetLength(bodyLength);
+            throw;
+        }
+        _packsWritten.Add(packHash);
+        Statistics.PacksWritten++;
+        _pack.SetLength(0);
+        _pending.Clear();
+        _pendingIds.Clear();
+    }
 
+    private async Task StorePackAsync(string packKey, string packHash, ArraySegment<byte> packBytes, byte[] packSha, List<ChunkLocation> entries,
+        CancellationToken cancellationToken)
+    {
         _faults.Hit("pack.before-put");
         await PutImmutableAsync(packKey, packBytes, packSha, cancellationToken).ConfigureAwait(false);
         _faults.Hit("pack.after-put");
@@ -139,16 +170,9 @@ public sealed class RepositoryWriter
             .ConfigureAwait(false);
         _faults.Hit("index-file.after-put");
 
-        await _index.AddAsync(new PackInfo(packHash, packKey, packBytes.Length, packSha, _options.LockUntil), entries, cancellationToken)
+        await _index.AddAsync(new PackInfo(packHash, packKey, packBytes.Count, packSha, _options.LockUntil), entries, cancellationToken)
             .ConfigureAwait(false);
         _faults.Hit("index.after-add");
-
-        _packsWritten.Add(packHash);
-        Statistics.PacksWritten++;
-        await _pack.DisposeAsync().ConfigureAwait(false);
-        _pack = null;
-        _pending.Clear();
-        _pendingIds.Clear();
     }
 
     /// <summary>Stores a manifest after flushing pending chunks, so a manifest never references unstored data.</summary>
@@ -186,12 +210,12 @@ public sealed class RepositoryWriter
         return root.RootHash;
     }
 
-    private async Task PutImmutableAsync(string key, byte[] bytes, byte[]? sha256, CancellationToken cancellationToken,
+    private async Task PutImmutableAsync(string key, ArraySegment<byte> bytes, byte[]? sha256, CancellationToken cancellationToken,
         bool compareExisting = false)
     {
         try
         {
-            await _store.PutAsync(key, new MemoryStream(bytes, writable: false),
+            await _store.PutAsync(key, new MemoryStream(bytes.Array!, bytes.Offset, bytes.Count, writable: false),
                 new ObjectPutOptions(_options.LockUntil, FailIfExists: true, ExpectedSha256: sha256 ?? SHA256.HashData(bytes)),
                 cancellationToken).ConfigureAwait(false);
         }
@@ -199,7 +223,7 @@ public sealed class RepositoryWriter
         {
             // Content-addressed keys: an existing object holds the same bytes, unless it was damaged. Check.
             var head = await _store.HeadAsync(key, cancellationToken).ConfigureAwait(false);
-            if (head is null || head.Size != bytes.Length) throw new IntegrityException($"Existing object {key} differs in size.");
+            if (head is null || head.Size != bytes.Count) throw new IntegrityException($"Existing object {key} differs in size.");
             if (compareExisting)
             {
                 await using var stream = await _store.GetAsync(key, null, cancellationToken).ConfigureAwait(false);

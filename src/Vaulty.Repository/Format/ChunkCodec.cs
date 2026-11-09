@@ -46,34 +46,67 @@ public static class ChunkCodec
     public const double CompressionThreshold = 0.97;
     public const int CompressionLevel = 3;
 
+    [ThreadStatic] private static Compressor? _compressor;
+
+    /// <summary>The largest record a plaintext of this length can produce, for sizing a buffer for <see cref="EncodeInto"/>.</summary>
+    public static int MaxRecordSize(int plaintextLength) => HeaderSize + Math.Max(plaintextLength, Compressor.GetCompressBound(plaintextLength)) + TagSize;
+
     public static byte[] Encode(RepositoryKeys keys, ChunkId id, ReadOnlySpan<byte> plaintext)
     {
-        ArgumentNullException.ThrowIfNull(keys);
-        byte flags = 0;
-        byte[]? compressed = null;
-        var payload = plaintext;
-        if (plaintext.Length >= 64)
+        var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(MaxRecordSize(plaintext.Length));
+        try
         {
-            using var compressor = new Compressor(CompressionLevel);
-            compressed = compressor.Wrap(plaintext).ToArray();
-            if (compressed.Length < plaintext.Length * CompressionThreshold)
-            {
-                flags = FlagCompressed;
-                payload = compressed;
-            }
+            var length = EncodeInto(keys, id, plaintext, buffer);
+            return buffer.AsSpan(0, length).ToArray();
         }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
 
-        var version = keys.CurrentVersion;
-        var record = new byte[HeaderSize + payload.Length + TagSize];
-        id.Value.CopyTo(record, 0);
-        record[32] = flags;
-        BinaryPrimitives.WriteInt32BigEndian(record.AsSpan(33, 4), version);
-        BinaryPrimitives.WriteInt32BigEndian(record.AsSpan(37, 4), plaintext.Length);
-        BinaryPrimitives.WriteInt32BigEndian(record.AsSpan(41, 4), payload.Length + TagSize);
-        using var gcm = new AesGcm(keys.DataKey(version), TagSize);
-        gcm.Encrypt(id.Value.AsSpan(0, 12), payload, record.AsSpan(HeaderSize, payload.Length), record.AsSpan(HeaderSize + payload.Length),
-            Aad(keys.TenantId, id, flags, version));
-        return record;
+    /// <summary>
+    /// Encodes the record into <paramref name="destination"/> (at least <see cref="MaxRecordSize"/> bytes) and returns its length.
+    /// Allocates nothing per chunk beyond a pooled compression buffer, so streaming large files keeps memory flat.
+    /// </summary>
+    public static int EncodeInto(RepositoryKeys keys, ChunkId id, ReadOnlySpan<byte> plaintext, Span<byte> destination)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        if (destination.Length < MaxRecordSize(plaintext.Length)) throw new ArgumentException("Destination too small.", nameof(destination));
+        byte flags = 0;
+        byte[]? rented = null;
+        try
+        {
+            var payload = plaintext;
+            if (plaintext.Length >= 64)
+            {
+                rented = System.Buffers.ArrayPool<byte>.Shared.Rent(Compressor.GetCompressBound(plaintext.Length));
+                var compressor = _compressor ??= new Compressor(CompressionLevel);
+                var compressedLength = compressor.Wrap(plaintext, rented);
+                if (compressedLength < plaintext.Length * CompressionThreshold)
+                {
+                    flags = FlagCompressed;
+                    payload = rented.AsSpan(0, compressedLength);
+                }
+            }
+
+            var version = keys.CurrentVersion;
+            var length = HeaderSize + payload.Length + TagSize;
+            var record = destination[..length];
+            id.Value.CopyTo(record);
+            record[32] = flags;
+            BinaryPrimitives.WriteInt32BigEndian(record.Slice(33, 4), version);
+            BinaryPrimitives.WriteInt32BigEndian(record.Slice(37, 4), plaintext.Length);
+            BinaryPrimitives.WriteInt32BigEndian(record.Slice(41, 4), payload.Length + TagSize);
+            using var gcm = new AesGcm(keys.DataKey(version), TagSize);
+            gcm.Encrypt(id.Value.AsSpan(0, 12), payload, record.Slice(HeaderSize, payload.Length), record.Slice(HeaderSize + payload.Length, TagSize),
+                Aad(keys.TenantId, id, flags, version));
+            return length;
+        }
+        finally
+        {
+            if (rented is not null) System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     /// <summary>Total record length from its header, or throws if the header is malformed.</summary>

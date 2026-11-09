@@ -99,6 +99,9 @@ public static class WorkerHost
                 worker.AddScopedActivities<MailboxActivities>()
                     .AddWorkflow<MailboxBackupWorkflow>()
                     .AddWorkflow<FolderBackupWorkflow>();
+                worker.AddScopedActivities<DriveActivities>()
+                    .AddWorkflow<DriveBackupWorkflow>()
+                    .AddWorkflow<DriveSyncWorkflow>();
                 worker.AddScopedActivities<TenantActivities>()
                     .AddWorkflow<DiscoveryWorkflow>()
                     .AddWorkflow<TenantHealthWorkflow>();
