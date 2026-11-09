@@ -61,3 +61,12 @@ All notable changes to this project are documented in this file. The format foll
   elsewhere. An hourly health check marks a tenant "consent lost" when its app is disabled, removed, loses permissions or
   its certificate expires. Discovery finds mailboxes (user, shared, resource), OneDrives and archive mailboxes (shown as
   not protected yet), is idempotent and marks objects that left Microsoft 365 as source deleted.
+- Exchange Online backup: folders and item delta from the mailbox import/export API, full-fidelity export in batches of
+  at most 20 items and 32 MB, searchable metadata read separately and stored encrypted, a MIME fallback marked limited
+  fidelity, one child workflow per folder with page checkpoints, removals and new versions applied only at the atomic
+  commit, delta links stored only after the commit, post-write verification of new packs, per-folder count checks,
+  partial snapshots that list every missing item with its reason, retries of earlier failures, poison items after three
+  identical errors (retried once a day), resync after an expired delta token.
+- Backup planning: a scheduler that starts due backups per tenant within budgets (20 mailboxes, 10 drives), only once the
+  storage connection test passed and consent is granted; a default policy per tenant (every 6 hours, 90 days) that can be
+  changed, with folder exclusions; "Back up now".

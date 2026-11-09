@@ -99,12 +99,14 @@ public sealed class TenantDiscovery(NpgsqlDataSource dataSource, GraphClient gra
             var previous = await session.Connection.ExecuteScalarAsync<string?>(new CommandDefinition(
                 """
                 INSERT INTO vaulty.protected_objects (id, organization_id, tenant_id, kind, sub_kind, source_id, display_name, state, source_details, next_run_at)
-                VALUES (@id, @organizationId, @tenantId, @Kind, @SubKind, @SourceId, @DisplayName, @state, @details::jsonb, NULL)
+                VALUES (@id, @organizationId, @tenantId, @Kind, @SubKind, @SourceId, @DisplayName, @state, @details::jsonb,
+                        CASE WHEN @state = 'active' THEN now() END)
                 ON CONFLICT (tenant_id, kind, source_id) DO UPDATE SET
                     display_name = excluded.display_name, sub_kind = excluded.sub_kind, source_details = excluded.source_details,
                     state = CASE WHEN vaulty.protected_objects.state IN ('source_deleted', 'not_protected') THEN excluded.state
                                  ELSE vaulty.protected_objects.state END,
-                    source_deleted_at = CASE WHEN vaulty.protected_objects.state = 'source_deleted' THEN NULL ELSE vaulty.protected_objects.source_deleted_at END
+                    source_deleted_at = CASE WHEN vaulty.protected_objects.state = 'source_deleted' THEN NULL ELSE vaulty.protected_objects.source_deleted_at END,
+                    next_run_at = coalesce(vaulty.protected_objects.next_run_at, excluded.next_run_at)
                 RETURNING (SELECT p.state FROM vaulty.protected_objects p WHERE p.tenant_id = @tenantId AND p.kind = @Kind AND p.source_id = @SourceId)
                 """,
                 new { id = Guid.CreateVersion7(), organizationId, tenantId, o.Kind, o.SubKind, o.SourceId, o.DisplayName, state,

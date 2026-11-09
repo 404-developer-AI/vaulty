@@ -98,10 +98,18 @@ public sealed class TenantActivities(NpgsqlDataSource dataSource, GraphServices 
 public interface IWorkflowStarter
 {
     Task<Guid> StartDiscoveryAsync(Guid organizationId, Guid tenantId, Guid requestedBy, CancellationToken cancellationToken = default);
+
+    /// <summary>"Back up now": returns the job id, or null when a backup of the object is already running.</summary>
+    Task<Guid?> StartBackupAsync(Guid organizationId, Guid tenantId, Guid objectId, string kind, Guid requestedBy, CancellationToken cancellationToken = default);
 }
 
 public sealed class TemporalWorkflowStarter(Func<Task<ITemporalClient>> client, NpgsqlDataSource dataSource) : IWorkflowStarter
 {
+    public async Task<Guid?> StartBackupAsync(Guid organizationId, Guid tenantId, Guid objectId, string kind, Guid requestedBy,
+        CancellationToken cancellationToken = default) =>
+        await new Backup.BackupStarter(await client().ConfigureAwait(false), dataSource)
+            .StartAsync(organizationId, tenantId, objectId, kind, requestedBy, cancellationToken).ConfigureAwait(false);
+
     public async Task<Guid> StartDiscoveryAsync(Guid organizationId, Guid tenantId, Guid requestedBy, CancellationToken cancellationToken = default)
     {
         var jobId = await JobRecords.CreateAsync(dataSource, organizationId, JobKind.Discovery, tenantId, null, requestedBy, cancellationToken)

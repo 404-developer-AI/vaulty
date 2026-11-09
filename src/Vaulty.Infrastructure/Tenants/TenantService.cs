@@ -143,12 +143,13 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
                 VALUES (@tenantId, @organizationId, @customerId, @entraTenantId, @displayName, 'dedicated_app', @clientId,
                     @secretName, @thumbprint, @expires, 'pending');
                 DELETE FROM vaulty.pending_tenant_connections WHERE id = @pendingId;
+                INSERT INTO vaulty.policies (id, organization_id, tenant_id, name) VALUES (@policyId, @organizationId, @tenantId, 'Default');
                 """,
                 new
                 {
                     tenantId, organizationId, pending.CustomerId, entraTenantId, pending.DisplayName, clientId,
                     secretName = CertificateSecret(tenantId), pending.Thumbprint, expires = DateTime.SpecifyKind(pending.Expires, DateTimeKind.Utc),
-                    pendingId,
+                    pendingId, policyId = Guid.CreateVersion7(),
                 }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         }
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
@@ -247,6 +248,46 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
             Update-MgApplication -ApplicationId $App.Id -KeyCredentials $Keys
             Write-Host 'Done. Return to Vaulty and confirm the rotation; then remove the old certificate from the app registration.'
             """;
+    }
+
+    public sealed record PolicyView(int FrequencyMinutes, int RetentionDays, string[] ExcludedFolders);
+
+    public async Task<PolicyView> PolicyAsync(Guid organizationId, Guid tenantId, CancellationToken cancellationToken = default)
+    {
+        await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
+        var row = await session.Connection.QuerySingleOrDefaultAsync<(int Frequency, int Retention, string Exclusions)?>(new CommandDefinition(
+            "SELECT frequency_minutes, retention_days, exclusions::text FROM vaulty.policies WHERE tenant_id = @tenantId AND protected_object_id IS NULL",
+            new { tenantId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        if (row is not { } r) return new PolicyView(Policy.DefaultFrequencyMinutes, Policy.MinimumRetentionDays, []);
+        using var doc = JsonDocument.Parse(r.Exclusions);
+        var folders = doc.RootElement.TryGetProperty("folders", out var f) && f.ValueKind == JsonValueKind.Array
+            ? f.EnumerateArray().Select(x => x.GetString()).OfType<string>().ToArray() : [];
+        return new PolicyView(r.Frequency, r.Retention, folders);
+    }
+
+    /// <summary>Saves the tenant policy. Retention is at least 90 days; changing it is audited separately.</summary>
+    public async Task SavePolicyAsync(Guid organizationId, Guid actor, Guid tenantId, PolicyView policy, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        if (policy.RetentionDays < Policy.MinimumRetentionDays) throw new TenantException("Retention is at least 90 days.");
+        if (policy.FrequencyMinutes is < 60 or > 10080) throw new TenantException("Back up every 1 to 168 hours.");
+        await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
+        var previous = await session.Connection.ExecuteScalarAsync<int?>(new CommandDefinition(
+            "SELECT retention_days FROM vaulty.policies WHERE tenant_id = @tenantId AND protected_object_id IS NULL", new { tenantId }, session.Transaction,
+            cancellationToken: cancellationToken)).ConfigureAwait(false);
+        await session.Connection.ExecuteAsync(new CommandDefinition(
+            """
+            INSERT INTO vaulty.policies (id, organization_id, tenant_id, name, frequency_minutes, retention_days, exclusions)
+            VALUES (@id, @organizationId, @tenantId, 'Default', @FrequencyMinutes, @RetentionDays, @exclusions::jsonb)
+            ON CONFLICT (tenant_id, coalesce(protected_object_id, '00000000-0000-0000-0000-000000000000'::uuid)) DO UPDATE SET
+                frequency_minutes = excluded.frequency_minutes, retention_days = excluded.retention_days, exclusions = excluded.exclusions, updated_at = now()
+            """, new { id = Guid.CreateVersion7(), organizationId, tenantId, policy.FrequencyMinutes, policy.RetentionDays,
+                exclusions = JsonSerializer.Serialize(new { folders = policy.ExcludedFolders }) }, session.Transaction, cancellationToken: cancellationToken))
+            .ConfigureAwait(false);
+        await AuditLog.WriteAsync(session, $"user:{actor}", previous != policy.RetentionDays ? "policy.retention_changed" : "policy.updated", $"tenant:{tenantId}",
+            new { frequency_minutes = policy.FrequencyMinutes, retention_days = policy.RetentionDays, previous_retention_days = previous,
+                excluded_folders = policy.ExcludedFolders }, cancellationToken).ConfigureAwait(false);
+        await session.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<TenantRow>> ListAsync(Guid organizationId, Guid? customerId = null, CancellationToken cancellationToken = default)

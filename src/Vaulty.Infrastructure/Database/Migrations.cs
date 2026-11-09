@@ -147,3 +147,10 @@ public sealed class TenantConnectionsMigration : SqlMigration
 {
     protected override string ScriptName => "0007_tenant_connections";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000008_Backup")]
+public sealed class BackupMigration : SqlMigration
+{
+    protected override string ScriptName => "0008_backup";
+}

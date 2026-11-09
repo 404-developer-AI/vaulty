@@ -19,6 +19,8 @@ public static class GraphPermissions
         new("Group.Read.All", "Directory", false, "Find groups and their members"),
         new("Organization.Read.All", "Directory", false, "Read the tenant name and verified domains"),
         new("MailboxSettings.Read", "Exchange", false, "Read mailbox type, archive state and settings"),
+        new("MailboxFolder.Read.All", "Exchange", false, "List the folders of a mailbox (mail, calendar, contacts, tasks)"),
+        new("MailboxItem.Read.All", "Exchange", false, "Track new, changed and deleted items per folder (delta)"),
         new("MailboxItem.Export.All", "Exchange", false, "Export mailbox items in full fidelity"),
         new("Mail.Read", "Exchange", false, "Read mail folders and message metadata (delta)"),
         new("Calendars.Read", "Exchange", false, "Read calendars and events (delta)"),
@@ -26,6 +28,7 @@ public static class GraphPermissions
         new("Tasks.Read.All", "Exchange", false, "Read tasks"),
         new("Files.Read.All", "OneDrive", false, "Read drives, files and versions"),
         new("MailboxItem.ImportExport.All", "Exchange", true, "Import mailbox items (restore)"),
+        new("MailboxFolder.ReadWrite.All", "Exchange", true, "Create restore folders"),
         new("Mail.ReadWrite", "Exchange", true, "Create restore folders"),
         new("Calendars.ReadWrite", "Exchange", true, "Restore calendar items"),
         new("Contacts.ReadWrite", "Exchange", true, "Restore contacts"),
@@ -37,6 +40,8 @@ public static class GraphPermissions
     private static readonly Dictionary<string, string[]> Implied = new(StringComparer.Ordinal)
     {
         ["MailboxItem.ImportExport.All"] = ["MailboxItem.Export.All"],
+        ["MailboxItem.ReadWrite.All"] = ["MailboxItem.Read.All"],
+        ["MailboxFolder.ReadWrite.All"] = ["MailboxFolder.Read.All"],
         ["Mail.ReadWrite"] = ["Mail.Read"],
         ["Calendars.ReadWrite"] = ["Calendars.Read"],
         ["Contacts.ReadWrite"] = ["Contacts.Read"],

@@ -1,0 +1,286 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using Dapper;
+using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
+using Temporalio.Client;
+using Temporalio.Worker;
+using Vaulty.Core.Abstractions;
+using Vaulty.Core.Storage;
+using Vaulty.Graph.Http;
+using Vaulty.Infrastructure.Backup;
+using Vaulty.Infrastructure.Database;
+using Vaulty.Infrastructure.Secrets;
+using Vaulty.Infrastructure.Tenants;
+using Vaulty.Integration.Tests.Temporal;
+using Vaulty.Integration.Tests.Tenants;
+using Vaulty.Repository.Engine;
+using Vaulty.Repository.Format;
+using Vaulty.Workflows.Backup;
+using Vaulty.Workflows.Jobs;
+using Vaulty.Workflows.Tenants;
+using Xunit.Abstractions;
+
+namespace Vaulty.Integration.Tests.Backup;
+
+internal sealed class MemoryBackupStorage(InMemoryObjectStore store) : IBackupStorage
+{
+    public Task<IObjectStore> WorkerStoreAsync(CancellationToken cancellationToken = default) => Task.FromResult<IObjectStore>(store);
+    public Task<bool> ReadyAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
+}
+
+/// <summary>Everything a backup needs, wired to a simulated mailbox, an in-memory store and the Temporal dev server.</summary>
+internal sealed class BackupHarness : IAsyncDisposable
+{
+    private readonly TemporalFixture _fixture;
+    private TemporalWorker? _worker;
+    private CancellationTokenSource? _stop;
+    private Task? _running;
+
+    public BackupHarness(TemporalFixture fixture, MailboxSimulator simulator)
+    {
+        _fixture = fixture;
+        Simulator = simulator;
+        DataSource = VaultyDataSource.Create(fixture.Database.Worker);
+        Storage = new MemoryBackupStorage(Store);
+        Keys = new TenantKeyProvider(DataSource, new StaticMasterKeySource(MasterKey), Storage, TimeProvider.System);
+        Graph = new GraphServices(new ScriptedTokens(), new GraphThrottle(), new Uri($"{simulator.Url}/v1.0/"));
+    }
+
+    public string Queue { get; } = $"backup-test-{Guid.NewGuid():N}";
+    public MailboxSimulator Simulator { get; }
+    public NpgsqlDataSource DataSource { get; }
+    public InMemoryObjectStore Store { get; } = new();
+    public MemoryBackupStorage Storage { get; }
+    public TenantKeyProvider Keys { get; }
+    public GraphServices Graph { get; }
+    public byte[] MasterKey { get; } = RandomNumberGenerator.GetBytes(32);
+    public Guid Org { get; private set; }
+    public Guid Tenant { get; private set; }
+
+    public void StartWorker()
+    {
+        var activities = new MailboxActivities(DataSource, Graph, new BackupStore(DataSource, TimeProvider.System), Storage, Keys, TimeProvider.System,
+            NullLogger<MailboxActivities>.Instance);
+        _worker = new TemporalWorker(_fixture.Server.Client, new TemporalWorkerOptions(Queue)
+        {
+            Interceptors = [new JobMirrorInterceptor()],
+            GracefulShutdownTimeout = TimeSpan.Zero,
+            StickyQueueScheduleToStartTimeout = TimeSpan.FromSeconds(1),
+        }.AddAllActivities(activities).AddAllActivities(new JobActivities(DataSource)).AddWorkflow<MailboxBackupWorkflow>().AddWorkflow<FolderBackupWorkflow>());
+        _stop = new CancellationTokenSource();
+        _running = _worker.ExecuteAsync(_stop.Token);
+    }
+
+    /// <summary>Stops the worker abruptly, like a killed process: running activities are abandoned.</summary>
+    public async Task KillWorkerAsync()
+    {
+        if (_stop is null) return;
+        await _stop.CancelAsync();
+        try
+        {
+            await _running!;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        _worker!.Dispose();
+        _stop.Dispose();
+        _stop = null;
+    }
+
+    public async Task SeedTenantAsync()
+    {
+        Org = Guid.NewGuid();
+        Tenant = Guid.NewGuid();
+        await using var owner = new NpgsqlConnection(_fixture.Database.Migrator);
+        await owner.ExecuteAsync(
+            """
+            INSERT INTO vaulty.organizations (id, name) VALUES (@org, 'O');
+            INSERT INTO vaulty.customers (id, organization_id, code, name) VALUES (@customer, @org, 'C', 'C');
+            INSERT INTO vaulty.tenants (id, organization_id, customer_id, entra_tenant_id, display_name, consent_state, client_id)
+                VALUES (@tenant, @org, @customer, @entra, 'T', 'granted', @client);
+            INSERT INTO vaulty.policies (id, organization_id, tenant_id, name) VALUES (@policy, @org, @tenant, 'Default');
+            """, new { org = Org, customer = Guid.NewGuid(), tenant = Tenant, entra = Guid.NewGuid(), client = Guid.NewGuid(), policy = Guid.NewGuid() });
+    }
+
+    public async Task<Guid> SeedMailboxAsync()
+    {
+        var id = Guid.NewGuid();
+        await using var owner = new NpgsqlConnection(_fixture.Database.Migrator);
+        await owner.ExecuteAsync(
+            """
+            INSERT INTO vaulty.protected_objects (id, organization_id, tenant_id, kind, sub_kind, source_id, display_name, source_details)
+            VALUES (@id, @org, @tenant, 'mailbox', 'user', @source, 'Mailbox', @details::jsonb)
+            """, new { id, org = Org, tenant = Tenant, source = $"{MailboxSimulator.UserId}|{id:N}", details = JsonSerializer.Serialize(new { mailbox_id = MailboxSimulator.MailboxId }) });
+        return id;
+    }
+
+    public async Task<(BackupOutcome Outcome, Guid SnapshotId)> BackupAsync(Guid objectId, Func<WorkflowHandle<MailboxBackupWorkflow, BackupOutcome>, Task>? whileRunning = null)
+    {
+        var jobId = await JobRecords.CreateAsync(DataSource, Org, Vaulty.Core.Domain.JobKind.Backup, Tenant, objectId, null);
+        var input = new BackupInput(jobId, Org, Tenant, objectId, Guid.CreateVersion7());
+        var handle = await _fixture.Server.Client.StartWorkflowAsync((MailboxBackupWorkflow w) => w.RunAsync(input),
+            new WorkflowOptions($"backup-{objectId:N}-{input.SnapshotId:N}", Queue) { ExecutionTimeout = TimeSpan.FromMinutes(10) });
+        if (whileRunning is not null) await whileRunning(handle);
+        return (await handle.GetResultAsync(), input.SnapshotId);
+    }
+
+    /// <summary>Every item in the snapshot as stored in object storage: (source id, kind, content hash, bytes match the source).</summary>
+    public async Task<List<(string SourceId, string Kind, string Metadata, string ContentHash)>> ReadSnapshotAsync(Guid objectId, Guid snapshotId,
+        bool compareWithSource = true)
+    {
+        using var keys = await Keys.GetAsync(Org, Tenant);
+        var reader = new RepositoryReader(Store, keys, new PostgresChunkIndex(DataSource, Org, Tenant));
+        var root = await reader.ReadSnapshotAsync(objectId, snapshotId);
+        var entries = new List<(string, string, string, string)>();
+        foreach (var manifestId in root.ManifestIds)
+        {
+            foreach (var entry in (await reader.ReadManifestAsync(manifestId)).Entries)
+            {
+                if (entry.Content is not null && compareWithSource && Simulator.Items.TryGetValue(entry.SourceId, out var source))
+                {
+                    using var buffer = new MemoryStream();
+                    await reader.ReadContentAsync(entry.Content, buffer);
+                    Assert.Equal(source.Data, buffer.ToArray());
+                }
+                entries.Add((entry.SourceId, entry.Kind, entry.MetadataJson, entry.Content?.ContentHashHex ?? ""));
+            }
+        }
+        return entries;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await KillWorkerAsync();
+        await DataSource.DisposeAsync();
+    }
+}
+
+public sealed class MailboxBackupTests(TemporalFixture fixture, ITestOutputHelper output) : IClassFixture<TemporalFixture>
+{
+    [TemporalFact]
+    public async Task A_full_backup_and_three_incremental_runs_match_the_source_item_for_item()
+    {
+        using var simulator = new MailboxSimulator(items: 180);
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var mailbox = await harness.SeedMailboxAsync();
+        harness.StartWorker();
+
+        var random = new Random(5);
+        for (var run = 0; run < 4; run++)
+        {
+            if (run > 0)
+            {
+                // Between runs: new mail, changed items, deleted items, in several folders.
+                for (var i = 0; i < 12; i++) simulator.Add(simulator.Folders[random.Next(simulator.Folders.Count)].Id, random.Next(500, 20_000));
+                foreach (var id in simulator.Items.Keys.OrderBy(_ => random.Next()).Take(6).ToList()) simulator.Change(id);
+                foreach (var id in simulator.Items.Keys.OrderBy(_ => random.Next()).Take(4).ToList()) simulator.Remove(id);
+            }
+            var (outcome, snapshotId) = await harness.BackupAsync(mailbox);
+            Assert.False(outcome.IsPartial, $"run {run}: partial with {outcome.Exceptions} exceptions");
+            Assert.Equal(simulator.Items.Count, outcome.ItemCounts["items"]);
+
+            var entries = await harness.ReadSnapshotAsync(mailbox, snapshotId);
+            var items = entries.Where(e => e.Kind != "folder").ToList();
+            Assert.Equal(simulator.Items.Keys.Order(StringComparer.Ordinal), items.Select(e => e.SourceId).Order(StringComparer.Ordinal));
+            foreach (var folder in simulator.Folders)
+            {
+                Assert.Equal(simulator.CountIn(folder.Id), items.Count(e => simulator.Items[e.SourceId].FolderId == folder.Id));
+            }
+            output.WriteLine($"run {run}: {items.Count} items, snapshot {snapshotId}");
+        }
+
+        // Delta links are stored only after commit, per folder; the job mirror shows the last run with exact counts.
+        await using var owner = new NpgsqlConnection(fixture.Database.Migrator);
+        var deltaState = await owner.ExecuteScalarAsync<string>("SELECT delta_state::text FROM vaulty.protected_objects WHERE id = @mailbox", new { mailbox });
+        Assert.All(simulator.Folders, f => Assert.Contains(f.Id, deltaState, StringComparison.Ordinal));
+        Assert.Equal(4, await owner.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.jobs WHERE protected_object_id = @mailbox AND state = 'succeeded'", new { mailbox }));
+        Assert.Equal(4, await owner.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.snapshots WHERE protected_object_id = @mailbox AND state = 'committed'", new { mailbox }));
+    }
+
+    [TemporalFact]
+    public async Task Five_failing_items_make_the_snapshot_partial_with_exactly_those_five()
+    {
+        using var simulator = new MailboxSimulator(items: 60, seed: 9);
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var mailbox = await harness.SeedMailboxAsync();
+        harness.StartWorker();
+
+        var failing = simulator.Items.Keys.OrderBy(k => k, StringComparer.Ordinal).Take(5).ToHashSet(StringComparer.Ordinal);
+        simulator.FailingExports.UnionWith(failing);
+        var (outcome, snapshotId) = await harness.BackupAsync(mailbox);
+        Assert.True(outcome.IsPartial);
+        Assert.Equal(5, outcome.Exceptions);
+        Assert.Equal(simulator.Items.Count - 5, outcome.ItemCounts["items"]);
+
+        await using var owner = new NpgsqlConnection(fixture.Database.Migrator);
+        var snapshot = await owner.QuerySingleAsync<(string State, string Exceptions)>(
+            "SELECT state, exceptions::text FROM vaulty.snapshots WHERE id = @snapshotId", new { snapshotId });
+        Assert.Equal("partial", snapshot.State);
+        using var exceptions = JsonDocument.Parse(snapshot.Exceptions);
+        Assert.Equal(failing.Order(StringComparer.Ordinal), exceptions.RootElement.EnumerateArray().Select(e => e.GetProperty("SourceId").GetString()!).Order(StringComparer.Ordinal));
+        Assert.Equal("partial", await owner.ExecuteScalarAsync<string>("SELECT state FROM vaulty.jobs WHERE protected_object_id = @mailbox", new { mailbox }));
+
+        // A message whose full-fidelity export fails but whose MIME works is kept, marked limited fidelity.
+        simulator.FailingExports.Clear();
+        var limited = simulator.Add("f-inbox");
+        simulator.FailingExports.Add(limited.Id);
+        simulator.MimeAlsoFails = false;
+        var (second, _) = await harness.BackupAsync(mailbox);
+        Assert.False(second.IsPartial, $"{second.Exceptions} exceptions");
+        Assert.True(await owner.ExecuteScalarAsync<bool>("SELECT limited_fidelity FROM vaulty.items WHERE source_id = @id", new { id = limited.Id }));
+    }
+
+    [TemporalFact]
+    public async Task Throttling_makes_the_run_slower_but_it_succeeds()
+    {
+        using var simulator = new MailboxSimulator(items: 80, seed: 3) { ThrottleEvery = 3 };
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var mailbox = await harness.SeedMailboxAsync();
+        harness.StartWorker();
+        var (outcome, _) = await harness.BackupAsync(mailbox);
+        Assert.False(outcome.IsPartial);
+        Assert.Equal(simulator.Items.Count, outcome.ItemCounts["items"]);
+        Assert.True(simulator.Throttled > 3, $"only {simulator.Throttled} throttled responses");
+        Assert.True(harness.Graph.Throttle.ThrottledResponses(harness.Tenant) >= simulator.Throttled - 1);
+        output.WriteLine($"{simulator.Throttled} requests throttled, run succeeded with {outcome.ItemCounts["items"]} items");
+    }
+
+    [TemporalFact]
+    public async Task A_worker_killed_during_the_run_ends_in_the_same_snapshot_content()
+    {
+        using var simulator = new MailboxSimulator(items: 300, seed: 21);
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var quiet = await harness.SeedMailboxAsync();
+        var disturbed = await harness.SeedMailboxAsync();
+        harness.StartWorker();
+        var (_, quietSnapshot) = await harness.BackupAsync(quiet);
+
+        var random = new Random(11);
+        var kills = 0;
+        var (outcome, disturbedSnapshot) = await harness.BackupAsync(disturbed, async handle =>
+        {
+            for (var i = 0; i < 5; i++)
+            {
+                await Task.Delay(random.Next(150, 700));
+                var description = await handle.DescribeAsync();
+                if (description.Status != Temporalio.Api.Enums.V1.WorkflowExecutionStatus.Running) break;
+                await harness.KillWorkerAsync();
+                kills++;
+                await Task.Delay(random.Next(100, 400));
+                harness.StartWorker();
+            }
+        });
+        output.WriteLine($"{kills} worker kills during the run");
+        Assert.False(outcome.IsPartial);
+        var a = await harness.ReadSnapshotAsync(quiet, quietSnapshot);
+        var b = await harness.ReadSnapshotAsync(disturbed, disturbedSnapshot);
+        Assert.Equal(a.OrderBy(e => e.SourceId, StringComparer.Ordinal), b.OrderBy(e => e.SourceId, StringComparer.Ordinal));
+        Assert.True(kills > 0, "the run finished before the first kill");
+    }
+}

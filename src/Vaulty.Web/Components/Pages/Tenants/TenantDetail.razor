@@ -57,12 +57,23 @@ else
         }
     </MudPaper>
 
+    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+        <MudText Typo="Typo.h6">Policy</MudText>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" md="3"><MudNumericField @bind-Value="_frequencyHours" Label="Back up every (hours)" Min="1" Max="168" Disabled="!_canManagePolicy" /></MudItem>
+            <MudItem xs="12" md="3"><MudNumericField @bind-Value="_retentionDays" Label="Retention (days)" Min="90" Disabled="!_canChangeRetention" HelperText="At least 90 days; data is immutable until 30 days after" /></MudItem>
+            <MudItem xs="12" md="4"><MudTextField @bind-Value="_excluded" Label="Excluded folders" HelperText="Well-known names, for example junkemail, deleteditems" Disabled="!_canManagePolicy" /></MudItem>
+            <MudItem xs="12" md="2" Class="d-flex align-center"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SavePolicyAsync" Disabled="!_canManagePolicy">Save</MudButton></MudItem>
+        </MudGrid>
+    </MudPaper>
+
     <MudTable Items="_objects" Hover="true" Elevation="0" Outlined="true" Dense="true">
         <HeaderContent>
             <MudTh>Protected object</MudTh>
             <MudTh>Type</MudTh>
             <MudTh>Status</MudTh>
             <MudTh>Last backup</MudTh>
+            <MudTh></MudTh>
         </HeaderContent>
         <RowTemplate>
             <MudTd>@context.DisplayName</MudTd>
@@ -85,6 +96,12 @@ else
                 }
             </MudTd>
             <MudTd>@(context.LastBackupAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "")</MudTd>
+            <MudTd>
+                @if (_canRun && context.State == "active" && Granted)
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Backup" OnClick="@(() => BackUpNowAsync(context))">Back up now</MudButton>
+                }
+            </MudTd>
         </RowTemplate>
         <NoRecordsContent><span class="vy-muted">Nothing found yet. Check permissions, then find mailboxes and OneDrives.</span></NoRecordsContent>
     </MudTable>
@@ -99,6 +116,12 @@ else
     private PermissionProbeReport? _report;
     private string? _rotationScript;
     private bool _canConnect;
+    private bool _canRun;
+    private bool _canManagePolicy;
+    private bool _canChangeRetention;
+    private int _frequencyHours = 6;
+    private int _retentionDays = 90;
+    private string? _excluded;
     private bool _busy;
     private Guid _organizationId;
     private Guid _userId;
@@ -143,7 +166,12 @@ else
         if (tenant is null || !access.Allows(Permissions.CustomersView, tenant.CustomerId)) return;
         _tenant = tenant;
         _canConnect = access.Allows(Permissions.TenantsConnect, tenant.CustomerId);
+        _canRun = access.Allows(Permissions.BackupsRun, tenant.CustomerId);
+        _canManagePolicy = access.Allows(Permissions.PoliciesManage, tenant.CustomerId);
+        _canChangeRetention = access.Allows(Permissions.RetentionManage, tenant.CustomerId);
         _objects = await TenantService.ProtectedObjectsAsync(_organizationId, TenantId);
+        var policy = await TenantService.PolicyAsync(_organizationId, TenantId);
+        (_frequencyHours, _retentionDays, _excluded) = (policy.FrequencyMinutes / 60, policy.RetentionDays, string.Join(", ", policy.ExcludedFolders));
     }
 
     private async Task<bool> ConfirmedAsync()
@@ -184,6 +212,29 @@ else
         {
             _busy = false;
         }
+    }
+
+    private async Task SavePolicyAsync()
+    {
+        var current = await TenantService.PolicyAsync(_organizationId, TenantId);
+        if (current.RetentionDays != _retentionDays && !_canChangeRetention) return;
+        if (current.RetentionDays != _retentionDays && !await ConfirmedAsync()) return;
+        try
+        {
+            await TenantService.SavePolicyAsync(_organizationId, _userId, TenantId, new TenantService.PolicyView(_frequencyHours * 60, _retentionDays,
+                (_excluded ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
+            Snackbar.Add("Policy saved. It applies from the next backup.", Severity.Success);
+        }
+        catch (TenantException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task BackUpNowAsync(ProtectedObjectRow row)
+    {
+        var job = await Workflows.StartBackupAsync(_organizationId, TenantId, row.Id, row.Kind, _userId);
+        Snackbar.Add(job is null ? "A backup of this object is already running." : "Backup started. Follow it on the Jobs page.", Severity.Info);
     }
 
     private async Task BeginRotationAsync()

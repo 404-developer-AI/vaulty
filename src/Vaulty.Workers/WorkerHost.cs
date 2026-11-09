@@ -15,6 +15,8 @@ using Vaulty.Infrastructure.Database;
 using Vaulty.Infrastructure.Logging;
 using Vaulty.Infrastructure.Web;
 using Vaulty.Workflows.Tenants;
+using Vaulty.Workflows.Backup;
+using Vaulty.Infrastructure.Backup;
 using Vaulty.Workflows;
 using Vaulty.Workflows.Jobs;
 using Vaulty.Workflows.Synthetic;
@@ -94,6 +96,9 @@ public static class WorkerHost
                 .AddScopedActivities<JobActivities>();
             if (queue == TaskQueues.Backup)
             {
+                worker.AddScopedActivities<MailboxActivities>()
+                    .AddWorkflow<MailboxBackupWorkflow>()
+                    .AddWorkflow<FolderBackupWorkflow>();
                 worker.AddScopedActivities<TenantActivities>()
                     .AddWorkflow<DiscoveryWorkflow>()
                     .AddWorkflow<TenantHealthWorkflow>();
@@ -110,7 +115,15 @@ public static class WorkerHost
             }
         }
 
-        if (settings.Queues.Contains(TaskQueues.Backup)) builder.Services.AddHostedService<RecurringWorkflows>();
+        builder.Services.AddSingleton<BackupStore>();
+        builder.Services.AddSingleton<IBackupStorage, S3BackupStorage>();
+        builder.Services.AddSingleton<TenantKeyProvider>();
+        builder.Services.AddSingleton<BackupStarter>();
+        if (settings.Queues.Contains(TaskQueues.Backup))
+        {
+            builder.Services.AddHostedService<RecurringWorkflows>();
+            if (!settings.Synthetic) builder.Services.AddHostedService<BackupScheduler>();
+        }
         return builder.Build();
     }
 }
