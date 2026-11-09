@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Vaulty pre-commit hook: scan staged changes for confidential material.
+# Installed via .githooks/install.sh (sets core.hooksPath). Never bypass with --no-verify
+# for work that will reach the public repository.
+set -u
+HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$HOOKS_DIR/confidentiality-scan.sh" --staged

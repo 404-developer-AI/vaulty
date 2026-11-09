@@ -1,0 +1,13 @@
+# pg_hba.conf for a Vaulty all-in-one host. Rendered by the installer; order matters.
+#
+# Vaulty roles authenticate with peer over the Unix socket: the OS user of each systemd unit maps
+# to exactly one database role (see pg_ident.conf). No passwords exist for these roles.
+# Temporal runs in a container and reaches PostgreSQL over loopback with scram-sha-256.
+
+# TYPE  DATABASE             USER                                                 ADDRESS         METHOD
+local   all                  postgres                                                             peer
+local   vaulty               vaulty_api,vaulty_worker,vaulty_gc,vaulty_migrator                   peer map=vaulty
+host    temporal             temporal                                             127.0.0.1/32    scram-sha-256
+host    temporal_visibility  temporal                                             127.0.0.1/32    scram-sha-256
+host    all                  all                                                  0.0.0.0/0       reject
+host    all                  all                                                  ::/0            reject

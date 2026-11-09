@@ -1,0 +1,15 @@
+name: Feature request
+description: Suggest an improvement.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This repository is public.** Do not include customer or tenant names, tenant IDs, user names, e-mail
+        addresses, logs or screenshots.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true

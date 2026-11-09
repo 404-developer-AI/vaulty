@@ -1,0 +1,111 @@
+# Temporal server, Temporal UI and Valkey: the only containers on a Vaulty host.
+# Started by systemd (vaulty-temporal.service), which supplies TEMPORAL_DB_PASSWORD and
+# VALKEY_PASSWORD from encrypted systemd credentials as process environment. There is no .env file.
+#
+# All services use the host network and bind to 127.0.0.1 only. Image references are pinned by
+# digest in a release and updated by Renovate; `vaulty update` swaps them together with the
+# application. The {{...}} values are filled by the installer.
+
+services:
+  temporal:
+    image: temporalio/server:{{TEMPORAL_VERSION}}@{{TEMPORAL_DIGEST}}
+    container_name: vaulty-temporal
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: 127.0.0.1
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      BIND_ON_IP: 127.0.0.1
+      TEMPORAL_BROADCAST_ADDRESS: 127.0.0.1
+      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      SKIP_SCHEMA_SETUP: "true"          # schema is created once by the installer with temporal-sql-tool
+      NUM_HISTORY_SHARDS: "{{TEMPORAL_HISTORY_SHARDS}}"
+      LOG_LEVEL: warn
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  temporal-ui:
+    image: temporalio/ui:{{TEMPORAL_UI_VERSION}}@{{TEMPORAL_UI_DIGEST}}
+    container_name: vaulty-temporal-ui
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      TEMPORAL_UI_PORT: "8233"
+      TEMPORAL_UI_PUBLIC_PATH: ""
+      # The UI is reachable only through an SSH tunnel: ssh -L 8233:127.0.0.1:8233 <host>
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  valkey:
+    image: valkey/valkey:{{VALKEY_VERSION}}@{{VALKEY_DIGEST}}
+    container_name: vaulty-valkey
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command:
+      - valkey-server
+      - --bind
+      - 127.0.0.1
+      - --port
+      - "6379"
+      - --requirepass
+      - ${VALKEY_PASSWORD}
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - "{{VALKEY_MAXMEMORY}}"
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -h 127.0.0.1 -a \"$VALKEY_PASSWORD\" ping | grep -q PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

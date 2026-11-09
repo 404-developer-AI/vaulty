@@ -1,0 +1,56 @@
+# Vaulty additions to postgresql.conf, rendered by the installer into
+#   /etc/postgresql/17/main/conf.d/vaulty.conf
+# Memory and parallelism values are computed from the host's RAM and vCPU count
+# and recomputed with `vaulty doctor --retune`.
+
+# Network: Unix socket for Vaulty roles (peer auth), loopback TCP for Temporal only.
+listen_addresses = 'localhost'
+unix_socket_directories = '/var/run/postgresql'
+ssl = off
+password_encryption = scram-sha-256
+max_connections = {{MAX_CONNECTIONS}}
+
+# Storage
+data_directory = '{{PG_DATA_DIRECTORY}}'
+
+# Memory
+shared_buffers = {{SHARED_BUFFERS}}
+effective_cache_size = {{EFFECTIVE_CACHE_SIZE}}
+work_mem = {{WORK_MEM}}
+maintenance_work_mem = {{MAINTENANCE_WORK_MEM}}
+huge_pages = try
+
+# WAL, checkpoints and archiving (PITR with pgBackRest)
+wal_level = replica
+wal_compression = zstd
+max_wal_size = 4GB
+min_wal_size = 1GB
+checkpoint_completion_target = 0.9
+archive_mode = on
+archive_command = '/opt/vaulty/current/bin/vaulty-pgbackrest archive-push %p'
+archive_timeout = 300
+
+# Planner: SSD/NVMe
+random_page_cost = 1.1
+effective_io_concurrency = 200
+jit = off
+
+# Parallelism
+max_worker_processes = {{MAX_WORKER_PROCESSES}}
+max_parallel_workers = {{MAX_PARALLEL_WORKERS}}
+max_parallel_workers_per_gather = {{MAX_PARALLEL_WORKERS_PER_GATHER}}
+max_parallel_maintenance_workers = {{MAX_PARALLEL_MAINTENANCE_WORKERS}}
+
+# Observability
+shared_preload_libraries = 'pg_stat_statements'
+track_io_timing = on
+log_min_duration_statement = 500
+log_checkpoints = on
+log_lock_waits = on
+log_temp_files = 0
+log_line_prefix = '%m [%p] %q%u@%d '
+log_destination = 'stderr'
+
+# Timeouts
+idle_in_transaction_session_timeout = 300000
+statement_timeout = 0

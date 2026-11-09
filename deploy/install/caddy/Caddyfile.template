@@ -1,0 +1,70 @@
+# Caddyfile for a Vaulty all-in-one host. Rendered by the installer into /etc/caddy/Caddyfile.
+# {{ACME_CA}} is the Let's Encrypt staging CA for environment=staging until the first successful
+# issuance, then the production CA.
+
+{
+	email {{ACME_EMAIL}}
+	acme_ca {{ACME_CA}}
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+{{FQDN}} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		# Content-Security-Policy is set by Vaulty.Web and must not be overridden here.
+		-Server
+	}
+
+	# Health and metrics endpoints are reachable from the host only.
+	@internal {
+		path /healthz/* /metrics
+		not remote_ip 127.0.0.1 ::1
+	}
+	respond @internal 404
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy 127.0.0.1:5001 {
+			header_up X-Forwarded-Proto {scheme}
+			transport http {
+				read_timeout 300s
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:5000 {
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	handle_errors {
+		@maintenance expression {err.status_code} in [502, 503]
+		handle @maintenance {
+			root * /opt/vaulty/current/static
+			rewrite * /maintenance.html
+			file_server
+		}
+	}
+
+	log {
+		output stderr
+		format json
+		# Query strings can carry tokens; never log them.
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete *
+				}
+			}
+		}
+	}
+}

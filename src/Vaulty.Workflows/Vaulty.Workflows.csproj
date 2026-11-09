@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />
+    <ProjectReference Include="../Vaulty.Repository/Vaulty.Repository.csproj" />  </ItemGroup>
+
+</Project>

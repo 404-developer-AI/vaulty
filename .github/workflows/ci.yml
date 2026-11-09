@@ -1,0 +1,183 @@
+# Continuous integration: build and tests, confidentiality scan, branding check, CodeQL, shell checks.
+# Required status checks on main: build, confidentiality, branding.
+#
+# Third-party actions are pinned by full commit SHA (the comment names the version). Update SHA and comment together.
+# This repository is public, and so are these logs: tests use synthetic data and in-memory stores only.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
+        env:
+          # Throwaway CI database, reachable only from this job.
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --host=127.0.0.1 --username=postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      # Npgsql reads the password from PGPASSWORD, so the connection string carries none.
+      VAULTY_TEST_PG: Host=localhost;Port=5432;Username=postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Temporal CLI (dev server for workflow tests)
+        env:
+          TEMPORAL_CLI_VERSION: 1.10.0
+          TEMPORAL_CLI_SHA256: 521f461f3d108902763bb71e85cd0fd382dc9357b59604ae03da6ae734d16890
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' --output "$RUNNER_TEMP/temporal.tgz" \
+            "https://github.com/temporalio/cli/releases/download/v${TEMPORAL_CLI_VERSION}/temporal_cli_${TEMPORAL_CLI_VERSION}_linux_amd64.tar.gz"
+          echo "${TEMPORAL_CLI_SHA256}  $RUNNER_TEMP/temporal.tgz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf "$RUNNER_TEMP/temporal.tgz" -C "$RUNNER_TEMP/bin" temporal
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Restore
+        run: dotnet restore Vaulty.slnx
+
+      - name: Build
+        run: dotnet build Vaulty.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test Vaulty.slnx -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Vulnerable packages (direct and transitive)
+        run: |
+          dotnet list Vaulty.slnx package --vulnerable --include-transitive 2>&1 | tee vulnerable.txt
+          if grep -qE "has the following vulnerable packages|error NU[0-9]+|error:" vulnerable.txt; then
+            echo "::error::Vulnerable NuGet packages found (or the check failed). See the output above."
+            exit 1
+          fi
+
+  confidentiality:
+    name: confidentiality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      VAULTY_SCAN_STRICT: "1"
+      VAULTY_SCAN_QUIET_TERMS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks (checksum verified)
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' --output "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          sudo mv "$RUNNER_TEMP/gitleaks" /usr/local/bin/gitleaks
+
+      - name: Write the confidential terms list from the secret
+        env:
+          CONFIDENTIAL_TERMS: ${{ secrets.CONFIDENTIAL_TERMS }}
+        run: |
+          mkdir -p ~/.config/vaulty
+          printf '%s\n' "$CONFIDENTIAL_TERMS" > ~/.config/vaulty/confidential-terms.txt
+          count="$(grep -cEv '^\s*(#|$)' ~/.config/vaulty/confidential-terms.txt || true)"
+          echo "terms in list: $count"
+          [ "$count" -gt 0 ] || { echo "::error::The CONFIDENTIAL_TERMS secret is empty or missing."; exit 1; }
+
+      - name: Self-test: a commit containing a listed term is blocked
+        run: |
+          term="$(grep -Ev '^\s*(#|$)' ~/.config/vaulty/confidential-terms.txt | head -n 1)"
+          work="$RUNNER_TEMP/selftest"
+          git init -q "$work"
+          git -C "$work" config user.name ci
+          git -C "$work" config user.email ci@example.com
+          printf 'notes: %s\n' "$term" > "$work/notes.txt"
+          git -C "$work" add notes.txt
+          git -C "$work" commit -q -m "chore: self-test"
+          if (cd "$work" && "$GITHUB_WORKSPACE/.githooks/confidentiality-scan.sh" --range 0000000000000000000000000000000000000000 HEAD) 2>/dev/null; then
+            echo "::error::The scanner accepted a commit with a listed term."
+            exit 1
+          fi
+          echo "self-test passed: the listed term was blocked"
+
+      - name: Scan the pushed or proposed range
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: .githooks/confidentiality-scan.sh --range "${BASE:-0000000000000000000000000000000000000000}" "$HEAD_SHA"
+
+  branding:
+    name: branding
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash deploy/ci/branding-check-selftest.sh
+      - run: bash deploy/ci/branding-check.sh
+
+  shell:
+    name: shell scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          find deploy .githooks -type f \( -name '*.sh' -o -name 'pre-commit' -o -name 'pre-push' \) -print0 \
+            | xargs -0 --no-run-if-empty shellcheck --severity=warning
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: csharp
+          build-mode: manual
+      - run: dotnet build Vaulty.slnx -c Release
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3

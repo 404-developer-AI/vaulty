@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Vaulty.Workflows/Vaulty.Workflows.csproj" />
+    <ProjectReference Include="../Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />  </ItemGroup>
+
+</Project>

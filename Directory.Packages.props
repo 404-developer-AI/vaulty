@@ -1,0 +1,9 @@
+<Project>
+  <!-- Central package management: every version is pinned here and updated by Renovate. -->
+  <ItemGroup>
+    <!-- Tests -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+</Project>

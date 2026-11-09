@@ -1,0 +1,62 @@
+# Vaulty verifier and garbage collector. Own identity: the only component allowed to delete expired packs.
+[Unit]
+Description=Vaulty GC and verifier
+PartOf=vaulty.target
+After=network-online.target postgresql.service vaulty-migrate.service vaulty-temporal.service
+Wants=network-online.target
+Requires=vaulty-migrate.service
+
+[Service]
+Type=notify
+User=vaulty-gc
+Group=vaulty
+WorkingDirectory=/opt/vaulty/current
+ExecStart=/opt/vaulty/current/bin/Vaulty.Gc
+Environment=VAULTY_CONFIG_DIR=/etc/vaulty
+Environment=DOTNET_EnableDiagnostics=0
+
+LoadCredentialEncrypted=master-key:/etc/vaulty/credentials/master-key.cred
+
+StateDirectory=vaulty/gc
+StateDirectoryMode=0700
+LogsDirectory=vaulty
+RuntimeDirectory=vaulty-gc
+ReadWritePaths=/var/lib/vaulty/staging
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+LimitCORE=0
+MemoryDenyWriteExecute=no
+
+MemoryMax={{GC_MEMORY_MAX}}
+CPUWeight=50
+
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=300
+
+[Install]
+WantedBy=vaulty.target

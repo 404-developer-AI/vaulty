@@ -1,0 +1,4 @@
+# Regular expressions (extended, case-insensitive) matched against the remote URL.
+# A match switches the pre-push hook to strict mode (fail closed).
+# GitHub organisation: 404-developer-AI (decided 2026-11-09).
+github\.com[:/]404-developer-AI/vaulty(\.git)?$

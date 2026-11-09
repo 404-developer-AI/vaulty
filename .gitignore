@@ -1,0 +1,35 @@
+# Local-only notes: never committed anywhere.
+NOTFORCLAUDE.MD
+NOTFORCLAUDE.md
+notforclaude.md
+*.local.md
+*.private.md
+
+# Internal documentation lives in the private repository vaulty-internal, never here.
+MD-DOCS/
+docs/internal/
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+appsettings.Production.json
+appsettings.Staging.json
+*.secrets.json
+
+# .NET
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

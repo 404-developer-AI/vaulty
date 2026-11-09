@@ -1,0 +1,42 @@
+# Answers file for a non-interactive Vaulty installation.
+#
+#   curl -fsSL https://<release-host>/get-vaulty.sh | sudo bash -s -- --answers /root/vaulty-answers.yaml
+#
+# The file must be owned by root with mode 0600. The installer deletes it after a successful run.
+# Values below are fictitious examples. Secrets may be given here, but setting them afterwards with
+# `vaulty secrets set` from an administrative session is preferred.
+
+profile: all-in-one                # all-in-one | app | workers | db (role profiles are not available yet)
+environment: production            # production | staging | development
+
+fqdn: backup.example.com
+admin_email: admin@example.com     # ACME account and first administrator
+timezone: Europe/Brussels
+
+data_disk:
+  device: /dev/sdb                 # block device for PostgreSQL and staging data; omit to use the system disk
+  luks: true                       # LUKS2, enrolled to TPM 2.0 when present, recovery passphrase in the report
+
+workers:
+  instances: 4                     # default: vCPU / 2
+
+firewall:
+  ssh_allow_from: 203.0.113.0/24   # omit to allow SSH from anywhere with rate limiting
+
+pgbackrest:                        # omit the whole block to skip PITR until configured later
+  s3_endpoint: s3.eu-central-1.wasabisys.com
+  s3_region: eu-central-1
+  bucket: example-vaulty-pgbackrest
+  access_key: EXAMPLEACCESSKEY
+  secret_key: EXAMPLESECRETKEY
+  retention_full: 30
+
+smtp:                              # omit to skip; a test mail is sent to admin_email
+  host: smtp.example.com
+  port: 587
+  username: vaulty@example.com
+  password: example-password
+  from: "Vaulty <vaulty@example.com>"
+
+update:
+  auto: none                       # none | patch  (patch: install patch releases automatically, staging only)

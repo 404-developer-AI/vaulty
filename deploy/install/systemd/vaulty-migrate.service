@@ -1,0 +1,51 @@
+# Database migrations. One-shot, runs before the services start and during `vaulty update`.
+# The only unit that connects as the schema-owning role vaulty_migrator (peer auth over the Unix socket).
+[Unit]
+Description=Vaulty database migrations
+After=network-online.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=vaulty-migrator
+Group=vaulty
+WorkingDirectory=/opt/vaulty/current
+ExecStart=/opt/vaulty/current/bin/vaulty-migrate --config-dir /etc/vaulty
+Environment=VAULTY_CONFIG_DIR=/etc/vaulty
+Environment=DOTNET_EnableDiagnostics=0
+
+LoadCredentialEncrypted=master-key:/etc/vaulty/credentials/master-key.cred
+
+LogsDirectory=vaulty
+RuntimeDirectory=vaulty-migrate
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+LimitCORE=0
+MemoryDenyWriteExecute=no
+
+TimeoutStartSec=1800

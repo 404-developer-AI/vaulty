@@ -1,0 +1,10 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests", "docker:pinDigests"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "packageRules": [
+    { "matchManagers": ["nuget"], "groupName": "NuGet minor and patch", "matchUpdateTypes": ["minor", "patch"] },
+    { "matchManagers": ["github-actions"], "groupName": "GitHub Actions" }
+  ]
+}

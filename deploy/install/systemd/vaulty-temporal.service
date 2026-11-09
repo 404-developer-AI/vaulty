@@ -1,0 +1,29 @@
+# Temporal server, Temporal UI and Valkey: the only containers in a Vaulty host.
+#
+# The two passwords are systemd credentials. They are read from $CREDENTIALS_DIRECTORY at start and
+# handed to `docker compose` as process environment only, so they never exist in a .env or Compose
+# file on disk. This is a documented exception to "no secrets in environment variables" that goes
+# away once Temporal runs natively.
+[Unit]
+Description=Vaulty Temporal and Valkey (containers)
+PartOf=vaulty.target
+After=network-online.target docker.service postgresql.service
+Requires=docker.service postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vaulty/current/compose
+LoadCredentialEncrypted=temporal-db:/etc/vaulty/credentials/temporal-db.cred
+LoadCredentialEncrypted=valkey:/etc/vaulty/credentials/valkey.cred
+Environment=COMPOSE_PROJECT_NAME=vaulty
+ExecStart=/bin/sh -c 'TEMPORAL_DB_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/temporal-db")" VALKEY_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/valkey")" exec docker compose -f temporal.compose.yml up --remove-orphans --no-color'
+ExecStop=/usr/bin/docker compose -f temporal.compose.yml down --timeout 30
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+TimeoutStopSec=60
+
+[Install]
+WantedBy=vaulty.target

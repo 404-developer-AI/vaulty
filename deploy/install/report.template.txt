@@ -1,0 +1,54 @@
+VAULTY INSTALLATION REPORT                                        {{GENERATED_AT}}
+Host: {{HOSTNAME}}   Profile: {{PROFILE}}   Environment: {{ENVIRONMENT}}   Version: {{VERSION}}
+
+This file is written to {{REPORT_PATH}} with mode 0600 and shown once. Store everything under
+SECRETS in your password manager, then delete the file. Secrets can be rotated later but never
+shown again.
+
+ACCESS
+  Web UI ................ https://{{FQDN}}/
+  First administrator ... https://{{FQDN}}/setup?token={{SETUP_TOKEN}}   (valid until {{SETUP_TOKEN_EXPIRES}})
+  API ................... https://{{FQDN}}/api/v1   (OpenAPI: /api/v1/openapi.json)
+  Temporal UI ........... ssh -L 8233:127.0.0.1:8233 {{HOSTNAME}}   then open http://127.0.0.1:8233
+
+SECRETS
+  Master key (recovery copy)
+    base64 ............. {{MASTER_KEY_BASE64}}
+    words .............. {{MASTER_KEY_WORDS}}
+    Restores the encrypted secrets store on a new host: vaulty master-key restore
+  LUKS recovery passphrase ...... {{LUKS_RECOVERY_PASSPHRASE}}
+  PostgreSQL superuser .......... no password; use: sudo -u postgres psql
+  PostgreSQL role "temporal" .... {{TEMPORAL_DB_PASSWORD}}   (127.0.0.1:5432, databases temporal, temporal_visibility)
+  Valkey ........................ {{VALKEY_PASSWORD}}        (127.0.0.1:6379)
+  pgBackRest repository cipher .. {{PGBACKREST_CIPHER_PASS}} (required to restore PostgreSQL on another host)
+
+DATABASE
+  Socket ................ /var/run/postgresql
+  Roles (peer auth) ..... vaulty_api, vaulty_worker, vaulty_gc, vaulty_migrator
+  Data directory ........ {{PG_DATA_DIRECTORY}}   ({{DATA_DISK_SUMMARY}})
+  PITR .................. {{PGBACKREST_SUMMARY}}
+
+SERVICES                  STATUS      USER              LISTEN
+{{SERVICES_TABLE}}
+
+SECURITY
+  TPM 2.0 ............... {{TPM_SUMMARY}}
+  systemd hardening ..... {{HARDENING_SUMMARY}}
+  Firewall .............. {{FIREWALL_SUMMARY}}
+  OS updates ............ {{UNATTENDED_UPGRADES_SUMMARY}}
+  Release signature ..... {{SIGNATURE_SUMMARY}}
+
+NEXT STEPS
+  1. Open the first-administrator link and register a passkey or an authenticator app.
+  2. Complete onboarding in the web UI: backup storage bucket, key vault, Microsoft Graph app registration.
+  3. Store this report in your password manager, then delete it:
+       shred -u {{REPORT_PATH}}
+  4. Check the host at any time:
+       vaulty status          vaulty doctor          vaulty report   (without secrets)
+       journalctl -u 'vaulty-*' -f
+
+PATHS
+  Release ............... /opt/vaulty/current  ->  {{RELEASE_DIR}}
+  Configuration ......... /etc/vaulty/vaulty.json   (never contains secrets)
+  Credentials ........... /etc/vaulty/credentials/  (encrypted systemd credentials)
+  State ................. /var/lib/vaulty

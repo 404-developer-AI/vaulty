@@ -1,0 +1,7 @@
+# pg_ident.conf for a Vaulty all-in-one host: OS user of each systemd unit -> database role.
+# MAPNAME  SYSTEM-USERNAME    PG-USERNAME
+vaulty     vaulty-web         vaulty_api
+vaulty     vaulty-api         vaulty_api
+vaulty     vaulty-worker      vaulty_worker
+vaulty     vaulty-gc          vaulty_gc
+vaulty     vaulty-migrator    vaulty_migrator

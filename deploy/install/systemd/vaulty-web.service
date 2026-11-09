@@ -1,0 +1,63 @@
+# Vaulty Web UI (Blazor). Rendered by the installer; {{...}} placeholders are replaced at install time.
+[Unit]
+Description=Vaulty Web
+PartOf=vaulty.target
+After=network-online.target postgresql.service vaulty-migrate.service vaulty-api.service
+Wants=network-online.target
+Requires=vaulty-migrate.service
+
+[Service]
+Type=notify
+User=vaulty-web
+Group=vaulty
+WorkingDirectory=/opt/vaulty/current
+ExecStart=/opt/vaulty/current/bin/Vaulty.Web
+Environment=VAULTY_CONFIG_DIR=/etc/vaulty
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5000
+Environment=DOTNET_EnableDiagnostics=0
+
+LoadCredentialEncrypted=master-key:/etc/vaulty/credentials/master-key.cred
+
+StateDirectory=vaulty/web
+StateDirectoryMode=0700
+LogsDirectory=vaulty
+RuntimeDirectory=vaulty-web
+ReadWritePaths=/var/lib/vaulty/dataprotection
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+LimitCORE=0
+MemoryDenyWriteExecute=no
+
+MemoryMax={{WEB_MEMORY_MAX}}
+CPUWeight=100
+
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=vaulty.target

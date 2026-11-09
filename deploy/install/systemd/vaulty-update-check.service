@@ -1,0 +1,12 @@
+# Daily check for new releases. Reports only; it never installs unless update.auto is set to "patch".
+[Unit]
+Description=Vaulty update check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/vaulty/current/bin/vaulty update --check --notify
+Nice=10
+IOSchedulingClass=idle
