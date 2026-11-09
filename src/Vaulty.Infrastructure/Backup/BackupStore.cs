@@ -15,8 +15,11 @@ public sealed record BackupTarget(Guid OrganizationId, Guid TenantId, Guid Prote
 public sealed record CurrentVersion(Guid ItemId, string? ChangeKey, bool StagedHere);
 
 /// <summary>One new version of an item (or folder) seen in this backup.</summary>
+/// <param name="SearchText">Words the item can be found by (subject, sender, file name, path); stored only as search tokens.</param>
+/// <param name="Preview">A separately stored preview (the HTML or text body of a message) and its media type.</param>
 public sealed record ItemVersion(string SourceId, string? ParentSourceId, string Kind, string? ChangeKey, long Size, DateTimeOffset? ModifiedAt,
-    ItemContent? Content, string MetadataJson, bool LimitedFidelity = false);
+    ItemContent? Content, string MetadataJson, bool LimitedFidelity = false, string? SearchText = null, ItemContent? Preview = null,
+    string? PreviewType = null);
 
 public sealed record FolderCheckpoint(string? PageCursor, string? DeltaLink, bool Completed, bool Resynced, int NextPage);
 
@@ -163,13 +166,18 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
             v.SourceId, v.ParentSourceId, v.Kind, sealedMetadata = MetadataSealer.Seal(keys, target.ProtectedObjectId, v.SourceId, v.MetadataJson),
             contentHash = v.Content?.ContentHash, size = v.Content?.Size ?? v.Size, v.ModifiedAt,
             chunks = v.Content is null ? null : v.Content.Chunks.SelectMany(c => c.Value).ToArray(), v.ChangeKey, v.LimitedFidelity,
+            searchText = Browse.SearchText.Normalize(v.SearchText), previewChunks = v.Preview is null ? null : v.Preview.Chunks.SelectMany(c => c.Value).ToArray(),
+            previewHash = v.Preview?.ContentHash, previewSize = v.Preview?.Size, previewType = v.Preview is null ? null : v.PreviewType,
         });
         await session.Connection.ExecuteAsync(new CommandDefinition(
             """
             INSERT INTO vaulty.items (organization_id, tenant_id, id, protected_object_id, first_snapshot_id, state, source_id, parent_source_id, kind,
-                sealed_metadata, content_hash, size, modified_at, content_chunks, change_key, limited_fidelity)
+                sealed_metadata, content_hash, size, modified_at, content_chunks, change_key, limited_fidelity, first_sequence, search_vector,
+                preview_chunks, preview_hash, preview_size, preview_type)
             VALUES (@OrganizationId, @TenantId, @id, @ProtectedObjectId, @SnapshotId, 'staged', @SourceId, @ParentSourceId, @Kind,
-                @sealedMetadata, @contentHash, @size, @ModifiedAt, @chunks, @ChangeKey, @LimitedFidelity)
+                @sealedMetadata, @contentHash, @size, coalesce(@ModifiedAt, now()), @chunks, @ChangeKey, @LimitedFidelity,
+                (SELECT sequence FROM vaulty.snapshots WHERE id = @SnapshotId), to_tsvector('simple', coalesce(@searchText, '')),
+                @previewChunks, @previewHash, @previewSize, @previewType)
             ON CONFLICT (tenant_id, protected_object_id, source_id, first_snapshot_id) DO NOTHING
             """, rows, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         await session.Connection.ExecuteAsync(new CommandDefinition(
@@ -344,12 +352,15 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
         List<MemberRow> members;
         List<ItemException> exceptions;
         DateTimeOffset startedAt;
+        long sequence;
         List<string> newPacks;
         await using (var session = await Session(target, cancellationToken).ConfigureAwait(false))
         {
-            startedAt = new DateTimeOffset(DateTime.SpecifyKind(await session.Connection.ExecuteScalarAsync<DateTime>(new CommandDefinition(
-                "SELECT started_at FROM vaulty.snapshots WHERE id = @SnapshotId", target, session.Transaction, cancellationToken: cancellationToken))
-                .ConfigureAwait(false), DateTimeKind.Utc));
+            var snapshot = await session.Connection.QuerySingleAsync<(DateTime StartedAt, long Sequence)>(new CommandDefinition(
+                "SELECT started_at, sequence FROM vaulty.snapshots WHERE id = @SnapshotId", target, session.Transaction, cancellationToken: cancellationToken))
+                .ConfigureAwait(false);
+            startedAt = new DateTimeOffset(DateTime.SpecifyKind(snapshot.StartedAt, DateTimeKind.Utc));
+            sequence = snapshot.Sequence;
             // Membership after this snapshot: the latest version of every source item that is not removed.
             members = (await session.Connection.QueryAsync<MemberRow>(new CommandDefinition(
                 """
@@ -414,12 +425,12 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
             await session.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 -- Older versions replaced by a version of this snapshot, and removed items, end with this snapshot.
-                UPDATE vaulty.items old SET deleted_in_snapshot_id = @SnapshotId
+                UPDATE vaulty.items old SET deleted_in_snapshot_id = @SnapshotId, deleted_sequence = @sequence
                   FROM vaulty.items newer
                  WHERE old.tenant_id = @TenantId AND old.protected_object_id = @ProtectedObjectId AND old.deleted_in_snapshot_id IS NULL
                    AND old.state = 'committed' AND newer.tenant_id = @TenantId AND newer.protected_object_id = @ProtectedObjectId
                    AND newer.first_snapshot_id = @SnapshotId AND newer.source_id = old.source_id AND newer.id <> old.id;
-                UPDATE vaulty.items SET deleted_in_snapshot_id = @SnapshotId
+                UPDATE vaulty.items SET deleted_in_snapshot_id = @SnapshotId, deleted_sequence = @sequence
                  WHERE tenant_id = @TenantId AND protected_object_id = @ProtectedObjectId AND deleted_in_snapshot_id IS NULL
                    AND source_id IN (SELECT source_id FROM vaulty.pending_removals WHERE snapshot_id = @SnapshotId);
                 UPDATE vaulty.items SET state = 'committed'
@@ -438,7 +449,7 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
                 {
                     target.TenantId, target.ProtectedObjectId, target.SnapshotId, newPacks = newPacks.ToArray(), state = partial ? "partial" : "committed",
                     now, countsJson, exceptionsJson, rootHash, objectKey = RepositoryLayout.Snapshot(target.TenantId, target.ProtectedObjectId, target.SnapshotId),
-                    lockUntil, nextRun = now + frequency,
+                    lockUntil, nextRun = now + frequency, sequence,
                 }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
             await Audit.AuditLog.WriteAsync(session, "system:backup", partial ? "backup.partial" : "backup.completed", $"object:{target.ProtectedObjectId}",
                 new { snapshot = target.SnapshotId, items = counts["items"], exceptions = allExceptions.Count }, cancellationToken).ConfigureAwait(false);

@@ -1,0 +1,66 @@
+@page "/search"
+@attribute [Authorize(Policy = "perm:" + Permissions.SnapshotsBrowse)]
+@using Vaulty.Infrastructure.Browse
+@inject SnapshotBrowser Browser
+@inject CurrentAccess Current
+@inject DisplayTime Time
+@inject NavigationManager Navigation
+
+<PageTitle>Search · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">Search</h1>
+<p class="vy-page-lede">Find messages and files by subject, sender, file name or path, in the latest backup of every protected object you can browse.</p>
+
+<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+    <form @onsubmit="SearchAsync" class="d-flex gap-2 align-center">
+        <MudTextField @bind-Value="Query" Label="Search" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Class="flex-grow-1" />
+        <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary">Search</MudButton>
+    </form>
+</MudPaper>
+
+@if (_searched)
+{
+    <MudTable Items="_hits" Hover="true" Elevation="0" Outlined="true" Dense="true" T="SearchHit" OnRowClick="@((TableRowClickEventArgs<SearchHit> e) => OpenAsync(e.Item!))">
+        <HeaderContent>
+            <MudTh>Item</MudTh>
+            <MudTh>Protected object</MudTh>
+            <MudTh>Customer</MudTh>
+            <MudTh>Modified</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>
+                <div class="vy-item-title">@context.Title</div>
+                <div class="vy-muted vy-item-subtitle">@Vaulty.Web.Browse.ObjectLabels.Item(context.Kind)@(string.IsNullOrEmpty(context.Subtitle) ? "" : $" · {context.Subtitle}")</div>
+            </MudTd>
+            <MudTd>@context.ObjectName</MudTd>
+            <MudTd>@context.CustomerName · @context.TenantName</MudTd>
+            <MudTd>@Time.Absolute(context.ModifiedAt)</MudTd>
+        </RowTemplate>
+        <NoRecordsContent><span class="vy-muted">Nothing found. Search uses whole words and the beginning of words.</span></NoRecordsContent>
+    </MudTable>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
+
+    private IReadOnlyList<SearchHit> _hits = [];
+    private bool _searched;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await Time.LoadAsync();
+        if (!string.IsNullOrWhiteSpace(Query)) await SearchAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        _hits = await Browser.SearchAsync(await Current.GetAsync(), Query ?? "");
+        _searched = true;
+    }
+
+    private async Task OpenAsync(SearchHit hit)
+    {
+        var snapshot = await Browser.LatestSnapshotAsync(await Current.GetAsync(), hit.ObjectId);
+        if (snapshot is { } s) Navigation.NavigateTo($"/objects/{hit.ObjectId}/snapshots/{s}?item={hit.ItemId}");
+    }
+}

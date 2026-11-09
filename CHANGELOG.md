@@ -76,6 +76,14 @@ All notable changes to this project are documented in this file. The format foll
   a changed file, sharing permissions and links as metadata, OneNote notebooks as packages, renamed or moved files kept
   without downloading them again, files under a deleted folder removed with it, long paths and refused characters
   flagged, files over 250 GB reported as exceptions; the same atomic commit and partial rules as mailboxes.
+- Snapshot browser: the snapshots of every protected object with exact counts and verification time, the folder tree and
+  items of any snapshot (point in time), newest first with paging that stays fast deep into large folders, item detail
+  with metadata and older file versions, and search on subject, sender, file name and path across everything the user
+  may browse, limited to the user's customers. Search tokens are kept per item; the fields themselves stay encrypted.
+- Previews: the body of a message is stored as a separate preview at backup time and shown sanitized (no scripts, forms,
+  frames or event handlers, links reduced to text, external images blocked) in a sandboxed iframe with its own
+  Content Security Policy; images, PDF and text files under 20 MB are previewed as they are. Every preview is written to
+  the audit log.
 
 ### Changed
 

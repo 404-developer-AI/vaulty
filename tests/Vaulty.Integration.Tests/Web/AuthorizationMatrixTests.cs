@@ -35,7 +35,13 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/customers"] = VaultyPolicies.Permission(Permissions.CustomersView),
         ["/customers/{CustomerId:guid}"] = VaultyPolicies.Permission(Permissions.CustomersView),
         ["/tenants/{TenantId:guid}"] = VaultyPolicies.Permission(Permissions.CustomersView),
+        ["/search"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),
+        ["/objects/{ObjectId:guid}"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),
+        ["/objects/{ObjectId:guid}/snapshots/{SnapshotId:guid}"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),
     };
+
+    private static string Concrete(string route) => route.Replace("{CustomerId:guid}", Guid.NewGuid().ToString()).Replace("{TenantId:guid}", Guid.NewGuid().ToString())
+        .Replace("{ObjectId:guid}", Guid.NewGuid().ToString()).Replace("{SnapshotId:guid}", Guid.NewGuid().ToString());
 
     [Fact]
     public void Every_page_declares_exactly_the_expected_authorization()
@@ -84,8 +90,7 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
     public async Task A_user_without_a_permission_cannot_open_its_page_and_anonymous_users_are_sent_to_sign_in()
     {
         var anonymous = app.Client();
-        foreach (var route in ExpectedPages.Where(p => p.Value != "anonymous").Select(p => p.Key.Replace("{CustomerId:guid}", Guid.NewGuid().ToString())
-                     .Replace("{TenantId:guid}", Guid.NewGuid().ToString())))
+        foreach (var route in ExpectedPages.Where(p => p.Value != "anonymous").Select(p => Concrete(p.Key)))
         {
             var response = await anonymous.GetAsync(route);
             Assert.True(response.StatusCode == HttpStatusCode.Redirect, $"{route}: {response.StatusCode}");
@@ -98,9 +103,12 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/")).StatusCode);
         foreach (var route in ExpectedPages.Where(p => p.Value?.StartsWith(VaultyPolicies.PermissionPrefix, StringComparison.Ordinal) == true))
         {
-            var response = await client.GetAsync(route.Key.Replace("{CustomerId:guid}", Guid.NewGuid().ToString()).Replace("{TenantId:guid}", Guid.NewGuid().ToString()));
+            var response = await client.GetAsync(Concrete(route.Key));
             Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
         }
+        // Previews follow the same permission.
+        Assert.NotEqual(HttpStatusCode.OK, (await client.GetAsync($"/preview/{Guid.NewGuid()}/{Guid.NewGuid()}/{Guid.NewGuid()}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, (await anonymous.GetAsync($"/preview/{Guid.NewGuid()}/{Guid.NewGuid()}/{Guid.NewGuid()}")).StatusCode);
     }
 
     [PostgresFact]

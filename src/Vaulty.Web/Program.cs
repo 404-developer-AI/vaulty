@@ -29,6 +29,15 @@ builder.Services.AddScoped<StorageSetupAssistant>();
 builder.Services.AddSingleton<IMailSender, SmtpMailSender>();
 builder.Services.AddScoped<CustomerService>();
 builder.Services.AddScoped<TenantService>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.ApiBackupStorage>();
+builder.Services.AddSingleton(sp => new Vaulty.Infrastructure.Backup.TenantKeyProvider(sp.GetRequiredService<Npgsql.NpgsqlDataSource>(),
+    sp.GetRequiredService<Vaulty.Infrastructure.Secrets.IMasterKeySource>(), sp.GetRequiredService<Vaulty.Infrastructure.Browse.ApiBackupStorage>(),
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.IRepositoryReaderFactory>(sp => new Vaulty.Infrastructure.Browse.RepositoryReaderFactory(
+    sp.GetRequiredService<Npgsql.NpgsqlDataSource>(), sp.GetRequiredService<Vaulty.Infrastructure.Browse.ApiBackupStorage>(),
+    sp.GetRequiredService<Vaulty.Infrastructure.Backup.TenantKeyProvider>()));
+builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.SnapshotBrowser>();
+builder.Services.AddScoped<Vaulty.Web.DisplayTime>();
 var temporal = new Lazy<Task<Temporalio.Client.ITemporalClient>>(async () => await Temporalio.Client.TemporalClient.ConnectAsync(
     new Temporalio.Client.TemporalClientConnectOptions(builder.Configuration["Vaulty:Temporal:Address"] ?? "127.0.0.1:7233")
     {
@@ -66,6 +75,7 @@ app.UseAntiforgery();
 
 app.MapStaticAssets();
 app.MapAccountEndpoints();
+Vaulty.Web.Browse.PreviewEndpoints.MapPreviewEndpoints(app);
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode(o => o.ContentSecurityFrameAncestorsPolicy = null);
 

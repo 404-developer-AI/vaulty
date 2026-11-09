@@ -76,7 +76,16 @@ else
             <MudTh></MudTh>
         </HeaderContent>
         <RowTemplate>
-            <MudTd>@context.DisplayName</MudTd>
+            <MudTd>
+                @if (_canBrowse)
+                {
+                    <MudLink Href="@($"/objects/{context.Id}")">@context.DisplayName</MudLink>
+                }
+                else
+                {
+                    @context.DisplayName
+                }
+            </MudTd>
             <MudTd>@KindLabel(context)</MudTd>
             <MudTd>
                 @switch (context.State)
@@ -117,6 +126,7 @@ else
     private string? _rotationScript;
     private bool _canConnect;
     private bool _canRun;
+    private bool _canBrowse;
     private bool _canManagePolicy;
     private bool _canChangeRetention;
     private int _frequencyHours = 6;
@@ -167,6 +177,7 @@ else
         _tenant = tenant;
         _canConnect = access.Allows(Permissions.TenantsConnect, tenant.CustomerId);
         _canRun = access.Allows(Permissions.BackupsRun, tenant.CustomerId);
+        _canBrowse = access.Allows(Permissions.SnapshotsBrowse, tenant.CustomerId);
         _canManagePolicy = access.Allows(Permissions.PoliciesManage, tenant.CustomerId);
         _canChangeRetention = access.Allows(Permissions.RetentionManage, tenant.CustomerId);
         _objects = await TenantService.ProtectedObjectsAsync(_organizationId, TenantId);

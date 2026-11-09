@@ -160,7 +160,7 @@ public sealed class DriveActivities(NpgsqlDataSource dataSource, GraphServices g
                 if (item.File is null)
                 {
                     versions.Add(new ItemVersion(item.Id, item.ParentReference?.Id, item.Package is not null ? "package" : "folder", ChangeKey(item), 0,
-                        item.LastModifiedDateTime, null, Metadata(item, null, null)));
+                        item.LastModifiedDateTime, null, Metadata(item, null, null), SearchText: Search(item)));
                     continue;
                 }
                 if (item.Size > DriveClient.MaximumFileSize)
@@ -174,7 +174,7 @@ public sealed class DriveActivities(NpgsqlDataSource dataSource, GraphServices g
                     // Renamed or moved, content unchanged: the new version points at the stored content, nothing is downloaded.
                     permissions.TryGetValue(item.Id, out var kept);
                     versions.Add(new ItemVersion(item.Id, item.ParentReference?.Id, "file", ChangeKey(item), item.Size, item.LastModifiedDateTime, unchanged,
-                        Metadata(item, kept, null)));
+                        Metadata(item, kept, null), SearchText: Search(item)));
                     continue;
                 }
                 try
@@ -184,7 +184,7 @@ public sealed class DriveActivities(NpgsqlDataSource dataSource, GraphServices g
                         var content = await writer.WriteAsync(new HeartbeatStream(stream, context), ct);
                         permissions.TryGetValue(item.Id, out var permission);
                         versions.Add(new ItemVersion(item.Id, item.ParentReference?.Id, "file", ChangeKey(item), item.Size, item.LastModifiedDateTime, content,
-                            Metadata(item, permission, null)));
+                            Metadata(item, permission, null), SearchText: Search(item)));
                     }
                     await StoreOlderVersionsAsync(graphContext, driveId, item, writer, current, versions, ct);
                 }
@@ -261,6 +261,9 @@ public sealed class DriveActivities(NpgsqlDataSource dataSource, GraphServices g
 
     private static string? ContentTag(string? changeKey) =>
         changeKey is null || !changeKey.Contains('|', StringComparison.Ordinal) ? null : changeKey[..changeKey.IndexOf('|', StringComparison.Ordinal)] is { Length: > 0 } tag ? tag : null;
+
+    /// <summary>File name and path: the words a file is found by.</summary>
+    private static string Search(DriveItem item) => $"{item.Name} {item.ParentReference?.Path?.Replace("/drive/root:", "", StringComparison.Ordinal)}";
 
     private static string Metadata(DriveItem item, string? permissions, DriveItemVersion? version)
     {

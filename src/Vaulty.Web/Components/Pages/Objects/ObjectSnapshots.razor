@@ -1,0 +1,70 @@
+@page "/objects/{ObjectId:guid}"
+@attribute [Authorize(Policy = "perm:" + Permissions.SnapshotsBrowse)]
+@using Vaulty.Infrastructure.Browse
+@inject SnapshotBrowser Browser
+@inject CurrentAccess Current
+@inject DisplayTime Time
+
+<PageTitle>@(_object?.DisplayName ?? "Protected object") · Vaulty</PageTitle>
+
+@if (_object is null)
+{
+    <p class="vy-muted">This protected object does not exist or you have no access to it.</p>
+}
+else
+{
+    <MudBreadcrumbs Items="_crumbs" Class="px-0 pt-0" />
+    <h1 class="vy-page-title">@_object.DisplayName</h1>
+    <p class="vy-page-lede">@ObjectLabels.Kind(_object.Kind, _object.SubKind) · @_object.CustomerName · @_object.TenantName</p>
+
+    <MudTable Items="_snapshots" Hover="true" Elevation="0" Outlined="true" Dense="true">
+        <HeaderContent>
+            <MudTh>Snapshot</MudTh>
+            <MudTh>Status</MudTh>
+            <MudTh>Items</MudTh>
+            <MudTh>Verified</MudTh>
+            <MudTh></MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>@Time.Absolute(context.StartedAt)</MudTd>
+            <MudTd>
+                @if (context.State == "partial")
+                {
+                    <span class="vy-status partial">Partial: @context.Exceptions missing</span>
+                }
+                else
+                {
+                    <span class="vy-status succeeded">Succeeded</span>
+                }
+            </MudTd>
+            <MudTd>@ObjectLabels.Counts(context.Counts)</MudTd>
+            <MudTd>@(context.VerifiedAt is { } v ? Time.Relative(v) : "Not yet")</MudTd>
+            <MudTd><MudLink Href="@($"/objects/{ObjectId}/snapshots/{context.Id}")">Browse</MudLink></MudTd>
+        </RowTemplate>
+        <NoRecordsContent><span class="vy-muted">No snapshots yet. The first backup creates one.</span></NoRecordsContent>
+    </MudTable>
+}
+
+@code {
+    [Parameter] public Guid ObjectId { get; set; }
+
+    private ObjectHeader? _object;
+    private IReadOnlyList<SnapshotSummary> _snapshots = [];
+    private List<BreadcrumbItem> _crumbs = [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await Time.LoadAsync();
+        var access = await Current.GetAsync();
+        _object = await Browser.ObjectAsync(access, ObjectId);
+        if (_object is null) return;
+        _snapshots = await Browser.SnapshotsAsync(access, ObjectId);
+        _crumbs =
+        [
+            new("Customers", "/customers"),
+            new(_object.CustomerName, $"/customers/{_object.CustomerId}"),
+            new(_object.TenantName, $"/tenants/{_object.TenantId}"),
+            new(_object.DisplayName, null, disabled: true),
+        ];
+    }
+}

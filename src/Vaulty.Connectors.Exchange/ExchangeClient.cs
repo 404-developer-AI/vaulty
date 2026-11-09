@@ -34,8 +34,9 @@ public sealed class MailboxItemChange
 }
 
 /// <summary>Searchable metadata of an item, read best-effort from the regular mail, calendar and contacts endpoints.</summary>
+/// <param name="Body">The body as Microsoft 365 returns it (HTML or text, see <paramref name="BodyIsHtml"/>), stored as the preview.</param>
 public sealed record ItemMetadata(string? Subject, string? From, IReadOnlyList<string> To, DateTimeOffset? Received, bool HasAttachments,
-    string? BodyPreview, IReadOnlyList<string> Categories, bool? IsRead, string? Flag);
+    string? BodyPreview, IReadOnlyList<string> Categories, bool? IsRead, string? Flag, string? Body = null, bool BodyIsHtml = false);
 
 [JsonSerializable(typeof(GraphCollection<MailboxFolderInfo>), TypeInfoPropertyName = "Folders")]
 [JsonSerializable(typeof(GraphCollection<MailboxItemChange>), TypeInfoPropertyName = "ItemChanges")]
@@ -131,9 +132,9 @@ public sealed class ExchangeClient(GraphClient graph)
 
     private static string Select(string? type) => Kind(type) switch
     {
-        "event" => "subject,organizer,attendees,start,hasAttachments,categories,bodyPreview",
+        "event" => "subject,organizer,attendees,start,hasAttachments,categories,bodyPreview,body",
         "contact" => "displayName,emailAddresses,companyName,categories",
-        _ => "subject,from,toRecipients,receivedDateTime,hasAttachments,categories,bodyPreview,isRead,flag",
+        _ => "subject,from,toRecipients,receivedDateTime,hasAttachments,categories,bodyPreview,isRead,flag,body",
     };
 
     private static ItemMetadata Parse(JsonElement body)
@@ -161,6 +162,13 @@ public sealed class ExchangeClient(GraphClient graph)
         bool? isRead = body.TryGetProperty("isRead", out var read) && read.ValueKind is JsonValueKind.True or JsonValueKind.False ? read.GetBoolean() : null;
         var flag = body.TryGetProperty("flag", out var fl) && fl.ValueKind == JsonValueKind.Object ? Str(fl, "flagStatus") : null;
         var attachments = body.TryGetProperty("hasAttachments", out var h) && h.ValueKind == JsonValueKind.True;
-        return new ItemMetadata(subject, from, to, received, attachments, Str(body, "bodyPreview"), categories, isRead, flag);
+        string? content = null;
+        var html = false;
+        if (body.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.Object)
+        {
+            content = Str(b, "content");
+            html = string.Equals(Str(b, "contentType"), "html", StringComparison.OrdinalIgnoreCase);
+        }
+        return new ItemMetadata(subject, from, to, received, attachments, Str(body, "bodyPreview"), categories, isRead, flag, content, html);
     }
 }

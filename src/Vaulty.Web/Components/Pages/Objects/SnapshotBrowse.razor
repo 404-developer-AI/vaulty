@@ -1,0 +1,224 @@
+@page "/objects/{ObjectId:guid}/snapshots/{SnapshotId:guid}"
+@attribute [Authorize(Policy = "perm:" + Permissions.SnapshotsBrowse)]
+@using Vaulty.Infrastructure.Browse
+@inject SnapshotBrowser Browser
+@inject CurrentAccess Current
+@inject DisplayTime Time
+@inject NavigationManager Navigation
+
+<PageTitle>@(_object?.DisplayName ?? "Snapshot") · Vaulty</PageTitle>
+
+@if (_object is null || _snapshot is null)
+{
+    <p class="vy-muted">This snapshot does not exist or you have no access to it.</p>
+}
+else
+{
+    <MudBreadcrumbs Items="_crumbs" Class="px-0 pt-0" />
+    <div class="d-flex align-center gap-4 flex-wrap mb-4">
+        <div>
+            <h1 class="vy-page-title">@_object.DisplayName</h1>
+            <span class="vy-muted">Snapshot of @Time.Absolute(_snapshot.StartedAt) · @ObjectLabels.Counts(_snapshot.Counts)</span>
+            @if (_snapshot.State == "partial")
+            {
+                <span class="vy-status partial ml-2">Partial: @_snapshot.Exceptions missing</span>
+            }
+        </div>
+        <MudSpacer />
+        <MudSelect T="Guid" Value="SnapshotId" ValueChanged="GoToSnapshot" Label="Point in time" Dense="true" Style="min-width: 240px">
+            @foreach (var s in _snapshots)
+            {
+                <MudSelectItem Value="s.Id">@Time.Absolute(s.StartedAt)@(s.State == "partial" ? " (partial)" : "")</MudSelectItem>
+            }
+        </MudSelect>
+    </div>
+
+    <MudGrid Spacing="3">
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="0" Outlined="true" Class="pa-2 vy-tree">
+                <MudTreeView T="string" Items="_tree" SelectionMode="SelectionMode.SingleSelection" SelectedValue="_folder" SelectedValueChanged="SelectFolderAsync" Dense="true" />
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="@(_detail is null ? 9 : 5)">
+            <MudTable Items="_items" Hover="true" Elevation="0" Outlined="true" Dense="true" OnRowClick="@((TableRowClickEventArgs<ItemRow> e) => OpenAsync(e.Item!))" T="ItemRow">
+                <ToolBarContent>
+                    <span class="vy-muted">@_total.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) items in this folder</span>
+                </ToolBarContent>
+                <HeaderContent>
+                    <MudTh>Name</MudTh>
+                    <MudTh>Type</MudTh>
+                    <MudTh>Modified</MudTh>
+                    <MudTh>Size</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd>
+                        <div class="vy-item-title">@context.Title</div>
+                        @if (!string.IsNullOrEmpty(context.Subtitle))
+                        {
+                            <div class="vy-muted vy-item-subtitle">@context.Subtitle</div>
+                        }
+                    </MudTd>
+                    <MudTd>@ObjectLabels.Item(context.Kind)@(context.LimitedFidelity ? " (limited fidelity)" : "")</MudTd>
+                    <MudTd>@Time.Absolute(context.ModifiedAt)</MudTd>
+                    <MudTd>@ObjectLabels.Size(context.Size)</MudTd>
+                </RowTemplate>
+                <NoRecordsContent><span class="vy-muted">This folder has no items in this snapshot.</span></NoRecordsContent>
+            </MudTable>
+            @if (_next is not null)
+            {
+                <MudButton Class="mt-2" Variant="Variant.Text" OnClick="MoreAsync">Load more</MudButton>
+            }
+        </MudItem>
+        @if (_detail is not null)
+        {
+            <MudItem xs="12" md="4">
+                <MudPaper Elevation="0" Outlined="true" Class="pa-4">
+                    <div class="d-flex align-center">
+                        <MudText Typo="Typo.h6" Class="vy-item-title">@_detail.Row.Title</MudText>
+                        <MudSpacer />
+                        <MudIconButton Icon="@Icons.Material.Outlined.Close" Size="Size.Small" OnClick="@(() => _detail = null)" aria-label="Close" />
+                    </div>
+                    <dl class="vy-fields">
+                        @foreach (var field in VisibleFields(_detail))
+                        {
+                            <dt>@field.Label</dt>
+                            <dd>@field.Value</dd>
+                        }
+                    </dl>
+                    @if (_detail.Versions.Count > 0)
+                    {
+                        <MudText Typo="Typo.subtitle2" Class="mt-3">Older versions</MudText>
+                        @foreach (var version in _detail.Versions)
+                        {
+                            <div class="vy-muted">Version @version.VersionId · @Time.Absolute(version.ModifiedAt) · @ObjectLabels.Size(version.Size)</div>
+                        }
+                    }
+                    @if (_detail.PreviewType is { } type)
+                    {
+                        <MudText Typo="Typo.subtitle2" Class="mt-3 mb-1">Preview</MudText>
+                        @if (type.StartsWith("image/", StringComparison.Ordinal))
+                        {
+                            <img class="vy-preview-image" src="@PreviewUrl(_detail)" alt="@_detail.Row.Title" />
+                        }
+                        else if (type == "application/pdf")
+                        {
+                            <iframe class="vy-preview" src="@PreviewUrl(_detail)" title="Preview" referrerpolicy="no-referrer"></iframe>
+                        }
+                        else
+                        {
+                            @* No allow-scripts, no allow-same-origin: the preview cannot run code or reach the session. *@
+                            <iframe class="vy-preview" sandbox="" src="@PreviewUrl(_detail)" title="Preview" referrerpolicy="no-referrer"></iframe>
+                        }
+                    }
+                    else
+                    {
+                        <p class="vy-muted mt-3">No preview for this item type. Export or restore it to open it.</p>
+                    }
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+}
+
+@code {
+    [Parameter] public Guid ObjectId { get; set; }
+    [Parameter] public Guid SnapshotId { get; set; }
+    [SupplyParameterFromQuery(Name = "item")] public Guid? ItemId { get; set; }
+
+    private ObjectHeader? _object;
+    private SnapshotSummary? _snapshot;
+    private IReadOnlyList<SnapshotSummary> _snapshots = [];
+    private List<TreeItemData<string>> _tree = [];
+    private List<BreadcrumbItem> _crumbs = [];
+    private string? _folder;
+    private readonly List<ItemRow> _items = [];
+    private string? _next;
+    private long _total;
+    private ItemDetail? _detail;
+
+    private static readonly Dictionary<string, string> FieldLabels = new(StringComparer.Ordinal)
+    {
+        ["subject"] = "Subject", ["from"] = "From", ["to"] = "To", ["received"] = "Received", ["name"] = "Name", ["path"] = "Path",
+        ["size"] = "Size", ["created"] = "Created", ["modified"] = "Modified", ["categories"] = "Categories", ["mime_type"] = "Type",
+        ["has_attachments"] = "Attachments", ["is_read"] = "Read", ["flag"] = "Flag", ["preview"] = "Beginning", ["path_warning"] = "Note",
+    };
+
+    private static IEnumerable<(string Label, string Value)> VisibleFields(ItemDetail detail) =>
+        detail.Fields.Where(f => FieldLabels.ContainsKey(f.Key)).Select(f => (FieldLabels[f.Key], f.Key == "size" && long.TryParse(f.Value, out var n) ? ObjectLabels.Size(n) : f.Value));
+
+    private string PreviewUrl(ItemDetail detail) => $"/preview/{ObjectId}/{SnapshotId}/{detail.Row.Id}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await Time.LoadAsync();
+        var access = await Current.GetAsync();
+        _object = await Browser.ObjectAsync(access, ObjectId);
+        if (_object is null) return;
+        _snapshots = await Browser.SnapshotsAsync(access, ObjectId);
+        _snapshot = _snapshots.FirstOrDefault(s => s.Id == SnapshotId);
+        if (_snapshot is null) return;
+        _crumbs =
+        [
+            new("Customers", "/customers"),
+            new(_object.CustomerName, $"/customers/{_object.CustomerId}"),
+            new(_object.TenantName, $"/tenants/{_object.TenantId}"),
+            new(_object.DisplayName, $"/objects/{ObjectId}"),
+            new(Time.Absolute(_snapshot.StartedAt), null, disabled: true),
+        ];
+        var folders = await Browser.FoldersAsync(access, ObjectId, SnapshotId);
+        _tree = folders.Select(f => ToTree(f, expanded: true)).ToList();
+        _detail = null;
+        if (ItemId is { } item)
+        {
+            _detail = await Browser.ItemAsync(access, ObjectId, SnapshotId, item);
+            if (_detail?.ParentSourceId is { } parent) await SelectFolderAsync(parent);
+        }
+        else if (_folder is null || !Contains(folders, _folder))
+        {
+            await SelectFolderAsync(DefaultFolder(folders));
+        }
+        else
+        {
+            await SelectFolderAsync(_folder);
+        }
+    }
+
+    private static TreeItemData<string> ToTree(FolderNode node, bool expanded = false) => new()
+    {
+        Value = node.SourceId, Text = node.Name, Expanded = expanded, Icon = Icons.Material.Outlined.Folder,
+        Children = node.Children.Count == 0 ? null : node.Children.Select(c => ToTree(c)).ToList(),
+    };
+
+    private static bool Contains(IEnumerable<FolderNode> nodes, string id) => nodes.Any(n => n.SourceId == id || Contains(n.Children, id));
+
+    /// <summary>The inbox when there is one, otherwise the first folder that is not just a container.</summary>
+    private static string? DefaultFolder(IReadOnlyList<FolderNode> roots)
+    {
+        var all = roots.SelectMany(Flatten).ToList();
+        return all.FirstOrDefault(n => n.Name.Equals("Inbox", StringComparison.OrdinalIgnoreCase))?.SourceId ?? all.FirstOrDefault()?.SourceId;
+
+        static IEnumerable<FolderNode> Flatten(FolderNode n) => new[] { n }.Concat(n.Children.SelectMany(Flatten));
+    }
+
+    private async Task SelectFolderAsync(string? folder)
+    {
+        if (folder is null) return;
+        _folder = folder;
+        _items.Clear();
+        var page = await Browser.ItemsAsync(await Current.GetAsync(), ObjectId, SnapshotId, folder, null);
+        _items.AddRange(page.Items);
+        (_next, _total) = (page.NextCursor, page.Total);
+    }
+
+    private async Task MoreAsync()
+    {
+        if (_folder is null || _next is null) return;
+        var page = await Browser.ItemsAsync(await Current.GetAsync(), ObjectId, SnapshotId, _folder, _next);
+        _items.AddRange(page.Items);
+        _next = page.NextCursor;
+    }
+
+    private async Task OpenAsync(ItemRow row) => _detail = await Browser.ItemAsync(await Current.GetAsync(), ObjectId, SnapshotId, row.Id);
+
+    private void GoToSnapshot(Guid snapshot) => Navigation.NavigateTo($"/objects/{ObjectId}/snapshots/{snapshot}");
+}

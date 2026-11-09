@@ -150,8 +150,13 @@ internal sealed class MailboxSimulator : IDisposable
                         ["id"] = r["id"]!.GetValue<string>(), ["status"] = 200,
                         ["body"] = new JsonObject
                         {
-                            ["subject"] = $"Subject of {id}", ["from"] = new JsonObject { ["emailAddress"] = new JsonObject { ["address"] = "sender@contoso.example" } },
+                            ["subject"] = $"Subject of {id} v{item.Version}", ["from"] = new JsonObject { ["emailAddress"] = new JsonObject { ["address"] = "sender@contoso.example" } },
                             ["isRead"] = true, ["hasAttachments"] = false,
+                            ["body"] = new JsonObject
+                            {
+                                ["contentType"] = "html",
+                                ["content"] = $"<p>Body of {id} v{item.Version}</p><script>alert(1)</script><img src=\"https://tracker.example/{id}.gif\">",
+                            },
                         },
                     }
                     : new JsonObject { ["id"] = r["id"]!.GetValue<string>(), ["status"] = 404 });

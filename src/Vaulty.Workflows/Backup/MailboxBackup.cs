@@ -255,7 +255,7 @@ public sealed class MailboxActivities(NpgsqlDataSource dataSource, GraphServices
             }
             await using var stream = new MemoryStream(Convert.FromBase64String(result.Data), writable: false);
             var content = await writer.WriteAsync(stream, ct);
-            versions.Add(Version(input, item, content, metadata, limitedFidelity: false));
+            versions.Add(await VersionAsync(input, item, content, metadata, limitedFidelity: false, writer, ct));
         }
     }
 
@@ -269,7 +269,7 @@ public sealed class MailboxActivities(NpgsqlDataSource dataSource, GraphServices
             {
                 await using var mime = await Exchange.MimeAsync(graphContext, input.UserId, item.Id, ct);
                 var content = await writer.WriteAsync(mime, ct);
-                versions.Add(Version(input, item, content, metadata, limitedFidelity: true));
+                versions.Add(await VersionAsync(input, item, content, metadata, limitedFidelity: true, writer, ct));
                 return;
             }
             catch (GraphException)
@@ -280,14 +280,29 @@ public sealed class MailboxActivities(NpgsqlDataSource dataSource, GraphServices
         await store.RecordFailureAsync(target, item.Id, input.FolderId, code, detail, ct, item.Type);
     }
 
-    private static ItemVersion Version(FolderSyncInput input, MailboxItemChange item, ItemContent content, IReadOnlyDictionary<string, ItemMetadata> metadata,
-        bool limitedFidelity)
+    /// <summary>Bodies up to this size are stored as a preview for the snapshot browser.</summary>
+    public const int MaxPreviewLength = 2 * 1024 * 1024;
+
+    /// <summary>
+    /// The new version with its metadata, the words it can be found by (subject and sender), and the body stored separately as
+    /// its preview (deduplicated like any content).
+    /// </summary>
+    private static async Task<ItemVersion> VersionAsync(FolderSyncInput input, MailboxItemChange item, ItemContent content,
+        IReadOnlyDictionary<string, ItemMetadata> metadata, bool limitedFidelity, RepositoryWriter writer, CancellationToken ct)
     {
         metadata.TryGetValue(item.Id, out var meta);
         var document = new ItemMetadataDocument(item.Type, item.Size, item.CreatedDateTime, item.LastModifiedDateTime, item.Categories ?? meta?.Categories.ToList() ?? [],
             meta?.Subject, meta?.From, meta?.To ?? [], meta?.Received, meta?.HasAttachments ?? false, meta?.IsRead, meta?.Flag, meta?.BodyPreview);
+        ItemContent? preview = null;
+        string? previewType = null;
+        if (meta?.Body is { Length: > 0 and <= MaxPreviewLength } body)
+        {
+            await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(body), writable: false);
+            preview = await writer.WriteAsync(stream, ct);
+            previewType = meta.BodyIsHtml ? "text/html" : "text/plain";
+        }
         return new ItemVersion(item.Id, input.FolderId, ExchangeClient.Kind(item.Type), item.ChangeKey, item.Size, item.LastModifiedDateTime, content,
-            JsonSerializer.Serialize(document, Json), limitedFidelity);
+            JsonSerializer.Serialize(document, Json), limitedFidelity, $"{meta?.Subject} {meta?.From}", preview, previewType);
     }
 
     [Activity]

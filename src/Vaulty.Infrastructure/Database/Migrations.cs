@@ -154,3 +154,10 @@ public sealed class BackupMigration : SqlMigration
 {
     protected override string ScriptName => "0008_backup";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000009_Browse")]
+public sealed class BrowseMigration : SqlMigration
+{
+    protected override string ScriptName => "0009_browse";
+}
