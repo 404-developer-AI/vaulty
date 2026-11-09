@@ -38,3 +38,9 @@ All notable changes to this project are documented in this file. The format foll
   OpenTelemetry tracing, shared activity policies where Retry-After takes precedence over backoff, page checkpoints in
   PostgreSQL, and a job mirror that records start, end and exact counts of every job workflow. Tests kill the worker
   process 20 times during a backup and require the same result as an undisturbed run.
+- Microsoft Graph client core: certificate authentication per tenant (MSAL), a handler pipeline for telemetry,
+  throttling (four requests per mailbox, an adaptive rate per tenant, a global cap, Retry-After honoured exactly),
+  decoration and authentication; paging, delta with a resync route on 410, `$batch` that resends only throttled
+  sub-requests, mailbox item export, and a separate download client that never sends a token.
+- Tenant onboarding building blocks: a certificate per tenant, a PowerShell script and manual steps that create the app
+  registration with its application permissions, and a permission probe with a readable report.

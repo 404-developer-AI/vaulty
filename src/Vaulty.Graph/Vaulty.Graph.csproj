@@ -1,6 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />  </ItemGroup>
+    <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Identity.Client" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Vaulty.Graph.Tests" />
+  </ItemGroup>
 
 </Project>
