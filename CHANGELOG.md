@@ -34,3 +34,7 @@ All notable changes to this project are documented in this file. The format foll
   storage.
 - Tests: property-based tests of chunker, codec and parsers, a 10,000-item roundtrip, 50 crash-injection runs, S3
   contract tests against WireMock; nightly fuzzing of the parsers with libFuzzer.
+- Workflow foundation on Temporal: worker host under systemd with task queues `backup`, `restore`, `verify` and `gc`,
+  OpenTelemetry tracing, shared activity policies where Retry-After takes precedence over backoff, page checkpoints in
+  PostgreSQL, and a job mirror that records start, end and exact counts of every job workflow. Tests kill the worker
+  process 20 times during a backup and require the same result as an undisturbed run.

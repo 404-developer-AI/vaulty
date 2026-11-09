@@ -119,3 +119,10 @@ public sealed class TenantKeysApiMigration : SqlMigration
 {
     protected override string ScriptName => "0003_tenant_keys_api";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000004_FolderCheckpoints")]
+public sealed class FolderCheckpointsMigration : SqlMigration
+{
+    protected override string ScriptName => "0004_folder_checkpoints";
+}

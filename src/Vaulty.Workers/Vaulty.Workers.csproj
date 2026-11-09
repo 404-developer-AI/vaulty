@@ -6,6 +6,23 @@
 
   <ItemGroup>
     <ProjectReference Include="../Vaulty.Workflows/Vaulty.Workflows.csproj" />
-    <ProjectReference Include="../Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />  </ItemGroup>
+    <ProjectReference Include="../Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" />
+    <PackageReference Include="Temporalio.Extensions.Hosting" />
+    <PackageReference Include="Temporalio.Extensions.OpenTelemetry" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Formatting.Compact" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Vaulty.Integration.Tests" />
+  </ItemGroup>
 
 </Project>

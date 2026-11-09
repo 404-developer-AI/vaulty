@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />
+    <ProjectReference Include="../../src/Vaulty.Workers/Vaulty.Workers.csproj" />
   </ItemGroup>
 
 </Project>
