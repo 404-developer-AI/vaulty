@@ -133,3 +133,10 @@ public sealed class IdentityMigration : SqlMigration
 {
     protected override string ScriptName => "0005_identity";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000006_PlatformSettings")]
+public sealed class PlatformSettingsMigration : SqlMigration
+{
+    protected override string ScriptName => "0006_platform_settings";
+}

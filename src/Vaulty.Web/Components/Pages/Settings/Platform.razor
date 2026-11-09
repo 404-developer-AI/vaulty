@@ -1,0 +1,125 @@
+@page "/settings/platform"
+@attribute [Authorize(Policy = "perm:" + Permissions.SettingsManage)]
+@using Vaulty.Core.Abstractions
+@using Vaulty.Infrastructure.Platform
+@using Vaulty.Infrastructure.Storage
+@inject PlatformSettings Settings
+@inject ISecretStore Secrets
+@inject IMailSender Mail
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ISnackbar Snackbar
+
+<PageTitle>Settings · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">Settings</h1>
+<p class="vy-page-lede">E-mail for alerts and digests, how times are shown, and the defaults for new webhooks.</p>
+
+<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+    <MudText Typo="Typo.h6">E-mail (SMTP)</MudText>
+    <MudGrid Spacing="2">
+        <MudItem xs="12" md="4"><MudTextField @bind-Value="_host" Label="Server" /></MudItem>
+        <MudItem xs="6" md="2"><MudNumericField @bind-Value="_port" Label="Port" /></MudItem>
+        <MudItem xs="6" md="2">
+            <MudSelect T="string" @bind-Value="_security" Label="Security">
+                <MudSelectItem Value="@("starttls")">STARTTLS</MudSelectItem>
+                <MudSelectItem Value="@("ssl")">TLS</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" md="4"><MudTextField @bind-Value="_userName" Label="User name" /></MudItem>
+        <MudItem xs="12" md="4"><MudTextField @bind-Value="_password" Label="Password" InputType="InputType.Password" HelperText="Leave empty to keep the stored password" /></MudItem>
+        <MudItem xs="12" md="4"><MudTextField @bind-Value="_fromAddress" Label="Sender address" /></MudItem>
+        <MudItem xs="12" md="4"><MudTextField @bind-Value="_fromName" Label="Sender name" /></MudItem>
+    </MudGrid>
+    <MudButton Class="mt-3" Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveSmtpAsync">Save</MudButton>
+    <MudTextField Class="mt-3" @bind-Value="_testTo" Label="Send a test message to" />
+    <MudButton Class="mt-2" Variant="Variant.Outlined" OnClick="TestMailAsync">Send test message</MudButton>
+</MudPaper>
+
+<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+    <MudText Typo="Typo.h6">Display and webhooks</MudText>
+    <MudGrid Spacing="2">
+        <MudItem xs="12" md="4"><MudTextField @bind-Value="_timeZone" Label="Time zone" HelperText="For example Europe/Brussels" /></MudItem>
+        <MudItem xs="12" md="4"><MudNumericField @bind-Value="_webhookTimeout" Label="Webhook timeout (seconds)" Min="1" Max="60" /></MudItem>
+    </MudGrid>
+    <MudButton Class="mt-3" Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveDisplayAsync">Save</MudButton>
+</MudPaper>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private string? _host;
+    private int _port = 587;
+    private string _security = "starttls";
+    private string? _userName;
+    private string? _password;
+    private string? _fromAddress;
+    private string _fromName = "Vaulty";
+    private string? _testTo;
+    private string _timeZone = DisplaySettings.Default.TimeZone;
+    private int _webhookTimeout = DisplaySettings.Default.WebhookTimeoutSeconds;
+    private string _actor = "user";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _actor = $"user:{VaultyWebSetup.UserId((await AuthenticationState).User)}";
+        if (await Settings.GetAsync<SmtpSettings>(SmtpSettings.SettingKey) is { } smtp)
+        {
+            (_host, _port, _security, _userName, _fromAddress, _fromName) = (smtp.Host, smtp.Port, smtp.Security, smtp.UserName, smtp.FromAddress, smtp.FromName);
+        }
+        var display = await Settings.GetAsync<DisplaySettings>(DisplaySettings.SettingKey) ?? DisplaySettings.Default;
+        (_timeZone, _webhookTimeout) = (display.TimeZone, display.WebhookTimeoutSeconds);
+    }
+
+    private async Task<bool> ConfirmedAsync()
+    {
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString("/settings/platform")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task SaveSmtpAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        if (string.IsNullOrWhiteSpace(_host) || string.IsNullOrWhiteSpace(_fromAddress))
+        {
+            Snackbar.Add("Enter the server and the sender address.", Severity.Warning);
+            return;
+        }
+        await Settings.SetAsync(SmtpSettings.SettingKey, new SmtpSettings(_host.Trim(), _port, _security, _userName?.Trim(), _fromAddress.Trim(), _fromName), _actor);
+        if (!string.IsNullOrEmpty(_password))
+        {
+            await Secrets.SetAsync(SmtpSettings.PasswordSecret, System.Text.Encoding.UTF8.GetBytes(_password), _actor);
+            _password = null;
+        }
+        Snackbar.Add("SMTP settings saved.", Severity.Success);
+    }
+
+    private async Task TestMailAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_testTo)) return;
+        try
+        {
+            await Mail.SendAsync(new MailMessage(_testTo.Trim(), "Vaulty test message",
+                "This message confirms that Vaulty can send e-mail for alerts and digests.", null));
+            Snackbar.Add("Test message sent.", Severity.Success);
+        }
+        catch (Exception ex) when (ex is MailKit.ServiceNotConnectedException or MailKit.Security.AuthenticationException or MailKit.Net.Smtp.SmtpCommandException
+                                       or MailKit.Net.Smtp.SmtpProtocolException or System.Net.Sockets.SocketException or InvalidOperationException)
+        {
+            Snackbar.Add($"The test message could not be sent: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task SaveDisplayAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        if (!TimeZoneInfo.TryFindSystemTimeZoneById(_timeZone, out _))
+        {
+            Snackbar.Add("Unknown time zone.", Severity.Warning);
+            return;
+        }
+        await Settings.SetAsync(DisplaySettings.SettingKey, DisplaySettings.Default with { TimeZone = _timeZone, WebhookTimeoutSeconds = _webhookTimeout }, _actor);
+        Snackbar.Add("Saved.", Severity.Success);
+    }
+}

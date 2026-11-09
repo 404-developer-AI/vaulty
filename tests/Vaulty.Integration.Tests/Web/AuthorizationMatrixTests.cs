@@ -30,6 +30,8 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/"] = null,
         ["/settings/users"] = VaultyPolicies.Permission(Permissions.UsersManage),
         ["/settings/audit"] = VaultyPolicies.Permission(Permissions.AuditView),
+        ["/settings/storage"] = VaultyPolicies.Permission(Permissions.StorageManage),
+        ["/settings/platform"] = VaultyPolicies.Permission(Permissions.SettingsManage),
     };
 
     [Fact]

@@ -13,6 +13,8 @@
     <PackageReference Include="Dapper" />
     <PackageReference Include="Serilog" />
     <PackageReference Include="AWSSDK.S3" />
+    <PackageReference Include="AWSSDK.IdentityManagement" />
+    <PackageReference Include="MailKit" />
   </ItemGroup>
 
   <ItemGroup>

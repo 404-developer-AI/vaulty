@@ -1,0 +1,262 @@
+@page "/settings/storage"
+@attribute [Authorize(Policy = "perm:" + Permissions.StorageManage)]
+@using Vaulty.Core.Abstractions
+@using Vaulty.Infrastructure.Storage
+@inject PlatformSettings Settings
+@inject StorageSetupAssistant Assistant
+@inject ISecretStore Secrets
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ISnackbar Snackbar
+
+<PageTitle>Storage · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">Storage</h1>
+<p class="vy-page-lede">
+    Backups are stored immutably in the EU: every object is locked until its retention ends, and nobody, including Vaulty and the
+    storage provider, can delete it earlier. Keys are encrypted with the software key wrapper (the key encryption key is derived from
+    this server's master key).
+</p>
+
+@if (_settings is { } current)
+{
+    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+        <MudText Typo="Typo.h6">Current configuration</MudText>
+        <MudSimpleTable Dense="true" Elevation="0">
+            <tbody>
+                <tr><td>Region</td><td>@current.Region (@(WasabiRegions.Eu.GetValueOrDefault(current.Region) ?? "unknown"))</td></tr>
+                <tr><td>Backup bucket</td><td>@current.BackupBucket</td></tr>
+                <tr><td>Export bucket</td><td>@current.ExportBucket</td></tr>
+                <tr><td>Configured with</td><td>@(current.Mode == "assistant" ? "Setup assistant" : "Existing buckets and keys")</td></tr>
+                <tr><td>Key protection</td><td>Software key wrapper</td></tr>
+                @foreach (var (role, identity) in current.Identities)
+                {
+                    <tr><td>@RoleLabel(role)</td><td>@identity.AccessKeyId @(identity.UserName is { } u ? $"({u})" : "")</td></tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+        <div class="mt-3">
+            @if (current.Ready)
+            {
+                <span class="vy-status protected">Connection test passed @current.LastTest!.TestedAt.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) UTC</span>
+            }
+            else
+            {
+                <span class="vy-status failed">Backups cannot be planned until every check passes</span>
+            }
+            <MudButton Class="ml-2" Variant="Variant.Outlined" Disabled="_busy" OnClick="TestAsync">Test the connection</MudButton>
+        </div>
+        @if (current.LastTest is { } test)
+        {
+            <MudSimpleTable Dense="true" Elevation="0" Class="mt-3">
+                <thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead>
+                <tbody>
+                    @foreach (var check in test.Checks)
+                    {
+                        <tr>
+                            <td>@check.Name</td>
+                            <td><span class="vy-status @(check.Passed ? "protected" : "failed")">@(check.Passed ? "Passed" : "Failed")</span></td>
+                            <td>@check.Detail</td>
+                        </tr>
+                    }
+                    <tr><td>Throttling responses during the test</td><td colspan="2">@test.ThrottledResponses</td></tr>
+                </tbody>
+            </MudSimpleTable>
+        }
+    </MudPaper>
+}
+
+<MudTabs Elevation="0" Outlined="true" Class="mb-4">
+    <MudTabPanel Text="Setup assistant">
+        <div class="pa-4">
+            <p class="vy-muted">
+                Enter an access key of the storage account with administrative rights. Vaulty creates the backup bucket with Object Lock,
+                the export bucket, and three identities with only the rights they need. The administrative key is used once and not stored;
+                delete or rotate it at the provider afterwards.
+            </p>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="3">
+                    <MudSelect T="string" @bind-Value="_region" Label="Region">
+                        @foreach (var (regionCode, city) in WasabiRegions.Eu)
+                        {
+                            <MudSelectItem Value="@regionCode">@city (@regionCode)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="3"><MudTextField @bind-Value="_prefix" Label="Bucket prefix" HelperText="Buckets: prefix-backup and prefix-export" /></MudItem>
+                <MudItem xs="12" md="3"><MudTextField @bind-Value="_adminKeyId" Label="Administrative access key" /></MudItem>
+                <MudItem xs="12" md="3"><MudTextField @bind-Value="_adminSecret" Label="Administrative secret key" InputType="InputType.Password" /></MudItem>
+            </MudGrid>
+            <MudButton Class="mt-3" Variant="Variant.Filled" Color="Color.Primary" Disabled="_busy" OnClick="RunAssistantAsync">Create buckets and identities</MudButton>
+            @foreach (var step in _steps)
+            {
+                <div class="mt-1"><span class="vy-status protected">Done</span> @step.Description</div>
+            }
+        </div>
+    </MudTabPanel>
+    <MudTabPanel Text="Existing buckets">
+        <div class="pa-4">
+            <p class="vy-muted">Enter buckets you created yourself (the backup bucket with Object Lock in compliance mode and versioning) and one key per identity.</p>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="4">
+                    <MudSelect T="string" @bind-Value="_region" Label="Region">
+                        @foreach (var (regionCode, city) in WasabiRegions.Eu)
+                        {
+                            <MudSelectItem Value="@regionCode">@city (@regionCode)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="4"><MudTextField @bind-Value="_backupBucket" Label="Backup bucket" /></MudItem>
+                <MudItem xs="12" md="4"><MudTextField @bind-Value="_exportBucket" Label="Export bucket" /></MudItem>
+                @foreach (var role in Enum.GetValues<StorageRole>())
+                {
+                    <MudItem xs="12" md="6"><MudTextField @bind-Value="_manualIds[role]" Label="@($"{RoleLabel(role)}: access key")" /></MudItem>
+                    <MudItem xs="12" md="6"><MudTextField @bind-Value="_manualSecrets[role]" Label="@($"{RoleLabel(role)}: secret key")" InputType="InputType.Password" /></MudItem>
+                }
+            </MudGrid>
+            <MudButton Class="mt-3" Variant="Variant.Filled" Color="Color.Primary" Disabled="_busy" OnClick="SaveManualAsync">Save</MudButton>
+        </div>
+    </MudTabPanel>
+    <MudTabPanel Text="Rotate a key">
+        <div class="pa-4">
+            <p class="vy-muted">Creates a new key for one identity with the administrative key, stores it, and deletes the old one. Test the connection afterwards.</p>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="3">
+                    <MudSelect T="StorageRole" @bind-Value="_rotateRole" Label="Identity">
+                        @foreach (var role in Enum.GetValues<StorageRole>())
+                        {
+                            <MudSelectItem Value="@role">@RoleLabel(role)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="4"><MudTextField @bind-Value="_adminKeyId" Label="Administrative access key" /></MudItem>
+                <MudItem xs="12" md="5"><MudTextField @bind-Value="_adminSecret" Label="Administrative secret key" InputType="InputType.Password" /></MudItem>
+            </MudGrid>
+            <MudButton Class="mt-3" Variant="Variant.Outlined" Disabled="_busy" OnClick="RotateAsync">Rotate</MudButton>
+        </div>
+    </MudTabPanel>
+</MudTabs>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private StorageSettings? _settings;
+    private string _region = "eu-central-1";
+    private string? _prefix;
+    private string? _adminKeyId;
+    private string? _adminSecret;
+    private string? _backupBucket;
+    private string? _exportBucket;
+    private StorageRole _rotateRole = StorageRole.Worker;
+    private readonly Dictionary<StorageRole, string?> _manualIds = Enum.GetValues<StorageRole>().ToDictionary(r => r, _ => (string?)null);
+    private readonly Dictionary<StorageRole, string?> _manualSecrets = Enum.GetValues<StorageRole>().ToDictionary(r => r, _ => (string?)null);
+    private IReadOnlyList<SetupStep> _steps = [];
+    private bool _busy;
+    private string _actor = "user";
+
+    private static string RoleLabel(StorageRole role) => role switch
+    {
+        StorageRole.Api => "Web and API",
+        StorageRole.Worker => "Workers",
+        _ => "Garbage collection",
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _actor = $"user:{VaultyWebSetup.UserId((await AuthenticationState).User)}";
+        _settings = await Settings.GetAsync<StorageSettings>(StorageSettings.SettingKey);
+        if (_settings is not null) _region = _settings.Region;
+    }
+
+    private async Task<bool> ConfirmedAsync()
+    {
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString("/settings/storage")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task RunAssistantAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        _busy = true;
+        using var adminSecret = new Secret("storage.admin", 0, System.Text.Encoding.UTF8.GetBytes(_adminSecret ?? ""));
+        try
+        {
+            _steps = await Assistant.RunAsync(_region, (_prefix ?? "").Trim(), (_adminKeyId ?? "").Trim(), adminSecret, _actor);
+            Snackbar.Add("Buckets and identities created. Delete or rotate the administrative key at the provider, then test the connection.", Severity.Success);
+            _settings = await Settings.GetAsync<StorageSettings>(StorageSettings.SettingKey);
+        }
+        catch (StorageSetupException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _adminSecret = null;
+            _busy = false;
+        }
+    }
+
+    private async Task SaveManualAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        _busy = true;
+        var keys = Enum.GetValues<StorageRole>().ToDictionary(r => r,
+            r => ((_manualIds[r] ?? "").Trim(), new Secret("storage.manual", 0, System.Text.Encoding.UTF8.GetBytes(_manualSecrets[r] ?? ""))));
+        try
+        {
+            await Assistant.SaveManualAsync(_region, (_backupBucket ?? "").Trim(), (_exportBucket ?? "").Trim(), keys, _actor);
+            _settings = await Settings.GetAsync<StorageSettings>(StorageSettings.SettingKey);
+            Snackbar.Add("Saved. Test the connection next.", Severity.Success);
+        }
+        catch (StorageSetupException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            foreach (var (_, secret) in keys.Values) secret.Dispose();
+            foreach (var role in Enum.GetValues<StorageRole>()) _manualSecrets[role] = null;
+            _busy = false;
+        }
+    }
+
+    private async Task RotateAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        _busy = true;
+        using var adminSecret = new Secret("storage.admin", 0, System.Text.Encoding.UTF8.GetBytes(_adminSecret ?? ""));
+        try
+        {
+            await Assistant.RotateAsync(_rotateRole, (_adminKeyId ?? "").Trim(), adminSecret, _actor);
+            _settings = await Settings.GetAsync<StorageSettings>(StorageSettings.SettingKey);
+            Snackbar.Add($"New key for {RoleLabel(_rotateRole)} stored; the old key was deleted. Test the connection.", Severity.Success);
+        }
+        catch (Exception ex) when (ex is StorageSetupException or Amazon.Runtime.AmazonServiceException)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _adminSecret = null;
+            _busy = false;
+        }
+    }
+
+    private async Task TestAsync()
+    {
+        if (_settings is null) return;
+        _busy = true;
+        try
+        {
+            using var inspector = await S3StorageInspector.CreateAsync(_settings, Secrets, Clock);
+            var result = await new StorageConnectionTest(Clock).RunAsync(_settings, inspector);
+            _settings = _settings with { LastTest = result };
+            await Settings.SetAsync(StorageSettings.SettingKey, _settings, _actor);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

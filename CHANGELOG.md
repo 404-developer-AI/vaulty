@@ -50,3 +50,8 @@ All notable changes to this project are documented in this file. The format foll
   sensitive actions, sessions of 8 hours with a 30-minute idle timeout, permission-based authorization on every page and
   endpoint, roles that allow restores or administration only for users with a second factor, users and roles page,
   audit log page, security headers with a strict Content Security Policy, systemd notification.
+- Settings → Storage: a setup assistant that creates the backup bucket (Object Lock and versioning), the export bucket
+  (one-day lifecycle) and three least-privilege identities with their keys, or entry of existing buckets and keys; key
+  rotation; a connection test with six separate checks that must all pass before backups can be planned.
+- Settings: SMTP with a test message, display time zone and webhook defaults. Settings never contain secrets; keys and
+  passwords are in the encrypted secrets store.
