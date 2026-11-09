@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />
+    <ProjectReference Include="../Vaulty.Repository/Vaulty.Repository.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -11,6 +12,7 @@
     <PackageReference Include="EFCore.NamingConventions" />
     <PackageReference Include="Dapper" />
     <PackageReference Include="Serilog" />
+    <PackageReference Include="AWSSDK.S3" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,0 +1,59 @@
+# Nightly: fuzzing of the repository format parsers with libFuzzer (SharpFuzz). Synthetic inputs only; public logs.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [manifest, snapshot, index, pack, blob, chunk]
+    env:
+      LIBFUZZER_DOTNET_VERSION: v2025.05.02.0904
+      LIBFUZZER_DOTNET_SHA256: c2c2a90d94c409a4af339a0d4f244e0442c5a5d249be0f1252ba07871f285958
+      SHARPFUZZ_VERSION: 2.3.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: libFuzzer driver and SharpFuzz instrumentation tool
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' --output "$RUNNER_TEMP/libfuzzer-dotnet" \
+            "https://github.com/Metalnem/libfuzzer-dotnet/releases/download/${LIBFUZZER_DOTNET_VERSION}/libfuzzer-dotnet-ubuntu"
+          echo "${LIBFUZZER_DOTNET_SHA256}  $RUNNER_TEMP/libfuzzer-dotnet" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/libfuzzer-dotnet"
+          dotnet tool install --tool-path "$RUNNER_TEMP/tools" SharpFuzz.CommandLine --version "$SHARPFUZZ_VERSION"
+
+      - name: Build and instrument
+        run: |
+          dotnet publish tools/Vaulty.Fuzz -c Release -o "$RUNNER_TEMP/fuzz"
+          "$RUNNER_TEMP/tools/sharpfuzz" "$RUNNER_TEMP/fuzz/Vaulty.Repository.dll"
+
+      - name: Seed corpus from the golden repository
+        run: |
+          mkdir -p "$RUNNER_TEMP/corpus"
+          find tests/Vaulty.Repository.Tests/Golden -type f -exec cp {} "$RUNNER_TEMP/corpus/" \;
+
+      - name: Fuzz for 15 minutes
+        run: |
+          "$RUNNER_TEMP/libfuzzer-dotnet" --target_path="$RUNNER_TEMP/fuzz/Vaulty.Fuzz" --target_arg=${{ matrix.target }} \
+            -max_total_time=900 -max_len=1048576 -timeout=10 "$RUNNER_TEMP/corpus"

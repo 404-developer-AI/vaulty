@@ -14,3 +14,4 @@ deploy/install/bin/* text eol=lf
 *.timer text eol=lf
 *.target text eol=lf
 *.template text eol=lf
+tests/**/Golden/** binary

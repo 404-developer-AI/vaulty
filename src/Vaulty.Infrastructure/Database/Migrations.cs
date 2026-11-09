@@ -112,3 +112,10 @@ public sealed class DataProtectionMigration : SqlMigration
 {
     protected override string ScriptName => "0002_data_protection";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000003_TenantKeysApi")]
+public sealed class TenantKeysApiMigration : SqlMigration
+{
+    protected override string ScriptName => "0003_tenant_keys_api";
+}

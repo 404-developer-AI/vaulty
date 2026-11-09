@@ -25,3 +25,12 @@ All notable changes to this project are documented in this file. The format foll
 - Secrets store in PostgreSQL bound to name, version and host, with versions, pruning and a short cache; master key
   rekey that re-encrypts secrets, the session key ring and wrapped tenant keys in one transaction; session key ring
   stored sealed in the database; secrets are redacted in logs and JSON.
+- Repository engine (format v1, `docs/format/repository-v1.md`): FastCDC chunking, keyed BLAKE3 chunk ids, zstd,
+  AES-256-GCM per chunk with deterministic nonces, content-addressed packs with index files, sealed manifests and
+  snapshot roots with a Merkle root, an index rebuildable from object storage alone; golden files of format v1.
+- Object storage: S3 adapter with Object Lock (compliance mode), Content-MD5 and ETag verification, its own retries
+  that honour Retry-After, version-aware deletes; in-memory store with simulated Object Lock for tests.
+- Tenant data keys stored wrapped in the database and as immutable key files; daily audit chain anchors in object
+  storage.
+- Tests: property-based tests of chunker, codec and parsers, a 10,000-item roundtrip, 50 crash-injection runs, S3
+  contract tests against WireMock; nightly fuzzing of the parsers with libFuzzer.

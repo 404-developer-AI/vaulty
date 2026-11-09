@@ -24,6 +24,7 @@
     <Project Path="tests/Vaulty.Repository.Tests/Vaulty.Repository.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
+    <Project Path="tools/Vaulty.Fuzz/Vaulty.Fuzz.csproj" />
     <Project Path="tools/Vaulty.TestData/Vaulty.TestData.csproj" />
   </Folder>
 </Solution>
