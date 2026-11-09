@@ -16,6 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />  </ItemGroup>
+    <ProjectReference Include="../../src/Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />
+  </ItemGroup>
 
 </Project>

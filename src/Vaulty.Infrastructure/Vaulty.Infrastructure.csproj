@@ -1,6 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />  </ItemGroup>
+    <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="EFCore.NamingConventions" />
+    <PackageReference Include="Dapper" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Database/Sql/*.sql" LogicalName="Vaulty.Sql.%(Filename).sql" />
+  </ItemGroup>
 
 </Project>

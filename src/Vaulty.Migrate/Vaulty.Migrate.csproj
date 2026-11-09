@@ -7,4 +7,9 @@
   <ItemGroup>
     <ProjectReference Include="../Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />  </ItemGroup>
 
+  <ItemGroup>
+    <!-- Design-time services for `dotnet ef migrations script` only; not shipped. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" PrivateAssets="all" />
+  </ItemGroup>
+
 </Project>
