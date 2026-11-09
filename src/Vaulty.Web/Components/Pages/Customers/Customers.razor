@@ -1,0 +1,87 @@
+@page "/customers"
+@attribute [Authorize(Policy = "perm:" + Permissions.CustomersView)]
+@using Vaulty.Infrastructure.Tenants
+@inject CustomerService CustomerService
+@inject CurrentAccess Current
+@inject ISnackbar Snackbar
+
+<PageTitle>Customers · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">Customers</h1>
+<p class="vy-page-lede">Each customer has one or more Microsoft 365 tenants. Open a customer to connect a tenant.</p>
+
+@if (_canManage)
+{
+    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+        <MudText Typo="Typo.h6">Add a customer</MudText>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" md="2"><MudTextField @bind-Value="_code" Label="Customer code" /></MudItem>
+            <MudItem xs="12" md="5"><MudTextField @bind-Value="_name" Label="Customer name" /></MudItem>
+            <MudItem xs="12" md="3"><MudTextField @bind-Value="_tags" Label="Tags" HelperText="Separated by commas" /></MudItem>
+            <MudItem xs="12" md="2" Class="d-flex align-center"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="AddAsync">Add customer</MudButton></MudItem>
+        </MudGrid>
+    </MudPaper>
+}
+
+<MudTable Items="_customers" Hover="true" Elevation="0" Outlined="true" Dense="true">
+    <HeaderContent>
+        <MudTh>Code</MudTh>
+        <MudTh>Customer</MudTh>
+        <MudTh>Tags</MudTh>
+        <MudTh>Tenants</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>@context.Code</MudTd>
+        <MudTd><MudLink Href="@($"/customers/{context.Id}")">@context.Name</MudLink></MudTd>
+        <MudTd>
+            @foreach (var tag in context.Tags)
+            {
+                <MudChip T="string" Size="Size.Small">@tag</MudChip>
+            }
+        </MudTd>
+        <MudTd>@context.Tenants</MudTd>
+    </RowTemplate>
+</MudTable>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private IReadOnlyList<CustomerRow> _customers = [];
+    private bool _canManage;
+    private string? _code;
+    private string? _name;
+    private string? _tags;
+    private Guid _organizationId;
+    private Guid _userId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = (await AuthenticationState).User;
+        _organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
+        _userId = VaultyWebSetup.UserId(user) ?? Guid.Empty;
+        var access = await Current.GetAsync(user);
+        _canManage = access.Allows(Permissions.CustomersManage);
+        _customers = await Visible(access);
+    }
+
+    private async Task<IReadOnlyList<CustomerRow>> Visible(Vaulty.Infrastructure.Access.UserAccess access)
+    {
+        var all = await CustomerService.ListAsync(_organizationId);
+        var scope = access.Customers(Permissions.CustomersView);
+        return scope is null ? all : all.Where(c => scope.Contains(c.Id)).ToList();
+    }
+
+    private async Task AddAsync()
+    {
+        try
+        {
+            await CustomerService.CreateAsync(_organizationId, _userId, _code ?? "", _name ?? "", (_tags ?? "").Split(','));
+            _code = _name = _tags = null;
+            _customers = await Visible(await Current.GetAsync((await AuthenticationState).User));
+        }
+        catch (TenantException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+}

@@ -1,0 +1,222 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Dapper;
+using Microsoft.Extensions.Time.Testing;
+using Microsoft.Identity.Client;
+using Npgsql;
+using Vaulty.Core.Crypto;
+using Vaulty.Graph;
+using Vaulty.Graph.Auth;
+using Vaulty.Graph.Onboarding;
+using Vaulty.Infrastructure.Access;
+using Vaulty.Infrastructure.Database;
+using Vaulty.Infrastructure.Secrets;
+using Vaulty.Infrastructure.Tenants;
+using Vaulty.Integration.Tests.Database;
+using WireMock;
+using WireMock.RequestBuilders;
+using WireMock.ResponseBuilders;
+using WireMock.Server;
+using WireMock.Types;
+using WireMock.Util;
+
+namespace Vaulty.Integration.Tests.Tenants;
+
+/// <summary>A token provider whose behaviour the test sets: roles, or an exception.</summary>
+internal sealed class ScriptedTokens : IGraphTokenProvider
+{
+    public Func<GraphToken> Next { get; set; } = () => Token(GraphPermissions.All.Select(p => p.Name).ToArray());
+
+    public static GraphToken Token(params string[] roles)
+    {
+        static string B64(string s) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(s)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return new GraphToken($"{B64("{}")}.{B64(JsonSerializer.Serialize(new { roles }))}.x", DateTimeOffset.UtcNow.AddHours(1));
+    }
+
+    public Task<GraphToken> GetTokenAsync(Guid tenantId, bool forceRefresh = false, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Next());
+}
+
+public sealed class TenantTests(PostgresDatabase db) : IClassFixture<PostgresDatabase>, IDisposable
+{
+    private readonly WireMockServer _graph = WireMockServer.Start();
+
+    private async Task<(Guid Org, Guid Customer, Guid Admin, NpgsqlDataSource Api, PostgresSecretStore Secrets)> OrganizationAsync()
+    {
+        var api = VaultyDataSource.Create(db.Api);
+        var adminId = Guid.NewGuid();
+        var access = new AccessService(api);
+        var org = await new OrganizationSetup(api, access).CreateOrganizationAsync("Org " + adminId, adminId);
+        var customer = await new CustomerService(api).CreateAsync(org, adminId, "C" + adminId.ToString("N")[..6], "Contoso", ["gold"]);
+        var secrets = new PostgresSecretStore(api, new SecretCipher(RandomNumberGenerator.GetBytes(32), "host-a"), TimeProvider.System, TimeSpan.Zero);
+        return (org, customer, adminId, api, secrets);
+    }
+
+    private TenantService Tenants(NpgsqlDataSource api, PostgresSecretStore secrets, IGraphTokenProvider? tokens = null) =>
+        new(api, secrets, new DedicatedAppCredentialProvider(api, secrets, TimeProvider.System),
+            new GraphServices(tokens ?? new ScriptedTokens(), graphBaseUri: new Uri($"{_graph.Url}/v1.0/")), TimeProvider.System);
+
+    [PostgresFact]
+    public async Task Connecting_stores_the_certificate_and_refuses_a_tenant_connected_elsewhere()
+    {
+        var (org, customer, admin, api, secrets) = await OrganizationAsync();
+        var tenants = Tenants(api, secrets);
+        var pending = await tenants.BeginConnectAsync(org, admin, customer, "Contoso tenant");
+        Assert.Contains("New-MgApplication", pending.Script, StringComparison.Ordinal);
+        Assert.DoesNotContain("PRIVATE KEY", pending.Script, StringComparison.Ordinal);
+        var entra = Guid.NewGuid();
+        var tenantId = await tenants.CompleteConnectAsync(org, admin, pending.Id, entra, Guid.NewGuid());
+
+        using (var certificate = await secrets.GetAsync(TenantService.CertificateSecret(tenantId)))
+        using (var x509 = TenantCertificate.Load(certificate!.Reveal()))
+        {
+            Assert.True(x509.HasPrivateKey);
+            Assert.Equal(pending.CertificateThumbprint, x509.Thumbprint);
+        }
+        var row = Assert.Single(await tenants.ListAsync(org, customer));
+        Assert.Equal("pending", row.ConsentState);
+
+        // Completing twice or connecting the same Microsoft 365 tenant from another organization is refused.
+        await Assert.ThrowsAsync<TenantException>(() => tenants.CompleteConnectAsync(org, admin, pending.Id, entra, Guid.NewGuid()));
+        var (org2, customer2, admin2, api2, secrets2) = await OrganizationAsync();
+        var other = Tenants(api2, secrets2);
+        var pending2 = await other.BeginConnectAsync(org2, admin2, customer2, "Same tenant");
+        var refused = await Assert.ThrowsAsync<TenantException>(() => other.CompleteConnectAsync(org2, admin2, pending2.Id, entra, Guid.NewGuid()));
+        Assert.Contains("already connected", refused.Message, StringComparison.Ordinal);
+    }
+
+    [PostgresFact]
+    public async Task Lost_consent_is_detected_recorded_and_audited_and_recovers()
+    {
+        var (org, customer, admin, api, secrets) = await OrganizationAsync();
+        var tenants = Tenants(api, secrets);
+        var pending = await tenants.BeginConnectAsync(org, admin, customer, "Health tenant");
+        var tenantId = await tenants.CompleteConnectAsync(org, admin, pending.Id, Guid.NewGuid(), Guid.NewGuid());
+        var tokens = new ScriptedTokens();
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var health = new TenantHealthCheck(api, tokens, clock);
+
+        Assert.Equal(HealthOutcome.Healthy, (await health.CheckAsync(org, tenantId)).Outcome);
+        Assert.Equal("granted", Assert.Single(await tenants.ListAsync(org, customer)).ConsentState);
+
+        // The administrator disables the app in Entra.
+        tokens.Next = () => throw new MsalServiceException("unauthorized_client",
+            "AADSTS7000112: Application 'x' is disabled.");
+        var lost = await health.CheckAsync(org, tenantId);
+        Assert.Equal(HealthOutcome.ConsentLost, lost.Outcome);
+        Assert.True(lost.BecameLost);
+        Assert.Equal("lost", Assert.Single(await tenants.ListAsync(org, customer)).ConsentState);
+        Assert.False((await health.CheckAsync(org, tenantId)).BecameLost); // alerted once, not every hour
+
+        // A network failure does not flip the state either way.
+        tokens.Next = () => throw new HttpRequestException("no route");
+        Assert.Equal(HealthOutcome.Unknown, (await health.CheckAsync(org, tenantId)).Outcome);
+        Assert.Equal("lost", Assert.Single(await tenants.ListAsync(org, customer)).ConsentState);
+
+        // Permissions removed is lost too; restored is granted again.
+        tokens.Next = () => ScriptedTokens.Token("User.Read.All");
+        Assert.Equal(HealthOutcome.ConsentLost, (await health.CheckAsync(org, tenantId)).Outcome);
+        tokens.Next = () => ScriptedTokens.Token(GraphPermissions.All.Select(p => p.Name).ToArray());
+        Assert.Equal(HealthOutcome.Healthy, (await health.CheckAsync(org, tenantId)).Outcome);
+
+        // An expired certificate is lost without asking Microsoft.
+        clock.Advance(TimeSpan.FromDays(800));
+        Assert.Equal(HealthOutcome.ConsentLost, (await health.CheckAsync(org, tenantId)).Outcome);
+
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        var actions = (await owner.QueryAsync<string>(
+            "SELECT action FROM vaulty.audit_events WHERE organization_id = @org AND target = @target ORDER BY seq",
+            new { org, target = $"tenant:{tenantId}" })).ToList();
+        Assert.Equal(2, actions.Count(a => a == "tenant.consent_lost"));
+        Assert.Contains("tenant.consent_restored", actions);
+        Assert.Contains("tenant.connected", actions);
+    }
+
+    [PostgresFact]
+    public async Task Discovery_is_idempotent_and_marks_vanished_objects_as_source_deleted()
+    {
+        var (org, customer, admin, api, secrets) = await OrganizationAsync();
+        var tenants = Tenants(api, secrets);
+        var pending = await tenants.BeginConnectAsync(org, admin, customer, "Discovery tenant");
+        var tenantId = await tenants.CompleteConnectAsync(org, admin, pending.Id, Guid.NewGuid(), Guid.NewGuid());
+        var users = new List<string> { "u1", "u2", "u3", "room1" };
+        MockDirectory(() => users);
+        var graph = new GraphClient(GraphPipeline.Create(new ScriptedTokens(), new Graph.Http.GraphThrottle()), new Uri($"{_graph.Url}/v1.0/"));
+        var discovery = new TenantDiscovery(api, graph, TimeProvider.System);
+
+        var first = await discovery.ApplyAsync(org, tenantId, await discovery.FindAsync(tenantId));
+        Assert.Equal((2, 1, 1, 2), (first.Mailboxes, first.SharedMailboxes, first.ResourceMailboxes, first.Drives));
+        var objects = await tenants.ProtectedObjectsAsync(org, tenantId);
+        Assert.Equal(7, objects.Count); // 4 mailboxes (u2 shared), 2 drives, 1 archive
+        Assert.Contains(objects, o => o.SubKind == "shared");
+        Assert.Single(objects, o => o.State == "not_protected"); // the archive mailbox of u1
+
+        // Second run: nothing changes.
+        await discovery.ApplyAsync(org, tenantId, await discovery.FindAsync(tenantId));
+        var again = await tenants.ProtectedObjectsAsync(org, tenantId);
+        Assert.Equal(objects.Select(o => (o.Id, o.State)), again.Select(o => (o.Id, o.State)));
+
+        // u3 leaves the company: its mailbox and OneDrive become source deleted, with a date.
+        users.Remove("u3");
+        var third = await discovery.ApplyAsync(org, tenantId, await discovery.FindAsync(tenantId));
+        Assert.Equal(2, third.SourceDeleted);
+        var afterDelete = await tenants.ProtectedObjectsAsync(org, tenantId);
+        Assert.Equal(2, afterDelete.Count(o => o.State == "source_deleted" && o.SourceDeletedAt is not null));
+        Assert.Equal(7, afterDelete.Count); // kept, not removed
+
+        // u3 is restored in Microsoft 365: active again.
+        users.Add("u3");
+        var fourth = await discovery.ApplyAsync(org, tenantId, await discovery.FindAsync(tenantId));
+        Assert.Equal(2, fourth.Reappeared);
+        Assert.DoesNotContain(await tenants.ProtectedObjectsAsync(org, tenantId), o => o.State == "source_deleted");
+    }
+
+    /// <summary>Users and per-user batch answers: u2 is a shared mailbox (no OneDrive), room1 a room, u1 has an archive.</summary>
+    private void MockDirectory(Func<List<string>> users)
+    {
+        _graph.Given(Request.Create().WithPath("/v1.0/users").UsingGet()).RespondWith(Response.Create().WithCallback(_ => Json(new JsonObject
+        {
+            ["value"] = new JsonArray(users().Select(u => (JsonNode)new JsonObject
+            {
+                ["id"] = u, ["displayName"] = u.ToUpperInvariant(), ["userPrincipalName"] = $"{u}@contoso.example",
+                ["mail"] = $"{u}@contoso.example", ["userType"] = "Member",
+            }).ToArray()),
+        })));
+        _graph.Given(Request.Create().WithPath("/v1.0/$batch").UsingPost()).RespondWith(Response.Create().WithCallback(request =>
+        {
+            var body = JsonNode.Parse(request.Body!)!["requests"]!.AsArray();
+            var responses = new JsonArray();
+            foreach (var item in body)
+            {
+                var id = item!["id"]!.GetValue<string>();
+                var user = id.Split('|')[0];
+                var what = id.Split('|')[1];
+                JsonObject answer = what switch
+                {
+                    "purpose" => Ok(new JsonObject { ["userPurpose"] = user == "u2" ? "shared" : user == "room1" ? "room" : "user" }),
+                    "exchange" => Ok(user == "u1"
+                        ? new JsonObject { ["primaryMailboxId"] = $"MBX:{user}", ["archiveMailboxId"] = $"MBX:{user}-archive" }
+                        : new JsonObject { ["primaryMailboxId"] = $"MBX:{user}" }),
+                    _ => user is "u2" or "room1"
+                        ? new JsonObject { ["status"] = 404, ["body"] = new JsonObject { ["error"] = new JsonObject { ["code"] = "ResourceNotFound" } } }
+                        : Ok(new JsonObject { ["id"] = $"drive-{user}", ["driveType"] = "business" }),
+                };
+                answer["id"] = id;
+                responses.Add(answer);
+            }
+            return Json(new JsonObject { ["responses"] = responses });
+        }));
+
+        static JsonObject Ok(JsonObject body) => new() { ["status"] = 200, ["body"] = body };
+    }
+
+    private static ResponseMessage Json(JsonNode node) => new()
+    {
+        StatusCode = 200,
+        Headers = new Dictionary<string, WireMockList<string>> { ["Content-Type"] = new("application/json") },
+        BodyData = new BodyData { BodyAsString = node.ToJsonString(), DetectedBodyType = BodyType.String },
+    };
+
+    public void Dispose() => _graph.Dispose();
+}

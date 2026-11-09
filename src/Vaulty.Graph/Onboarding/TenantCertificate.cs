@@ -89,7 +89,7 @@ public static class OnboardingScript
         sb.AppendLine("Write-Host ''");
         sb.AppendLine("Write-Host 'Enter these values in Vaulty:'");
         sb.AppendLine("Write-Host \"  Tenant ID: $TenantId\"");
-        sb.AppendLine("Write-Host \"  Client ID: $($App.AppId)\"");
+        sb.AppendLine("Write-Host \"  Application ID: $($App.AppId)\"");
         sb.AppendLine("Write-Host ''");
         sb.AppendLine("Write-Host 'Microsoft can take a few minutes before the new app can sign in. Vaulty retries the permission check.'");
         return sb.ToString();
@@ -103,11 +103,11 @@ public static class OnboardingScript
         [
             "Sign in to the Microsoft Entra admin center as a Global Administrator of the tenant.",
             $"Go to Identity > Applications > App registrations > New registration. Name: {appName}. Supported account types: this organizational directory only. No redirect URI. Register.",
-            "Copy the Application (client) ID and the Directory (tenant) ID from the overview; you enter them in Vaulty.",
+            "Copy the Application (client) ID and the Directory (tenant) ID from the overview; you enter them in Vaulty as Application ID and Tenant ID.",
             "Go to Certificates & secrets > Certificates > Upload certificate and upload the certificate file you downloaded from Vaulty. Do not create a client secret.",
             $"Go to API permissions > Add a permission > Microsoft Graph > Application permissions and add: {permissions}.",
             "Select Grant admin consent for the organization and confirm. Every permission must show a green check.",
-            "Return to Vaulty, enter the tenant ID and client ID, and run the permission check.",
+            "Return to Vaulty, enter the tenant ID and application ID, and run the permission check.",
         ];
     }
 

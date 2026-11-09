@@ -201,6 +201,7 @@ public sealed class TemporalTests(TemporalFixture fixture, ITestOutputHelper out
             start.Environment["Vaulty__Workers__Synthetic"] = "true";
             start.Environment["Vaulty__Workers__Queues"] = TaskQueues.Backup;
             start.Environment["DOTNET_ENVIRONMENT"] = "Development";
+            start.Environment["VAULTY_DEV_MASTER_KEY"] = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
             var process = Process.Start(start)!;
             process.OutputDataReceived += (_, _) => { };
             process.ErrorDataReceived += (_, _) => { };

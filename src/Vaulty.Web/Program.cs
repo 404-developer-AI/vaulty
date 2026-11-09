@@ -5,6 +5,7 @@ using Vaulty.Infrastructure.Access;
 using Vaulty.Infrastructure.Logging;
 using Vaulty.Infrastructure.Platform;
 using Vaulty.Infrastructure.Storage;
+using Vaulty.Infrastructure.Tenants;
 using Vaulty.Infrastructure.Web;
 using Vaulty.Web.Account;
 using Vaulty.Web.Components;
@@ -24,10 +25,17 @@ builder.Services.AddScoped<SetupTokens>();
 builder.Services.AddScoped<OrganizationSetup>();
 builder.Services.AddScoped<AccountAudit>();
 builder.Services.AddScoped<UserDirectory>();
-builder.Services.AddSingleton<PlatformSettings>();
 builder.Services.AddScoped<StorageSetupAssistant>();
-builder.Services.AddSingleton<StorageClientFactory>();
 builder.Services.AddSingleton<IMailSender, SmtpMailSender>();
+builder.Services.AddScoped<CustomerService>();
+builder.Services.AddScoped<TenantService>();
+var temporal = new Lazy<Task<Temporalio.Client.ITemporalClient>>(async () => await Temporalio.Client.TemporalClient.ConnectAsync(
+    new Temporalio.Client.TemporalClientConnectOptions(builder.Configuration["Vaulty:Temporal:Address"] ?? "127.0.0.1:7233")
+    {
+        Namespace = builder.Configuration["Vaulty:Temporal:Namespace"] ?? "vaulty",
+    }));
+builder.Services.AddSingleton<Vaulty.Workflows.Tenants.IWorkflowStarter>(sp => new Vaulty.Workflows.Tenants.TemporalWorkflowStarter(
+    () => temporal.Value, sp.GetRequiredService<Npgsql.NpgsqlDataSource>()));
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddMudServices();

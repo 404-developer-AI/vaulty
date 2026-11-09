@@ -1,0 +1,16 @@
+@switch (State)
+{
+    case "granted":
+        <span class="vy-status protected">Consent granted</span>
+        break;
+    case "lost":
+        <span class="vy-status failed">Consent lost</span>
+        break;
+    default:
+        <span class="vy-status neutral">Waiting for the permission check</span>
+        break;
+}
+
+@code {
+    [Parameter] public string State { get; set; } = "pending";
+}

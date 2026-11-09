@@ -61,9 +61,32 @@ public static class VaultyWebSetup
     public static VaultyHostOptions AddVaultyCore(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment,
         IMasterKeySource? masterKeySource = null)
     {
+        var options = services.AddVaultyData(configuration, environment, "vaulty_api", masterKeySource);
+        services.AddSingleton(sp =>
+        {
+            var key = sp.GetRequiredService<IMasterKeySource>().ReadMasterKey();
+            try
+            {
+                return new DataProtectionKeyCipher(key);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(key);
+            }
+        });
+        services.AddDataProtection().SetApplicationName("vaulty").PersistKeysToVaultyDatabase();
+        services.AddSingleton<AccessService>();
+        return options;
+    }
+
+    /// <summary>Database, master key, secrets store, settings and Microsoft Graph: what every Vaulty process needs.</summary>
+    public static VaultyHostOptions AddVaultyData(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment,
+        string databaseRole, IMasterKeySource? masterKeySource = null)
+    {
         var options = new VaultyHostOptions
         {
-            DatabaseConnectionString = configuration["Vaulty:Database:ConnectionString"] ?? new VaultyHostOptions().DatabaseConnectionString,
+            DatabaseConnectionString = configuration["Vaulty:Database:ConnectionString"]
+                                       ?? $"Host=/var/run/postgresql;Database=vaulty;Username={databaseRole}",
             HostId = configuration["Vaulty:HostId"] ?? Environment.MachineName,
             PublicHost = configuration["Vaulty:PublicHost"],
             MasterKeyVersion = configuration.GetValue("Vaulty:MasterKeyVersion", 1),
@@ -73,7 +96,7 @@ public static class VaultyWebSetup
         services.AddSingleton(_ => VaultyDataSource.Create(options.DatabaseConnectionString));
         var keySource = masterKeySource ?? MasterKeys.Resolve(allowDevelopmentKey: environment.IsDevelopment(), options.MasterKeyVersion);
         services.AddSingleton(keySource);
-        services.AddSingleton(sp =>
+        services.AddSingleton(_ =>
         {
             var key = keySource.ReadMasterKey();
             try
@@ -85,22 +108,14 @@ public static class VaultyWebSetup
                 CryptographicOperations.ZeroMemory(key);
             }
         });
-        services.AddSingleton(_ =>
-        {
-            var key = keySource.ReadMasterKey();
-            try
-            {
-                return new DataProtectionKeyCipher(key);
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(key);
-            }
-        });
         services.AddSingleton<ISecretStore>(sp => new PostgresSecretStore(sp.GetRequiredService<NpgsqlDataSource>(),
             sp.GetRequiredService<SecretCipher>(), sp.GetRequiredService<TimeProvider>()));
-        services.AddDataProtection().SetApplicationName("vaulty").PersistKeysToVaultyDatabase();
-        services.AddSingleton<AccessService>();
+        services.AddSingleton<Storage.PlatformSettings>();
+        services.AddSingleton<Storage.StorageClientFactory>();
+        services.AddSingleton<Tenants.DedicatedAppCredentialProvider>();
+        services.AddSingleton<Graph.Auth.IGraphTokenProvider>(sp =>
+            new Graph.Auth.MsalGraphTokenProvider(sp.GetRequiredService<Tenants.DedicatedAppCredentialProvider>()));
+        services.AddSingleton(sp => new Tenants.GraphServices(sp.GetRequiredService<Graph.Auth.IGraphTokenProvider>()));
         return options;
     }
 

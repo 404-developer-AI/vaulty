@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />
     <ProjectReference Include="../Vaulty.Repository/Vaulty.Repository.csproj" />
+    <ProjectReference Include="../Vaulty.Graph/Vaulty.Graph.csproj" />
   </ItemGroup>
 
   <ItemGroup>

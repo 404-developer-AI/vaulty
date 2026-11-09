@@ -1,0 +1,142 @@
+@page "/customers/{CustomerId:guid}"
+@attribute [Authorize(Policy = "perm:" + Permissions.CustomersView)]
+@using Vaulty.Infrastructure.Tenants
+@inject CustomerService CustomerService
+@inject TenantService TenantService
+@inject CurrentAccess Current
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ISnackbar Snackbar
+
+<PageTitle>@(_customer?.Name ?? "Customer") · Vaulty</PageTitle>
+
+@if (_customer is null)
+{
+    <p class="vy-muted">This customer does not exist or you have no access to it.</p>
+}
+else
+{
+    <h1 class="vy-page-title">@_customer.Name</h1>
+    <p class="vy-page-lede">Customer code @_customer.Code</p>
+
+    <MudTable Items="_tenants" Hover="true" Elevation="0" Outlined="true" Dense="true" Class="mb-4">
+        <HeaderContent>
+            <MudTh>Tenant</MudTh>
+            <MudTh>Consent</MudTh>
+            <MudTh>Protected objects</MudTh>
+            <MudTh>Last check</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd><MudLink Href="@($"/tenants/{context.Id}")">@context.DisplayName</MudLink></MudTd>
+            <MudTd><ConsentChip State="@context.ConsentState" /></MudTd>
+            <MudTd>@context.ProtectedObjects</MudTd>
+            <MudTd>@(context.LastHealthCheckAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "never")</MudTd>
+        </RowTemplate>
+        <NoRecordsContent><span class="vy-muted">No tenant connected yet.</span></NoRecordsContent>
+    </MudTable>
+
+    @if (_canConnect)
+    {
+        <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+            <MudText Typo="Typo.h6">Connect a tenant</MudText>
+            @if (_pending is null)
+            {
+                <p class="vy-muted">
+                    Vaulty creates a certificate for this tenant and a script that creates the app registration "Vaulty" in the tenant,
+                    with read permissions for backups and write permissions for restores. A Global Administrator of the tenant runs it.
+                </p>
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="6"><MudTextField @bind-Value="_tenantName" Label="Name of the tenant in Vaulty" /></MudItem>
+                    <MudItem xs="12" md="6" Class="d-flex align-center"><MudCheckBox @bind-Value="_includeRestore" Label="Include restore permissions" /></MudItem>
+                </MudGrid>
+                <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" OnClick="BeginAsync">Create certificate and script</MudButton>
+            }
+            else
+            {
+                <MudText Typo="Typo.subtitle1">1. Create the app registration</MudText>
+                <p class="vy-muted">Run this script in PowerShell 7 as a Global Administrator of the tenant, or follow the steps below it.</p>
+                <MudTextField T="string" Value="@_pending.Script" ReadOnly="true" Lines="12" Variant="Variant.Outlined" Class="vy-secret" />
+                <ol class="mt-3">
+                    @foreach (var step in _pending.ManualSteps)
+                    {
+                        <li>@step</li>
+                    }
+                </ol>
+                <details class="mt-2"><summary>Certificate (public part, for the manual steps)</summary><pre class="vy-secret">@_pending.CertificatePem</pre></details>
+                <MudText Typo="Typo.subtitle1" Class="mt-4">2. Enter the ids the script printed</MudText>
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="5"><MudTextField @bind-Value="_entraTenantId" Label="Tenant ID" /></MudItem>
+                    <MudItem xs="12" md="5"><MudTextField @bind-Value="_clientId" Label="Application ID" /></MudItem>
+                    <MudItem xs="12" md="2" Class="d-flex align-center"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CompleteAsync">Connect</MudButton></MudItem>
+                </MudGrid>
+            }
+        </MudPaper>
+    }
+}
+
+@code {
+    [Parameter] public Guid CustomerId { get; set; }
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private CustomerRow? _customer;
+    private IReadOnlyList<TenantRow> _tenants = [];
+    private bool _canConnect;
+    private string? _tenantName;
+    private bool _includeRestore = true;
+    private PendingConnection? _pending;
+    private string? _entraTenantId;
+    private string? _clientId;
+    private Guid _organizationId;
+    private Guid _userId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var user = (await AuthenticationState).User;
+        _organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
+        _userId = VaultyWebSetup.UserId(user) ?? Guid.Empty;
+        var access = await Current.GetAsync(user);
+        if (!access.Allows(Permissions.CustomersView, CustomerId)) return;
+        _canConnect = access.Allows(Permissions.TenantsConnect, CustomerId);
+        _customer = (await CustomerService.ListAsync(_organizationId)).FirstOrDefault(c => c.Id == CustomerId);
+        _tenants = await TenantService.ListAsync(_organizationId, CustomerId);
+    }
+
+    private async Task<bool> ConfirmedAsync()
+    {
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/customers/{CustomerId}")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task BeginAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        try
+        {
+            _pending = await TenantService.BeginConnectAsync(_organizationId, _userId, CustomerId, _tenantName ?? "", _includeRestore);
+        }
+        catch (TenantException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task CompleteAsync()
+    {
+        if (_pending is null || !await ConfirmedAsync()) return;
+        if (!Guid.TryParse(_entraTenantId, out var tenant) || !Guid.TryParse(_clientId, out var applicationId))
+        {
+            Snackbar.Add("Both IDs are GUIDs, as printed by the script.", Severity.Warning);
+            return;
+        }
+        try
+        {
+            var id = await TenantService.CompleteConnectAsync(_organizationId, _userId, _pending.Id, tenant, applicationId);
+            Navigation.NavigateTo($"/tenants/{id}?connected=1");
+        }
+        catch (TenantException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+}

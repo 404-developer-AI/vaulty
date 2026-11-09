@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -12,6 +13,8 @@ using Temporalio.Extensions.OpenTelemetry;
 using Vaulty.Core;
 using Vaulty.Infrastructure.Database;
 using Vaulty.Infrastructure.Logging;
+using Vaulty.Infrastructure.Web;
+using Vaulty.Workflows.Tenants;
 using Vaulty.Workflows;
 using Vaulty.Workflows.Jobs;
 using Vaulty.Workflows.Synthetic;
@@ -57,7 +60,8 @@ public static class WorkerHost
             .CreateLogger();
         builder.Services.AddSerilog();
 
-        builder.Services.AddSingleton(_ => VaultyDataSource.Create(settings.DatabaseConnectionString));
+        builder.Configuration["Vaulty:Database:ConnectionString"] = settings.DatabaseConnectionString;
+        builder.Services.AddVaultyData(builder.Configuration, builder.Environment, "vaulty_worker");
         builder.Services.AddSingleton(settings);
 
         builder.Services.AddOpenTelemetry()
@@ -88,6 +92,12 @@ public static class WorkerHost
                     o.StickyQueueScheduleToStartTimeout = TimeSpan.FromSeconds(2);
                 })
                 .AddScopedActivities<JobActivities>();
+            if (queue == TaskQueues.Backup)
+            {
+                worker.AddScopedActivities<TenantActivities>()
+                    .AddWorkflow<DiscoveryWorkflow>()
+                    .AddWorkflow<TenantHealthWorkflow>();
+            }
             if (settings.Synthetic && queue == TaskQueues.Backup)
             {
                 worker.AddScopedActivities<SyntheticActivities>()
@@ -100,6 +110,24 @@ public static class WorkerHost
             }
         }
 
+        if (settings.Queues.Contains(TaskQueues.Backup)) builder.Services.AddHostedService<RecurringWorkflows>();
         return builder.Build();
+    }
+}
+
+/// <summary>Starts the recurring (cron) workflows once; a running instance is left alone.</summary>
+public sealed class RecurringWorkflows(ITemporalClient client, ILogger<RecurringWorkflows> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await client.StartWorkflowAsync((TenantHealthWorkflow w) => w.RunAsync(),
+                new WorkflowOptions(TenantHealthWorkflow.Id, TaskQueues.Backup) { CronSchedule = TenantHealthWorkflow.Cron }).ConfigureAwait(false);
+        }
+        catch (Temporalio.Exceptions.WorkflowAlreadyStartedException)
+        {
+            logger.LogDebug("The tenant health check is already scheduled");
+        }
     }
 }

@@ -55,3 +55,9 @@ All notable changes to this project are documented in this file. The format foll
   rotation; a connection test with six separate checks that must all pass before backups can be planned.
 - Settings: SMTP with a test message, display time zone and webhook defaults. Settings never contain secrets; keys and
   passwords are in the encrypted secrets store.
+- Customers (code, name, tags) and tenants: a two-step "connect a tenant" flow with a certificate per tenant (private key
+  only in the secrets store), the PowerShell script and manual steps, entry of tenant and client id, a permission check,
+  certificate rotation that switches only after the new certificate works, and refusal of a tenant that is connected
+  elsewhere. An hourly health check marks a tenant "consent lost" when its app is disabled, removed, loses permissions or
+  its certificate expires. Discovery finds mailboxes (user, shared, resource), OneDrives and archive mailboxes (shown as
+  not protected yet), is idempotent and marks objects that left Microsoft 365 as source deleted.

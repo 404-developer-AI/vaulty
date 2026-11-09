@@ -62,6 +62,7 @@ public sealed class VaultyDbContext(DbContextOptions<VaultyDbContext> options) :
         po.Property(e => e.Kind).HasConversion(StateConverter<ProtectedObjectKind>());
         po.Property(e => e.State).HasConversion(StateConverter<ProtectedObjectState>());
         po.Property(e => e.DeltaState).HasColumnType("jsonb");
+        po.Property(e => e.SourceDetails).HasColumnType("jsonb");
 
         var snapshot = Table<Snapshot>(modelBuilder, "snapshots");
         snapshot.Property(e => e.State).HasConversion(StateConverter<SnapshotState>());

@@ -28,7 +28,6 @@ public sealed class VaultyUserStore(NpgsqlDataSource dataSource) :
         "security_stamp, concurrency_stamp, two_factor_enabled, authenticator_key, lockout_end, lockout_enabled, access_failed_count, " +
         "recovery_codes, created_at, disabled_at";
 
-    static VaultyUserStore() => DefaultTypeMap.MatchNamesWithUnderscores = true;
 
     public void Dispose()
     {

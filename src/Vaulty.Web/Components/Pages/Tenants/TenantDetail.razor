@@ -1,0 +1,216 @@
+@page "/tenants/{TenantId:guid}"
+@attribute [Authorize(Policy = "perm:" + Permissions.CustomersView)]
+@using System.Text.Json
+@using Vaulty.Graph.Onboarding
+@using Vaulty.Infrastructure.Tenants
+@using Vaulty.Workflows.Tenants
+@inject TenantService TenantService
+@inject IWorkflowStarter Workflows
+@inject CurrentAccess Current
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ISnackbar Snackbar
+
+<PageTitle>@(_tenant?.DisplayName ?? "Tenant") · Vaulty</PageTitle>
+
+@if (_tenant is null)
+{
+    <p class="vy-muted">This tenant does not exist or you have no access to it.</p>
+}
+else
+{
+    <h1 class="vy-page-title">@_tenant.DisplayName</h1>
+    <p class="vy-page-lede">@_tenant.CustomerName · tenant @_tenant.EntraTenantId</p>
+
+    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+        <MudSimpleTable Dense="true" Elevation="0">
+            <tbody>
+                <tr><td>Consent</td><td><ConsentChip State="@_tenant.ConsentState" /> @HealthDetail</td></tr>
+                <tr><td>Application ID</td><td>@_tenant.ClientId</td></tr>
+                <tr><td>Certificate valid until</td><td>@_tenant.CertificateExpiresAt?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)</td></tr>
+                <tr><td>Last check</td><td>@(_tenant.LastHealthCheckAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "never")</td></tr>
+            </tbody>
+        </MudSimpleTable>
+        @if (_canConnect)
+        {
+            <div class="mt-3">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
+                <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="DiscoverAsync" Disabled="@(_busy || !Granted)">Find mailboxes and OneDrives</MudButton>
+                @if (_tenant.NextCertificateExpiresAt is null)
+                {
+                    <MudButton Class="ml-2" Variant="Variant.Text" OnClick="BeginRotationAsync" Disabled="_busy">Rotate certificate</MudButton>
+                }
+                else
+                {
+                    <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="CompleteRotationAsync" Disabled="_busy">Confirm the new certificate</MudButton>
+                }
+            </div>
+        }
+        @if (_report is not null)
+        {
+            <pre class="vy-secret mt-3">@_report.ToText()</pre>
+        }
+        @if (_rotationScript is not null)
+        {
+            <p class="vy-muted mt-3">Run this script in the tenant, then confirm the new certificate. Vaulty switches only after it works.</p>
+            <MudTextField T="string" Value="@_rotationScript" ReadOnly="true" Lines="10" Variant="Variant.Outlined" />
+        }
+    </MudPaper>
+
+    <MudTable Items="_objects" Hover="true" Elevation="0" Outlined="true" Dense="true">
+        <HeaderContent>
+            <MudTh>Protected object</MudTh>
+            <MudTh>Type</MudTh>
+            <MudTh>Status</MudTh>
+            <MudTh>Last backup</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>@context.DisplayName</MudTd>
+            <MudTd>@KindLabel(context)</MudTd>
+            <MudTd>
+                @switch (context.State)
+                {
+                    case "source_deleted":
+                        <span class="vy-status neutral">Source deleted @context.SourceDeletedAt?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)</span>
+                        break;
+                    case "not_protected":
+                        <span class="vy-status neutral">Not protected yet</span>
+                        break;
+                    case "paused":
+                        <span class="vy-status neutral">Paused</span>
+                        break;
+                    default:
+                        <span class="vy-status @(context.LastBackupAt is null ? "neutral" : context.LastSnapshotState == "partial" ? "partial" : "protected")">@(context.LastBackupAt is null ? "Not run yet" : context.LastSnapshotState == "partial" ? "Partial" : "Protected")</span>
+                        break;
+                }
+            </MudTd>
+            <MudTd>@(context.LastBackupAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "")</MudTd>
+        </RowTemplate>
+        <NoRecordsContent><span class="vy-muted">Nothing found yet. Check permissions, then find mailboxes and OneDrives.</span></NoRecordsContent>
+    </MudTable>
+}
+
+@code {
+    [Parameter] public Guid TenantId { get; set; }
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private TenantRow? _tenant;
+    private IReadOnlyList<ProtectedObjectRow> _objects = [];
+    private PermissionProbeReport? _report;
+    private string? _rotationScript;
+    private bool _canConnect;
+    private bool _busy;
+    private Guid _organizationId;
+    private Guid _userId;
+
+    private bool Granted => _tenant?.ConsentState == "granted";
+
+    private string HealthDetail
+    {
+        get
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(_tenant!.Health);
+                return doc.RootElement.TryGetProperty("detail", out var d) ? d.GetString() ?? "" : "";
+            }
+            catch (JsonException)
+            {
+                return "";
+            }
+        }
+    }
+
+    private static string KindLabel(ProtectedObjectRow row) => (row.Kind, row.SubKind) switch
+    {
+        ("mailbox", "shared") => "Shared mailbox",
+        ("mailbox", "room" or "equipment") => "Resource mailbox",
+        ("mailbox", "archive") => "Archive mailbox",
+        ("mailbox", _) => "Mailbox",
+        ("drive", _) => "OneDrive",
+        _ => row.Kind,
+    };
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        var user = (await AuthenticationState).User;
+        _organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
+        _userId = VaultyWebSetup.UserId(user) ?? Guid.Empty;
+        var tenant = (await TenantService.ListAsync(_organizationId)).FirstOrDefault(t => t.Id == TenantId);
+        var access = await Current.GetAsync(user);
+        if (tenant is null || !access.Allows(Permissions.CustomersView, tenant.CustomerId)) return;
+        _tenant = tenant;
+        _canConnect = access.Allows(Permissions.TenantsConnect, tenant.CustomerId);
+        _objects = await TenantService.ProtectedObjectsAsync(_organizationId, TenantId);
+    }
+
+    private async Task<bool> ConfirmedAsync()
+    {
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/tenants/{TenantId}")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task ProbeAsync()
+    {
+        _busy = true;
+        try
+        {
+            _report = await TenantService.ProbeAsync(_organizationId, _userId, TenantId);
+            if (!_report.BackupReady) Snackbar.Add("Microsoft can take a few minutes before a new app works. Check again shortly.", Severity.Info);
+            await LoadAsync();
+        }
+        catch (Exception ex) when (ex is Microsoft.Identity.Client.MsalException or InvalidOperationException or HttpRequestException)
+        {
+            Snackbar.Add($"The app could not sign in yet: {ex.Message}", Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DiscoverAsync()
+    {
+        _busy = true;
+        try
+        {
+            await Workflows.StartDiscoveryAsync(_organizationId, TenantId, _userId);
+            Snackbar.Add("Discovery started. The list fills in when it finishes; follow it on the Jobs page.", Severity.Success);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task BeginRotationAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        _rotationScript = await TenantService.BeginRotationAsync(_organizationId, _userId, TenantId);
+        await LoadAsync();
+    }
+
+    private async Task CompleteRotationAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        _busy = true;
+        try
+        {
+            await TenantService.CompleteRotationAsync(_organizationId, _userId, TenantId);
+            _rotationScript = null;
+            Snackbar.Add("The new certificate works and is now in use. Remove the old certificate from the app registration.", Severity.Success);
+            await LoadAsync();
+        }
+        catch (Exception ex) when (ex is Microsoft.Identity.Client.MsalException or InvalidOperationException)
+        {
+            Snackbar.Add($"The new certificate does not work yet: {ex.Message}", Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

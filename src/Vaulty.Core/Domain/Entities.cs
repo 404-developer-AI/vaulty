@@ -107,6 +107,10 @@ public sealed class Tenant
     public Guid? DeletionRequestedBy { get; set; }
     public Guid? DeletionConfirmedBy { get; set; }
     public bool LegalHold { get; set; }
+    public string? NextCertificateSecretName { get; set; }
+    public string? NextCertificateThumbprint { get; set; }
+    public DateTimeOffset? NextCertificateExpiresAt { get; set; }
+    public DateTimeOffset? ConsentLostAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }
 
@@ -146,6 +150,8 @@ public sealed class ProtectedObject
     public DateTimeOffset? NextRunAt { get; set; }
     /// <summary>Delta tokens per folder or drive, saved only after a snapshot commits.</summary>
     public string DeltaState { get; set; } = "{}";
+    /// <summary>Mailbox id and type, drive id, archive state.</summary>
+    public string SourceDetails { get; set; } = "{}";
     public bool LegalHold { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }

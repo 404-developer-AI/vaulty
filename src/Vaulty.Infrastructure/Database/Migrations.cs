@@ -140,3 +140,10 @@ public sealed class PlatformSettingsMigration : SqlMigration
 {
     protected override string ScriptName => "0006_platform_settings";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000007_TenantConnections")]
+public sealed class TenantConnectionsMigration : SqlMigration
+{
+    protected override string ScriptName => "0007_tenant_connections";
+}
