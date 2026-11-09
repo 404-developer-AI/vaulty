@@ -10,6 +10,8 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="WireMock.Net" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="System.Formats.Cbor" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
   </ItemGroup>
 
@@ -20,6 +22,8 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />
     <ProjectReference Include="../../src/Vaulty.Workers/Vaulty.Workers.csproj" />
+    <ProjectReference Include="../../src/Vaulty.Web/Vaulty.Web.csproj" />
+    <ProjectReference Include="../../src/Vaulty.Api/Vaulty.Api.csproj" />
   </ItemGroup>
 
 </Project>

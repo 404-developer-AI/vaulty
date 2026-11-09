@@ -1,0 +1,47 @@
+@page "/account/login"
+@layout AccountLayout
+@attribute [AllowAnonymous]
+
+<PageTitle>Sign in · Vaulty</PageTitle>
+
+<h1>Sign in</h1>
+<p class="vy-muted">Use your passkey, or your e-mail address and password.</p>
+
+@if (Error == "invalid")
+{
+    <div class="vy-alert error">The e-mail address or password is not correct.</div>
+}
+else if (Error == "locked")
+{
+    <div class="vy-alert error">Too many failed attempts. Try again in 15 minutes.</div>
+}
+else if (Error == "expired")
+{
+    <div class="vy-alert error">The sign-in took too long. Start again.</div>
+}
+<div id="passkey-error" class="vy-alert error" hidden></div>
+
+<button class="vy-button" type="button" data-passkey="login" data-passkey-next="@AccountReturn">Sign in with a passkey</button>
+
+<div class="vy-divider">or</div>
+
+<form method="post" action="/account/login" data-enhance="false">
+    <AntiforgeryToken />
+    <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+    <div class="vy-field">
+        <label for="username">E-mail address</label>
+        <input id="username" name="username" type="email" autocomplete="username webauthn" required />
+    </div>
+    <div class="vy-field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+    </div>
+    <button class="vy-button secondary" type="submit">Continue</button>
+</form>
+
+@code {
+    [SupplyParameterFromQuery] private string? Error { get; set; }
+    [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
+
+    private string AccountReturn => Vaulty.Web.Account.AccountEndpoints.Safe(ReturnUrl);
+}

@@ -44,3 +44,9 @@ All notable changes to this project are documented in this file. The format foll
   sub-requests, mailbox item export, and a separate download client that never sends a token.
 - Tenant onboarding building blocks: a certificate per tenant, a PowerShell script and manual steps that create the app
   registration with its application permissions, and a permission probe with a readable report.
+- Web app (Blazor, MudBlazor, Steaan design tokens) and API (`/api/v1/healthz`, `/api/v1/healthz/ready`,
+  `/api/v1/openapi.json`): sign-in with passkeys or password plus authenticator app (no SMS or e-mail codes), a second
+  factor required before anything else, first-administrator setup with a one-time token, "Confirm it's you" for
+  sensitive actions, sessions of 8 hours with a 30-minute idle timeout, permission-based authorization on every page and
+  endpoint, roles that allow restores or administration only for users with a second factor, users and roles page,
+  audit log page, security headers with a strict Content Security Policy, systemd notification.

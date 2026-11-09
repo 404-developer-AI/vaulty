@@ -1,0 +1,35 @@
+@page "/account/confirm"
+@layout AccountLayout
+@attribute [Authorize]
+
+<PageTitle>Confirm it's you · Vaulty</PageTitle>
+
+<h1>Confirm it's you</h1>
+<p class="vy-muted">This action changes or reveals protected data. Confirm with your passkey or authenticator app.</p>
+
+@if (Error == "code")
+{
+    <div class="vy-alert error">That code is not correct.</div>
+}
+<div id="passkey-error" class="vy-alert error" hidden></div>
+
+<button class="vy-button" type="button" data-passkey="stepup" data-passkey-next="@Next">Use a passkey</button>
+
+<div class="vy-divider">or</div>
+
+<form method="post" action="/account/stepup/totp" data-enhance="false">
+    <AntiforgeryToken />
+    <input type="hidden" name="returnUrl" value="@Next" />
+    <div class="vy-field">
+        <label for="code">Code from your authenticator app</label>
+        <input id="code" name="code" autocomplete="one-time-code" inputmode="numeric" required />
+    </div>
+    <button class="vy-button secondary" type="submit">Confirm</button>
+</form>
+
+@code {
+    [SupplyParameterFromQuery] private string? Error { get; set; }
+    [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
+
+    private string Next => Vaulty.Web.Account.AccountEndpoints.Safe(ReturnUrl);
+}

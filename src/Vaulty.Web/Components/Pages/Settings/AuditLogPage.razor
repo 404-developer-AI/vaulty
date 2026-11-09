@@ -1,0 +1,51 @@
+@page "/settings/audit"
+@attribute [Authorize(Policy = "perm:" + Permissions.AuditView)]
+@using Vaulty.Infrastructure.Access
+@inject UserDirectory Directory
+
+<PageTitle>Audit log · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">Audit log</h1>
+<p class="vy-page-lede">Every sign-in, role change, confirmation and administrative action, newest first. Entries cannot be changed or removed.</p>
+
+<MudTable Items="_rows" Elevation="0" Outlined="true" Dense="true">
+    <HeaderContent>
+        <MudTh>Time (UTC)</MudTh>
+        <MudTh>Who</MudTh>
+        <MudTh>Action</MudTh>
+        <MudTh>Target</MudTh>
+        <MudTh>Details</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>@context.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</MudTd>
+        <MudTd>@context.Actor</MudTd>
+        <MudTd>@context.Action</MudTd>
+        <MudTd>@context.Target</MudTd>
+        <MudTd><code>@context.Details</code></MudTd>
+    </RowTemplate>
+</MudTable>
+@if (_rows.Count == PageSize)
+{
+    <MudButton Class="mt-2" OnClick="MoreAsync">Older entries</MudButton>
+}
+
+@code {
+    private const int PageSize = 100;
+
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private List<AuditRow> _rows = [];
+    private Guid _organizationId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _organizationId = VaultyWebSetup.OrganizationId((await AuthenticationState).User) ?? Guid.Empty;
+        _rows = (await Directory.AuditAsync(_organizationId, PageSize)).ToList();
+    }
+
+    private async Task MoreAsync()
+    {
+        var older = await Directory.AuditAsync(_organizationId, PageSize, _rows.LastOrDefault()?.Seq);
+        _rows.AddRange(older);
+    }
+}

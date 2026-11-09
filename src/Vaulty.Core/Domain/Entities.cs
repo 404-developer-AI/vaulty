@@ -32,6 +32,8 @@ public sealed class User
     public DateTimeOffset? LockoutEnd { get; set; }
     public bool LockoutEnabled { get; set; } = true;
     public int AccessFailedCount { get; set; }
+    /// <summary>SHA-256 (hex) of each unused recovery code; the codes themselves are shown once and never stored.</summary>
+    public string[] RecoveryCodes { get; set; } = [];
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? DisabledAt { get; set; }
 }

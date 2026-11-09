@@ -1,0 +1,57 @@
+@inherits LayoutComponentBase
+@inject CurrentAccess Access
+
+<MudThemeProvider Theme="Vaulty.Web.Theme.VaultyTheme.Theme" />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<MudLayout>
+    <MudDrawer Open="true" Variant="DrawerVariant.Persistent" Elevation="0" Class="vy-drawer">
+        <div class="vy-brand">
+            <span class="vy-mark"><MudIcon Icon="@Icons.Material.Outlined.Shield" Size="Size.Small" /></span>
+            <div>
+                <div>Vaulty</div>
+                <div class="vy-eyebrow">Vaulty · by Steaan</div>
+            </div>
+        </div>
+        <MudNavMenu>
+            <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Outlined.SpaceDashboard">Dashboard</MudNavLink>
+            @foreach (var link in _links)
+            {
+                <MudNavLink Href="@link.Href" Icon="@link.Icon">@link.Label</MudNavLink>
+            }
+        </MudNavMenu>
+        <div class="vy-drawer-footer">
+            <form method="post" action="/account/logout" data-enhance="false">
+                <AntiforgeryToken />
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Logout">Sign out</MudButton>
+            </form>
+        </div>
+    </MudDrawer>
+    <MudMainContent>
+        <div class="content-area">@Body</div>
+    </MudMainContent>
+</MudLayout>
+
+@code {
+    private sealed record NavItem(string Href, string Icon, string Label, string Permission);
+
+    private static readonly NavItem[] AllLinks =
+    [
+        new("/customers", Icons.Material.Outlined.Business, "Customers", Permissions.CustomersView),
+        new("/jobs", Icons.Material.Outlined.History, "Jobs", Permissions.JobsView),
+        new("/settings/storage", Icons.Material.Outlined.Lock, "Storage", Permissions.StorageManage),
+        new("/settings/platform", Icons.Material.Outlined.Settings, "Settings", Permissions.SettingsManage),
+        new("/settings/users", Icons.Material.Outlined.Group, "Users and roles", Permissions.UsersManage),
+        new("/settings/audit", Icons.Material.Outlined.Policy, "Audit log", Permissions.AuditView),
+    ];
+
+    private IReadOnlyList<NavItem> _links = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var access = await Access.GetAsync();
+        _links = AllLinks.Where(l => access.Allows(l.Permission)).ToList();
+    }
+}

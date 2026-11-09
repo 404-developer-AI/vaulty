@@ -1,0 +1,48 @@
+@page "/account/recovery-codes"
+@layout AccountLayout
+@attribute [Authorize(Policy = VaultyPolicies.SignedIn)]
+@using System.Text.Json
+@using Microsoft.AspNetCore.DataProtection
+@using Microsoft.AspNetCore.Http
+@inject IDataProtectionProvider Protection
+
+<PageTitle>Recovery codes · Vaulty</PageTitle>
+
+<h1>Save your recovery codes</h1>
+@if (_codes.Count > 0)
+{
+    <p class="vy-muted">Each code signs you in once if you lose your authenticator app. They are shown only now.</p>
+    <div class="vy-codes">
+        @foreach (var recoveryCode in _codes)
+        {
+            <span>@recoveryCode</span>
+        }
+    </div>
+}
+else
+{
+    <p class="vy-muted">The recovery codes are no longer available. Generate new ones from your account settings.</p>
+}
+<a class="vy-button" href="/" style="display: block; text-align: center; text-decoration: none;">Continue to Vaulty</a>
+
+@code {
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+
+    private List<string> _codes = [];
+
+    protected override void OnInitialized()
+    {
+        if (!HttpContext.Request.Cookies.TryGetValue(Vaulty.Web.Account.AccountEndpoints.RecoveryCodesCookie, out var value)) return;
+        HttpContext.Response.Cookies.Delete(Vaulty.Web.Account.AccountEndpoints.RecoveryCodesCookie,
+            new CookieOptions { Secure = true, Path = "/" });
+        try
+        {
+            var json = Protection.CreateProtector("vaulty.recovery-codes").ToTimeLimitedDataProtector().Unprotect(value);
+            _codes = JsonSerializer.Deserialize<List<string>>(json) ?? [];
+        }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            _codes = [];
+        }
+    }
+}

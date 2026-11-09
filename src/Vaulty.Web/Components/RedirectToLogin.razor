@@ -1,0 +1,18 @@
+@inject NavigationManager Navigation
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthenticationState;
+        if (state.User.Identity?.IsAuthenticated == true)
+        {
+            // Signed in without a second factor: enroll one first. Signed in with one: not allowed here.
+            var target = state.User.HasClaim(VaultyClaims.Mfa, "1") ? "/access-denied" : "/account/mfa-setup";
+            Navigation.NavigateTo(target, forceLoad: true);
+            return;
+        }
+        var returnUrl = "/" + Navigation.ToBaseRelativePath(Navigation.Uri);
+        Navigation.NavigateTo($"/account/login?returnUrl={Uri.EscapeDataString(returnUrl)}", forceLoad: true);
+    }
+}

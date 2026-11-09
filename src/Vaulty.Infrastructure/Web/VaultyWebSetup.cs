@@ -1,0 +1,328 @@
+using System.Security.Claims;
+using System.Security.Cryptography;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using Npgsql;
+using Vaulty.Core.Abstractions;
+using Vaulty.Core.Crypto;
+using Vaulty.Core.Domain;
+using Vaulty.Infrastructure.Access;
+using Vaulty.Infrastructure.Database;
+using Vaulty.Infrastructure.Identity;
+using Vaulty.Infrastructure.Secrets;
+
+namespace Vaulty.Infrastructure.Web;
+
+/// <summary>Claim types Vaulty adds to the sign-in cookie.</summary>
+public static class VaultyClaims
+{
+    public const string Organization = "vaulty:org";
+    /// <summary>Unix seconds of the interactive sign-in; the session ends 8 hours later whatever the activity.</summary>
+    public const string AuthTime = "vaulty:auth_time";
+    /// <summary>"1" when the user has a second factor (passkey or authenticator app).</summary>
+    public const string Mfa = "vaulty:mfa";
+    /// <summary>Unix seconds of the last "Confirm it's you".</summary>
+    public const string StepUp = "vaulty:stepup";
+}
+
+public static class VaultyPolicies
+{
+    public const string PermissionPrefix = "perm:";
+    /// <summary>Signed in, with or without a second factor (only the MFA set-up pages use it).</summary>
+    public const string SignedIn = "signed-in";
+
+    public static string Permission(string key) => PermissionPrefix + key;
+}
+
+public sealed class VaultyHostOptions
+{
+    public string DatabaseConnectionString { get; set; } = "Host=/var/run/postgresql;Database=vaulty;Username=vaulty_api";
+    public string HostId { get; set; } = Environment.MachineName;
+    /// <summary>The public host name; passkeys are bound to it.</summary>
+    public string? PublicHost { get; set; }
+    public int MasterKeyVersion { get; set; } = 1;
+    public static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
+    public static readonly TimeSpan AbsoluteTimeout = TimeSpan.FromHours(8);
+    public static readonly TimeSpan StepUpValidity = TimeSpan.FromMinutes(5);
+}
+
+public static class VaultyWebSetup
+{
+    /// <summary>Database, master key, secrets store and the data protection ring (shared by web and API).</summary>
+    public static VaultyHostOptions AddVaultyCore(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment,
+        IMasterKeySource? masterKeySource = null)
+    {
+        var options = new VaultyHostOptions
+        {
+            DatabaseConnectionString = configuration["Vaulty:Database:ConnectionString"] ?? new VaultyHostOptions().DatabaseConnectionString,
+            HostId = configuration["Vaulty:HostId"] ?? Environment.MachineName,
+            PublicHost = configuration["Vaulty:PublicHost"],
+            MasterKeyVersion = configuration.GetValue("Vaulty:MasterKeyVersion", 1),
+        };
+        services.AddSingleton(options);
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton(_ => VaultyDataSource.Create(options.DatabaseConnectionString));
+        var keySource = masterKeySource ?? MasterKeys.Resolve(allowDevelopmentKey: environment.IsDevelopment(), options.MasterKeyVersion);
+        services.AddSingleton(keySource);
+        services.AddSingleton(sp =>
+        {
+            var key = keySource.ReadMasterKey();
+            try
+            {
+                return new SecretCipher(key, options.HostId);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(key);
+            }
+        });
+        services.AddSingleton(_ =>
+        {
+            var key = keySource.ReadMasterKey();
+            try
+            {
+                return new DataProtectionKeyCipher(key);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(key);
+            }
+        });
+        services.AddSingleton<ISecretStore>(sp => new PostgresSecretStore(sp.GetRequiredService<NpgsqlDataSource>(),
+            sp.GetRequiredService<SecretCipher>(), sp.GetRequiredService<TimeProvider>()));
+        services.AddDataProtection().SetApplicationName("vaulty").PersistKeysToVaultyDatabase();
+        services.AddSingleton<AccessService>();
+        return options;
+    }
+
+    /// <summary>Identity with passkeys and TOTP, the session cookie and permission-based authorization.</summary>
+    public static void AddVaultyIdentity(this IServiceCollection services, VaultyHostOptions hostOptions)
+    {
+        ArgumentNullException.ThrowIfNull(hostOptions);
+        services.AddAuthentication(o =>
+            {
+                o.DefaultScheme = IdentityConstants.ApplicationScheme;
+                o.DefaultSignInScheme = IdentityConstants.ExternalScheme;
+            })
+            .AddIdentityCookies();
+        services.AddIdentityCore<User>(o =>
+            {
+                o.Password.RequiredLength = 12;
+                o.Password.RequireNonAlphanumeric = false;
+                o.Password.RequireUppercase = false;
+                o.Password.RequireLowercase = false;
+                o.Password.RequireDigit = false;
+                o.Lockout.MaxFailedAccessAttempts = 5;
+                o.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+                o.Lockout.AllowedForNewUsers = true;
+                o.SignIn.RequireConfirmedAccount = false;
+                o.User.RequireUniqueEmail = false;
+                o.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
+            })
+            .AddUserStore<VaultyUserStore>()
+            .AddSignInManager()
+            // Only the authenticator app as a code-based factor: no SMS, no e-mail codes.
+            .AddTokenProvider<AuthenticatorTokenProvider<User>>(TokenOptions.DefaultAuthenticatorProvider)
+            .AddTokenProvider<DataProtectorTokenProvider<User>>(TokenOptions.DefaultProvider)
+            .AddClaimsPrincipalFactory<VaultyClaimsFactory>();
+
+        services.Configure<IdentityPasskeyOptions>(o =>
+        {
+            if (hostOptions.PublicHost is { Length: > 0 } host) o.ServerDomain = host;
+            o.UserVerificationRequirement = "required";
+            o.ResidentKeyRequirement = "required";
+        });
+        services.Configure<SecurityStampValidatorOptions>(o => o.ValidationInterval = TimeSpan.FromMinutes(1));
+        services.ConfigureApplicationCookie(o =>
+        {
+            o.Cookie.Name = "__Host-vaulty";
+            o.Cookie.HttpOnly = true;
+            o.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+            o.Cookie.SameSite = SameSiteMode.Strict;
+            o.Cookie.Path = "/";
+            o.ExpireTimeSpan = VaultyHostOptions.IdleTimeout;
+            o.SlidingExpiration = true;
+            o.LoginPath = "/account/login";
+            o.LogoutPath = "/account/logout";
+            o.AccessDeniedPath = "/access-denied";
+            var stampValidation = o.Events.OnValidatePrincipal;
+            o.Events.OnValidatePrincipal = async context =>
+            {
+                // Absolute session lifetime: 8 hours after the interactive sign-in, whatever the activity.
+                var authTime = context.Principal?.FindFirst(VaultyClaims.AuthTime)?.Value;
+                var clock = context.HttpContext.RequestServices.GetRequiredService<TimeProvider>();
+                if (!long.TryParse(authTime, out var seconds) ||
+                    clock.GetUtcNow() - DateTimeOffset.FromUnixTimeSeconds(seconds) > VaultyHostOptions.AbsoluteTimeout)
+                {
+                    context.RejectPrincipal();
+                    await context.HttpContext.SignOutAsync(IdentityConstants.ApplicationScheme).ConfigureAwait(false);
+                    return;
+                }
+                await SecurityStampValidator.ValidatePrincipalAsync(context).ConfigureAwait(false);
+            };
+            _ = stampValidation;
+            o.Events.OnRedirectToLogin = context => ApiAwareRedirect(context, StatusCodes.Status401Unauthorized);
+            o.Events.OnRedirectToAccessDenied = context => ApiAwareRedirect(context, StatusCodes.Status403Forbidden);
+        });
+        services.ConfigureExternalCookie(o =>
+        {
+            o.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+            o.Cookie.SameSite = SameSiteMode.Lax;
+        });
+
+        services.AddScoped<CurrentAccess>();
+        services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
+        services.AddScoped<IAuthorizationHandler, PermissionHandler>();
+        services.AddAuthorization(o =>
+        {
+            // Everything requires a signed-in user with a second factor unless a page or endpoint says otherwise.
+            var withSecondFactor = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().RequireClaim(VaultyClaims.Mfa, "1").Build();
+            o.FallbackPolicy = withSecondFactor;
+            // [Authorize] without a policy also requires the second factor.
+            o.DefaultPolicy = withSecondFactor;
+            o.AddPolicy(VaultyPolicies.SignedIn, p => p.RequireAuthenticatedUser());
+        });
+    }
+
+    private static Task ApiAwareRedirect(Microsoft.AspNetCore.Authentication.RedirectContext<CookieAuthenticationOptions> context, int status)
+    {
+        if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+        {
+            context.Response.StatusCode = status;
+            return Task.CompletedTask;
+        }
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    }
+
+    public static bool HasFreshStepUp(ClaimsPrincipal user, TimeProvider clock)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentNullException.ThrowIfNull(clock);
+        return long.TryParse(user.FindFirst(VaultyClaims.StepUp)?.Value, out var seconds) &&
+               clock.GetUtcNow() - DateTimeOffset.FromUnixTimeSeconds(seconds) <= VaultyHostOptions.StepUpValidity;
+    }
+
+    public static Guid? OrganizationId(ClaimsPrincipal user) =>
+        Guid.TryParse(user?.FindFirst(VaultyClaims.Organization)?.Value, out var id) ? id : null;
+
+    public static Guid? UserId(ClaimsPrincipal user) =>
+        Guid.TryParse(user?.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
+}
+
+/// <summary>Adds organization, MFA state, sign-in time and (when present) the step-up time to the principal.</summary>
+public sealed class VaultyClaimsFactory(UserManager<User> users, IOptions<IdentityOptions> options, NpgsqlDataSource dataSource,
+    IHttpContextAccessor http, TimeProvider clock) : UserClaimsPrincipalFactory<User>(users, options)
+{
+    protected override async Task<ClaimsIdentity> GenerateClaimsAsync(User user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        var identity = await base.GenerateClaimsAsync(user).ConfigureAwait(false);
+        identity.AddClaim(new Claim(VaultyClaims.Organization, user.OrganizationId.ToString()));
+        await using var session = await OrganizationSession.BeginAsync(dataSource, user.OrganizationId).ConfigureAwait(false);
+        if (await AccessService.HasMfaAsync(session, user.Id).ConfigureAwait(false)) identity.AddClaim(new Claim(VaultyClaims.Mfa, "1"));
+        // A refreshed sign-in keeps the original sign-in time; a new sign-in starts a new 8-hour session.
+        var existing = http.HttpContext?.User;
+        var keep = existing?.Identity?.IsAuthenticated == true && VaultyWebSetup.UserId(existing) == user.Id
+            ? existing.FindFirst(VaultyClaims.AuthTime)?.Value
+            : null;
+        identity.AddClaim(new Claim(VaultyClaims.AuthTime, keep ?? clock.GetUtcNow().ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        return identity;
+    }
+}
+
+/// <summary>The access of the signed-in user, loaded once per request or circuit.</summary>
+public sealed class CurrentAccess(AccessService access, IHttpContextAccessor http)
+{
+    private UserAccess? _access;
+
+    public async Task<UserAccess> GetAsync(ClaimsPrincipal? principal = null)
+    {
+        if (_access is not null) return _access;
+        var user = principal ?? http.HttpContext?.User ?? new ClaimsPrincipal();
+        var org = VaultyWebSetup.OrganizationId(user);
+        var id = VaultyWebSetup.UserId(user);
+        _access = org is { } o && id is { } u ? await access.GetAccessAsync(o, u).ConfigureAwait(false) : UserAccess.None(Guid.Empty, Guid.Empty);
+        return _access;
+    }
+
+    public void Invalidate() => _access = null;
+}
+
+public sealed class PermissionRequirement(string permission) : IAuthorizationRequirement
+{
+    public string Permission { get; } = permission;
+}
+
+/// <summary>Turns "perm:&lt;key&gt;" into a policy: signed in, second factor, and the permission for at least one customer.</summary>
+public sealed class PermissionPolicyProvider(IOptions<AuthorizationOptions> options) : DefaultAuthorizationPolicyProvider(options)
+{
+    public override async Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
+    {
+        ArgumentNullException.ThrowIfNull(policyName);
+        if (!policyName.StartsWith(VaultyPolicies.PermissionPrefix, StringComparison.Ordinal))
+        {
+            return await base.GetPolicyAsync(policyName).ConfigureAwait(false);
+        }
+        var key = policyName[VaultyPolicies.PermissionPrefix.Length..];
+        if (!Core.Security.Permissions.Exists(key)) throw new InvalidOperationException($"Unknown permission policy '{policyName}'.");
+        return new AuthorizationPolicyBuilder().RequireAuthenticatedUser().RequireClaim(VaultyClaims.Mfa, "1")
+            .AddRequirements(new PermissionRequirement(key)).Build();
+    }
+}
+
+public sealed class PermissionHandler(CurrentAccess current) : AuthorizationHandler<PermissionRequirement>
+{
+    protected override async Task HandleRequirementAsync(AuthorizationHandlerContext context, PermissionRequirement requirement)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(requirement);
+        var access = await current.GetAsync(context.User).ConfigureAwait(false);
+        if (access.Allows(requirement.Permission)) context.Succeed(requirement);
+    }
+}
+
+/// <summary>Security headers and a strict Content Security Policy with a per-response nonce.</summary>
+public static class SecurityHeaders
+{
+    public const string NonceItemKey = "vaulty-csp-nonce";
+
+    public static IApplicationBuilder UseVaultySecurityHeaders(this IApplicationBuilder app) => app.Use(async (context, next) =>
+    {
+        var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
+        context.Items[NonceItemKey] = nonce;
+        context.Response.OnStarting(static state =>
+        {
+            var ctx = (HttpContext)state;
+            if (ctx.Response.ContentType?.StartsWith("text/html", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                ctx.Response.Headers.CacheControl = "no-store";
+            }
+            return Task.CompletedTask;
+        }, context);
+        var headers = context.Response.Headers;
+        headers["Content-Security-Policy"] = ContentSecurityPolicy(nonce);
+        headers["X-Content-Type-Options"] = "nosniff";
+        headers["X-Frame-Options"] = "DENY";
+        headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+        headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
+        headers["Cross-Origin-Opener-Policy"] = "same-origin";
+        headers["Cross-Origin-Resource-Policy"] = "same-origin";
+        if (context.Request.IsHttps) headers.StrictTransportSecurity = "max-age=31536000; includeSubDomains";
+        await next().ConfigureAwait(false);
+    });
+
+    public static string ContentSecurityPolicy(string nonce) =>
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; " +
+        $"script-src 'self' 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; " +
+        "connect-src 'self' wss: ws:; frame-src 'self'; worker-src 'self'";
+}

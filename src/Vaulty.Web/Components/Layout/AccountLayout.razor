@@ -1,0 +1,29 @@
+@inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Antiforgery
+@using Microsoft.AspNetCore.Http
+@inject IAntiforgery Antiforgery
+
+<HeadContent>
+    <meta name="vaulty-antiforgery" content="@_token" />
+</HeadContent>
+
+<main class="vy-account">
+    <div class="vy-card">
+        <div class="vy-brand" style="padding: 0 0 20px;">
+            <span class="vy-mark"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 9.5C8 19.3 5 15.5 5 11V6z" /></svg></span>
+            <div>
+                <div>Vaulty</div>
+                <div class="vy-eyebrow">Vaulty · by Steaan</div>
+            </div>
+        </div>
+        @Body
+    </div>
+</main>
+
+@code {
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+
+    private string? _token;
+
+    protected override void OnInitialized() => _token = Antiforgery.GetAndStoreTokens(HttpContext).RequestToken;
+}

@@ -126,3 +126,10 @@ public sealed class FolderCheckpointsMigration : SqlMigration
 {
     protected override string ScriptName => "0004_folder_checkpoints";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000005_Identity")]
+public sealed class IdentityMigration : SqlMigration
+{
+    protected override string ScriptName => "0005_identity";
+}

@@ -1,0 +1,166 @@
+@page "/settings/users"
+@attribute [Authorize(Policy = "perm:" + Permissions.UsersManage)]
+@using Microsoft.AspNetCore.Identity
+@using Vaulty.Core.Domain
+@using Vaulty.Infrastructure.Access
+@inject UserDirectory Directory
+@inject AccessService AccessService
+@inject CurrentAccess Current
+@inject UserManager<User> UserManager
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ISnackbar Snackbar
+
+<PageTitle>Users and roles · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">Users and roles</h1>
+<p class="vy-page-lede">
+    Roles give permissions, for every customer or for one. Roles that allow restores, exports or administration need a passkey or
+    authenticator app on the account. Changes ask you to confirm it's you.
+</p>
+
+<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+    <MudText Typo="Typo.h6">Add a user</MudText>
+    <MudGrid Spacing="2">
+        <MudItem xs="12" md="4"><MudTextField @bind-Value="_newEmail" Label="E-mail address" /></MudItem>
+        <MudItem xs="12" md="3"><MudTextField @bind-Value="_newName" Label="Name" /></MudItem>
+        <MudItem xs="12" md="3"><MudTextField @bind-Value="_newPassword" Label="Initial password" InputType="InputType.Password" HelperText="At least 12 characters" /></MudItem>
+        <MudItem xs="12" md="2" Class="d-flex align-center"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="AddUserAsync">Add user</MudButton></MudItem>
+    </MudGrid>
+</MudPaper>
+
+<MudTable Items="_users" Hover="true" Elevation="0" Outlined="true" Dense="true">
+    <HeaderContent>
+        <MudTh>User</MudTh>
+        <MudTh>Second factor</MudTh>
+        <MudTh>Roles</MudTh>
+        <MudTh>Add role</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>
+            <div>@(context.DisplayName ?? context.UserName)</div>
+            <div class="vy-muted">@context.UserName</div>
+        </MudTd>
+        <MudTd>
+            @if (context.HasMfa)
+            {
+                <span class="vy-status protected">Set up</span>
+            }
+            else
+            {
+                <span class="vy-status neutral">Not set up</span>
+            }
+        </MudTd>
+        <MudTd>
+            @foreach (var assignment in _assignments.Where(a => a.UserId == context.Id))
+            {
+                <MudChip T="string" Size="Size.Small" OnClose="@(() => RemoveAsync(assignment))">
+                    @assignment.RoleName@(assignment.CustomerName is { } c ? $" ({c})" : "")
+                </MudChip>
+            }
+        </MudTd>
+        <MudTd>
+            @if (_canManageRoles)
+            {
+                <MudSelect T="Guid" Dense="true" Label="Role" Value="Guid.Empty" ValueChanged="@(role => AssignAsync(context, role))">
+                    @foreach (var role in _roles)
+                    {
+                        <MudSelectItem Value="@role.Id">@role.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            }
+        </MudTd>
+    </RowTemplate>
+</MudTable>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private IReadOnlyList<UserRow> _users = [];
+    private IReadOnlyList<RoleRow> _roles = [];
+    private IReadOnlyList<AssignmentRow> _assignments = [];
+    private bool _canManageRoles;
+    private string? _newEmail;
+    private string? _newName;
+    private string? _newPassword;
+    private Guid _organizationId;
+    private Guid _userId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthenticationState;
+        _organizationId = VaultyWebSetup.OrganizationId(state.User) ?? Guid.Empty;
+        _userId = VaultyWebSetup.UserId(state.User) ?? Guid.Empty;
+        _canManageRoles = (await Current.GetAsync(state.User)).Allows(Permissions.RolesManage);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _users = await Directory.UsersAsync(_organizationId);
+        _roles = await Directory.RolesAsync(_organizationId);
+        _assignments = await Directory.AssignmentsAsync(_organizationId);
+    }
+
+    /// <summary>Sensitive changes need a recent "Confirm it's you".</summary>
+    private async Task<bool> ConfirmedAsync()
+    {
+        var state = await AuthenticationState;
+        if (VaultyWebSetup.HasFreshStepUp(state.User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString("/settings/users")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task AddUserAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        if (string.IsNullOrWhiteSpace(_newEmail) || !_newEmail.Contains('@'))
+        {
+            Snackbar.Add("Enter a valid e-mail address.", Severity.Warning);
+            return;
+        }
+        var email = _newEmail.Trim();
+        var user = new User
+        {
+            Id = Guid.CreateVersion7(),
+            OrganizationId = _organizationId,
+            UserName = email,
+            NormalizedUserName = UserManager.NormalizeName(email),
+            Email = email,
+            NormalizedEmail = UserManager.NormalizeEmail(email),
+            DisplayName = string.IsNullOrWhiteSpace(_newName) ? null : _newName.Trim(),
+        };
+        var result = await UserManager.CreateAsync(user, _newPassword ?? "");
+        if (!result.Succeeded)
+        {
+            Snackbar.Add(result.Errors.First().Description, Severity.Warning);
+            return;
+        }
+        await AccessService.RecordAsync(_organizationId, $"user:{_userId}", "user.created", $"user:{user.Id}");
+        _newEmail = _newName = _newPassword = null;
+        Snackbar.Add($"{email} can now sign in and must add a second factor first.", Severity.Success);
+        await LoadAsync();
+    }
+
+    private async Task AssignAsync(UserRow user, Guid roleId)
+    {
+        if (roleId == Guid.Empty || !await ConfirmedAsync()) return;
+        try
+        {
+            await AccessService.AssignRoleAsync(_organizationId, _userId, user.Id, roleId, null);
+            Current.Invalidate();
+            await LoadAsync();
+        }
+        catch (AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task RemoveAsync(AssignmentRow assignment)
+    {
+        if (!await ConfirmedAsync()) return;
+        await AccessService.RemoveRoleAsync(_organizationId, _userId, assignment.UserId, assignment.RoleId, assignment.CustomerId);
+        await LoadAsync();
+    }
+}

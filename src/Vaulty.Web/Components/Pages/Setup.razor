@@ -1,0 +1,68 @@
+@page "/setup"
+@layout AccountLayout
+@attribute [AllowAnonymous]
+@using Vaulty.Infrastructure.Access
+@inject SetupTokens Tokens
+
+<PageTitle>Set up Vaulty</PageTitle>
+
+@if (!_valid)
+{
+    <h1>Set up Vaulty</h1>
+    <div class="vy-alert error">
+        This setup link is not valid. It works once, for 24 hours after installation, and only while Vaulty has no organization.
+        Find the current link in the installation report on the server.
+    </div>
+}
+else
+{
+    <h1>Set up Vaulty</h1>
+    <p class="vy-muted">Create your organization and the first administrator. You add a passkey or authenticator app next.</p>
+    @if (Error is "password")
+    {
+        <div class="vy-alert error">@(Detail ?? "The password does not meet the rules.") Use at least 12 characters.</div>
+    }
+    else if (Error is "confirm")
+    {
+        <div class="vy-alert error">The passwords do not match.</div>
+    }
+    else if (Error is "fields")
+    {
+        <div class="vy-alert error">Fill in the organization name and a valid e-mail address.</div>
+    }
+    <form method="post" action="/setup" data-enhance="false">
+        <AntiforgeryToken />
+        <input type="hidden" name="token" value="@Token" />
+        <div class="vy-field">
+            <label for="organization">Organization name</label>
+            <input id="organization" name="organization" required maxlength="200" />
+        </div>
+        <div class="vy-field">
+            <label for="displayName">Your name</label>
+            <input id="displayName" name="displayName" maxlength="100" />
+        </div>
+        <div class="vy-field">
+            <label for="email">E-mail address</label>
+            <input id="email" name="email" type="email" autocomplete="username" required />
+        </div>
+        <div class="vy-field">
+            <label for="password">Password (at least 12 characters)</label>
+            <input id="password" name="password" type="password" autocomplete="new-password" minlength="12" required />
+        </div>
+        <div class="vy-field">
+            <label for="confirm">Repeat the password</label>
+            <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="12" required />
+        </div>
+        <button class="vy-button" type="submit">Create the organization</button>
+    </form>
+}
+
+@code {
+    [SupplyParameterFromQuery] private string? Token { get; set; }
+    [SupplyParameterFromQuery] private string? Error { get; set; }
+    [SupplyParameterFromQuery] private string? Detail { get; set; }
+
+    private bool _valid;
+
+    protected override async Task OnInitializedAsync() => _valid = await Tokens.ValidateAsync(Token);
+}

@@ -1,0 +1,71 @@
+@page "/account/mfa-setup"
+@layout AccountLayout
+@attribute [Authorize(Policy = VaultyPolicies.SignedIn)]
+@using System.Text
+@using Microsoft.AspNetCore.Http
+@using Microsoft.AspNetCore.Identity
+@using QRCoder
+@using Vaulty.Core.Domain
+@inject UserManager<User> Users
+
+<PageTitle>Second factor · Vaulty</PageTitle>
+
+<h1>Add a second factor</h1>
+<p class="vy-muted">
+    Vaulty protects backups of whole tenants, so every account needs a passkey or an authenticator app.
+    Text messages and e-mail codes are not offered.
+</p>
+
+@if (Error == "code")
+{
+    <div class="vy-alert error">That code is not correct. Codes change every 30 seconds.</div>
+}
+<div id="passkey-error" class="vy-alert error" hidden></div>
+
+<div class="vy-field">
+    <label for="passkey-name">Passkey name</label>
+    <input id="passkey-name" value="Passkey" maxlength="60" />
+</div>
+<button class="vy-button" type="button" data-passkey="register" data-passkey-next="/">Create a passkey</button>
+
+<div class="vy-divider">or use an authenticator app</div>
+
+@if (_qr is not null)
+{
+    <img class="vy-qr" src="@_qr" alt="QR code for the authenticator app" />
+    <p class="vy-muted">Or enter this key: <span class="vy-secret">@_formattedKey</span></p>
+}
+<form method="post" action="/account/mfa/totp" data-enhance="false">
+    <AntiforgeryToken />
+    <div class="vy-field">
+        <label for="code">Code from the app</label>
+        <input id="code" name="code" autocomplete="one-time-code" inputmode="numeric" required />
+    </div>
+    <button class="vy-button secondary" type="submit">Confirm the app</button>
+</form>
+
+@code {
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+    [SupplyParameterFromQuery] private string? Error { get; set; }
+
+    private string? _qr;
+    private string? _formattedKey;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = await Users.GetUserAsync(HttpContext.User);
+        if (user is null) return;
+        var key = await Users.GetAuthenticatorKeyAsync(user);
+        if (string.IsNullOrEmpty(key))
+        {
+            await Users.ResetAuthenticatorKeyAsync(user);
+            key = await Users.GetAuthenticatorKeyAsync(user);
+        }
+        _formattedKey = string.Join(' ', Enumerable.Range(0, (key!.Length + 3) / 4).Select(i => key.Substring(i * 4, Math.Min(4, key.Length - i * 4))));
+        var uri = $"otpauth://totp/{Uri.EscapeDataString("Vaulty:" + user.UserName)}?secret={key}&issuer=Vaulty&digits=6";
+        using var generator = new QRCodeGenerator();
+        using var data = generator.CreateQrCode(uri, QRCodeGenerator.ECCLevel.M);
+        var svg = new SvgQRCode(data).GetGraphic(4);
+        _qr = "data:image/svg+xml;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(svg));
+    }
+}

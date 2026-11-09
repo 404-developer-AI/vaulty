@@ -1,0 +1,55 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+
+namespace Vaulty.Integration.Tests.Web;
+
+/// <summary>A test that needs Linux with systemd and passwordless sudo (the CI runner); skipped elsewhere.</summary>
+public sealed class SystemdFactAttribute : FactAttribute
+{
+    public SystemdFactAttribute()
+    {
+        if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/systemd-run")) Skip = "Needs Linux with systemd.";
+        else if (SystemdNotifyTests.Run("sudo", "-n", "true").ExitCode != 0) Skip = "Needs passwordless sudo.";
+    }
+}
+
+/// <summary>
+/// The services run as Type=notify units. systemd only marks such a unit active after the process sends READY=1, so a
+/// transient Type=notify unit that becomes active proves the notification works.
+/// </summary>
+public sealed class SystemdNotifyTests
+{
+    [SystemdFact]
+    public void The_api_and_web_hosts_report_ready_to_systemd()
+    {
+        var dotnet = Run("which", "dotnet").Output.Trim();
+        foreach (var assembly in new[] { typeof(Vaulty.Api.ApiMarker).Assembly, typeof(Vaulty.Web.WebMarker).Assembly })
+        {
+            var unit = $"vaulty-notify-test-{Guid.NewGuid():N}";
+            var start = Run("sudo", "systemd-run", $"--unit={unit}", "--collect", "-p", "Type=notify", "-p", "TimeoutStartSec=90",
+                "--setenv=DOTNET_ENVIRONMENT=Development", "--setenv=DOTNET_CLI_HOME=/tmp", "--setenv=ASPNETCORE_URLS=http://127.0.0.1:0",
+                $"--setenv=VAULTY_DEV_MASTER_KEY={Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))}",
+                "--setenv=Vaulty__Database__ConnectionString=Host=127.0.0.1;Port=1;Database=none",
+                dotnet, assembly.Location);
+            try
+            {
+                Assert.True(start.ExitCode == 0, $"systemd-run failed: {start.Output}");
+                Assert.Equal("active", Run("systemctl", "is-active", unit).Output.Trim());
+            }
+            finally
+            {
+                Run("sudo", "systemctl", "stop", unit);
+            }
+        }
+    }
+
+    internal static (int ExitCode, string Output) Run(string file, params string[] args)
+    {
+        var info = new ProcessStartInfo(file) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var a in args) info.ArgumentList.Add(a);
+        using var process = Process.Start(info)!;
+        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        process.WaitForExit(120_000);
+        return (process.ExitCode, output);
+    }
+}

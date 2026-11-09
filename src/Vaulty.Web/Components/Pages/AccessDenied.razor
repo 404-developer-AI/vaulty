@@ -1,0 +1,7 @@
+@page "/access-denied"
+@attribute [Authorize(Policy = VaultyPolicies.SignedIn)]
+
+<PageTitle>Access denied · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">You do not have access to this page</h1>
+<p class="vy-page-lede">Ask an organization admin for a role that includes it.</p>

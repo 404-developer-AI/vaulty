@@ -1,0 +1,47 @@
+@page "/account/login/second-factor"
+@layout AccountLayout
+@attribute [AllowAnonymous]
+
+<PageTitle>Confirm it's you · Vaulty</PageTitle>
+
+<h1>Confirm it's you</h1>
+<p class="vy-muted">Use your passkey or the code from your authenticator app.</p>
+
+@if (Error == "invalid")
+{
+    <div class="vy-alert error">That code is not correct. Codes change every 30 seconds.</div>
+}
+<div id="passkey-error" class="vy-alert error" hidden></div>
+
+<button class="vy-button" type="button" data-passkey="login" data-passkey-next="@Next">Use a passkey</button>
+
+<div class="vy-divider">or</div>
+
+<form method="post" action="/account/login/second-factor" data-enhance="false">
+    <AntiforgeryToken />
+    <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+    <input type="hidden" name="recovery" value="@(Recovery ? "true" : "false")" />
+    <div class="vy-field">
+        <label for="code">@(Recovery ? "Recovery code" : "Code from your authenticator app")</label>
+        <input id="code" name="code" autocomplete="one-time-code" inputmode="@(Recovery ? "text" : "numeric")" required />
+    </div>
+    <button class="vy-button secondary" type="submit">Continue</button>
+</form>
+<p class="vy-muted" style="margin-top: 16px;">
+    @if (Recovery)
+    {
+        <a href="/account/login/second-factor?returnUrl=@Uri.EscapeDataString(Next)">Use the authenticator app instead</a>
+    }
+    else
+    {
+        <a href="/account/login/second-factor?recovery=true&returnUrl=@Uri.EscapeDataString(Next)">Use a recovery code</a>
+    }
+</p>
+
+@code {
+    [SupplyParameterFromQuery] private string? Error { get; set; }
+    [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] private bool Recovery { get; set; }
+
+    private string Next => Vaulty.Web.Account.AccountEndpoints.Safe(ReturnUrl);
+}

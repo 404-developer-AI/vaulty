@@ -2,6 +2,20 @@
 
   <ItemGroup>
     <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />
-    <ProjectReference Include="../Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />  </ItemGroup>
+    <ProjectReference Include="../Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MudBlazor" />
+    <PackageReference Include="QRCoder" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" />
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Formatting.Compact" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Vaulty.Integration.Tests" />
+  </ItemGroup>
 
 </Project>
