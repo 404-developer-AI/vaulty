@@ -113,8 +113,13 @@ public sealed class LinuxHostShell : IHostShell
         var temporary = link + ".vaulty-new";
         if (File.Exists(temporary) || Directory.Exists(temporary)) File.Delete(temporary);
         File.CreateSymbolicLink(temporary, target);
-        File.Move(temporary, link, overwrite: true);
+        // rename(2) replaces the old link atomically; File.Move treats a link to a directory as a directory.
+        if (Rename(temporary, link) != 0) throw new InstallException($"{link} could not be switched to {target} (errno {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}).");
     }
+
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "rename", SetLastError = true)]
+    private static extern int Rename([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string oldPath,
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string newPath);
 
     public string? ReadLink(string path) => new FileInfo(path).LinkTarget;
 

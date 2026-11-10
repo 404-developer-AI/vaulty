@@ -79,7 +79,8 @@ public sealed class Installer(IReadOnlyList<IInstallStep>? steps = null)
             {
                 await step.RunAsync(context, cancellationToken).ConfigureAwait(false);
             }
-            catch (InstallException ex)
+            catch (Exception ex) when (ex is InstallException or IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception
+                                       or JsonException or KeyNotFoundException)
             {
                 await context.Log.WriteLineAsync($"  [fail] {step.Name}: {ex.Message}").ConfigureAwait(false);
                 await SaveAsync(context, completed, cancellationToken).ConfigureAwait(false);
