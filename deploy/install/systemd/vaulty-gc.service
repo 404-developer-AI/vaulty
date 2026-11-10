@@ -43,8 +43,9 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
-# A filtered call fails with EPERM instead of killing the process (the .NET runtime probes a few of them).
+SystemCallFilter=~@privileged
+# A filtered call fails with EPERM instead of killing the process. @resources stays allowed: the .NET runtime needs
+# some of its calls (memory policy, affinity) to start.
 SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
 AmbientCapabilities=
