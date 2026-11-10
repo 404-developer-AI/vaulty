@@ -43,17 +43,15 @@ public sealed class PostgresDatabase : IAsyncLifetime
         await using (var admin = new NpgsqlConnection(AdminConnectionString))
         {
             await admin.OpenAsync();
-            await Execute(admin, """
-                DO $$
-                DECLARE r text;
-                BEGIN
-                    FOREACH r IN ARRAY ARRAY['vaulty_migrator', 'vaulty_api', 'vaulty_worker', 'vaulty_gc'] LOOP
-                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-                            EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS', r);
-                        END IF;
-                    END LOOP;
-                END $$;
-                """);
+            // Fixtures start in parallel: two may create the same cluster-wide role at once; the loser finds it existing.
+            try
+            {
+                await CreateRolesAsync(admin);
+            }
+            catch (PostgresException ex) when (ex.SqlState is PostgresErrorCodes.UniqueViolation or PostgresErrorCodes.DuplicateObject)
+            {
+                await CreateRolesAsync(admin);
+            }
             await Execute(admin, $"CREATE DATABASE {Name} OWNER vaulty_migrator ENCODING 'UTF8' TEMPLATE template0");
         }
 
@@ -78,6 +76,18 @@ public sealed class PostgresDatabase : IAsyncLifetime
         // Migrations create many partitions; on a busy test machine they need more than the default 30 seconds.
         await Infrastructure.Database.DatabaseMigrator.MigrateAsync(new NpgsqlConnectionStringBuilder(Migrator) { CommandTimeout = 600 }.ConnectionString);
     }
+
+    private static Task CreateRolesAsync(NpgsqlConnection admin) => Execute(admin, """
+        DO $$
+        DECLARE r text;
+        BEGIN
+            FOREACH r IN ARRAY ARRAY['vaulty_migrator', 'vaulty_api', 'vaulty_worker', 'vaulty_gc'] LOOP
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+                    EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS', r);
+                END IF;
+            END LOOP;
+        END $$;
+        """);
 
     public async Task DisposeAsync()
     {

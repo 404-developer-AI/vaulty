@@ -170,7 +170,8 @@ jobs:
       - name: Clean runner
         run: |
           sudo systemctl stop mysql nginx apache2 2>/dev/null || true
-          sudo apt-get remove -y -qq postgresql\* 2>/dev/null || true
+          sudo apt-get purge -y -qq 'postgresql*' 2>/dev/null || true
+          sudo rm -rf /etc/postgresql /var/lib/postgresql
 
       - name: Install, doctor, update, rollback, uninstall
         run: bash deploy/ci/installer-test.sh

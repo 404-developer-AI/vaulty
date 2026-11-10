@@ -288,7 +288,7 @@ public static class InstallSteps
             c.Shell.CreateDirectory(Paths.Parent(Paths.PgData), Rwx);
             await c.Shell.RunCheckedAsync("chown", ["-R", "postgres:postgres", $"{Paths.Data}/postgresql"], cancellationToken: ct).ConfigureAwait(false);
             await c.Shell.RunCheckedAsync("chmod", ["-R", "0700", $"{Paths.Data}/postgresql"], cancellationToken: ct).ConfigureAwait(false);
-            await c.Shell.RunCheckedAsync("pg_createcluster", ["17", "main", "-d", Paths.PgData, "--", "--data-checksums", "--encoding=UTF8", "--locale=C.UTF-8"],
+            await c.Shell.RunCheckedAsync("pg_createcluster", ["17", "main", "-p", "5432", "-d", Paths.PgData, "--", "--data-checksums", "--encoding=UTF8", "--locale=C.UTF-8"],
                 cancellationToken: ct).ConfigureAwait(false);
         }
         c.Values["PG_DATA_DIRECTORY"] = Paths.PgData;

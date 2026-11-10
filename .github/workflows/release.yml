@@ -182,7 +182,8 @@ jobs:
           VERSION: ${{ needs.release.outputs.version }}
         run: |
           sudo systemctl stop mysql nginx apache2 2>/dev/null || true
-          sudo apt-get remove -y -qq 'postgresql*' 2>/dev/null || true
+          sudo apt-get purge -y -qq 'postgresql*' 2>/dev/null || true
+          sudo rm -rf /etc/postgresql /var/lib/postgresql
           printf 'profile: all-in-one\nenvironment: development\nfqdn: localhost\nadmin_email: admin@example.com\nworkers:\n  instances: 1\n' > answers.yaml
           sudo install -m 0600 -o root -g root answers.yaml /root/vaulty-answers.yaml
           curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/get-vaulty.sh" -o get-vaulty.sh
