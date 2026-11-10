@@ -222,6 +222,30 @@ public sealed class NotificationTests(PostgresDatabase db) : IClassFixture<Postg
     }
 
     [PostgresFact]
+    public async Task A_running_backup_shows_how_many_items_it_has_stored_so_far()
+    {
+        var seed = new NotificationSeed();
+        await seed.SeedAsync(db, DateTimeOffset.UtcNow.AddDays(1));
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        var (job, snapshot) = (Guid.NewGuid(), Guid.NewGuid());
+        await owner.ExecuteAsync(
+            """
+            INSERT INTO vaulty.jobs (id, organization_id, kind, tenant_id, protected_object_id, state, started_at) VALUES (@job, @org, 'backup', @tenant, @o, 'running', now());
+            INSERT INTO vaulty.snapshots (id, organization_id, tenant_id, protected_object_id, state) VALUES (@snapshot, @org, @tenant, @o, 'staged');
+            INSERT INTO vaulty.items (organization_id, tenant_id, id, protected_object_id, first_snapshot_id, source_id, kind)
+                SELECT @org, @tenant, gen_random_uuid(), @o, @snapshot, 'm' || g, CASE WHEN g <= 2 THEN 'folder' ELSE 'mail' END FROM generate_series(1, 9) g;
+            """, new { job, snapshot, org = seed.Org, tenant = seed.Tenant, o = seed.Object });
+        await using var api = VaultyDataSource.Create(db.Api);
+        var access = new UserAccess(seed.User, seed.Org, true, new Dictionary<string, HashSet<Guid>?> { [Permissions.JobsView] = null });
+        var row = Assert.Single(await new JobsService(api).ListAsync(access, null, null, null), r => r.Id == job);
+        Assert.Equal(7, row.ItemsSoFar); // folders are not counted as items
+        await owner.ExecuteAsync("UPDATE vaulty.jobs SET state = 'succeeded', finished_at = now() WHERE id = @job", new { job });
+        Assert.Null(Assert.Single(await new JobsService(api).ListAsync(access, null, null, null), r => r.Id == job).ItemsSoFar);
+        await owner.ExecuteAsync("UPDATE vaulty.snapshots SET state = 'failed' WHERE id = @snapshot; UPDATE vaulty.protected_objects SET state = 'paused' WHERE organization_id = @org",
+            new { snapshot, org = seed.Org });
+    }
+
+    [PostgresFact]
     public async Task Webhook_deliveries_are_signed_verifiable_by_a_receiver_and_retried()
     {
         var seed = new NotificationSeed();

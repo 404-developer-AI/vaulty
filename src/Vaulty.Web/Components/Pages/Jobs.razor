@@ -40,6 +40,10 @@
         <MudTd>@Time.Relative(context.StartedAt ?? context.CreatedAt)</MudTd>
         <MudTd>@Time.Relative(context.FinishedAt)</MudTd>
         <MudTd>
+            @if (context.ItemsSoFar is { } soFar)
+            {
+                <span class="vy-muted">@soFar.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) items stored so far</span>
+            }
             @Counts(context.ResultCounts)
             @if (!string.IsNullOrEmpty(context.Error)) { <div class="vy-muted">@context.Error</div> }
         </MudTd>

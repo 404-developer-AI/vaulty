@@ -146,7 +146,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
 }
 
 public sealed record JobRow(Guid Id, string Kind, string State, Guid? TenantId, string? TenantName, Guid? ObjectId, string? ObjectName, string? WorkflowId,
-    DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt, string ResultCounts, string? Error);
+    DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt, string ResultCounts, string? Error, long? ItemsSoFar = null);
 
 /// <summary>The jobs page: the job mirror, newest first, limited to the user's customers.</summary>
 public sealed class JobsService(NpgsqlDataSource dataSource)
@@ -159,10 +159,17 @@ public sealed class JobsService(NpgsqlDataSource dataSource)
         if (!access.Allows(Permissions.JobsView)) throw new AccessException("You cannot view jobs.");
         await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<(Guid Id, string Kind, string State, Guid? TenantId, string? TenantName, Guid? CustomerId, Guid? ObjectId,
-            string? ObjectName, string? WorkflowId, DateTime CreatedAt, DateTime? StartedAt, DateTime? FinishedAt, string ResultCounts, string? Error)>(new CommandDefinition(
+            string? ObjectName, string? WorkflowId, DateTime CreatedAt, DateTime? StartedAt, DateTime? FinishedAt, string ResultCounts, string? Error,
+            long? ItemsSoFar)>(new CommandDefinition(
             """
             SELECT j.id, j.kind, j.state, j.tenant_id, t.display_name, t.customer_id, j.protected_object_id, o.display_name, j.workflow_id,
-                   j.created_at, j.started_at, j.finished_at, j.result_counts::text, j.error
+                   j.created_at, j.started_at, j.finished_at, j.result_counts::text, j.error,
+                   -- A running backup has no counts yet; the items it has stored so far show that it moves.
+                   CASE WHEN j.state = 'running' AND j.kind = 'backup' THEN
+                       (SELECT count(*) FROM vaulty.items i JOIN vaulty.snapshots s ON s.id = i.first_snapshot_id
+                         WHERE i.tenant_id = j.tenant_id AND i.protected_object_id = j.protected_object_id AND i.state = 'staged'
+                           AND s.state = 'staged' AND i.kind <> 'folder')
+                   END AS items_so_far
               FROM vaulty.jobs j LEFT JOIN vaulty.tenants t ON t.id = j.tenant_id LEFT JOIN vaulty.protected_objects o ON o.id = j.protected_object_id
              WHERE (@state::text IS NULL OR j.state = @state) AND (@kind::text IS NULL OR j.kind = @kind) AND (@before::timestamptz IS NULL OR j.created_at < @before)
              ORDER BY j.created_at DESC LIMIT @limit
@@ -170,7 +177,7 @@ public sealed class JobsService(NpgsqlDataSource dataSource)
         return rows.Where(r => r.CustomerId is { } c ? access.Allows(Permissions.JobsView, c) : access.Allows(Permissions.JobsView, null))
             .Take(PageSize)
             .Select(r => new JobRow(r.Id, r.Kind, r.State, r.TenantId, r.TenantName, r.ObjectId, r.ObjectName, r.WorkflowId, Utc(r.CreatedAt)!.Value, Utc(r.StartedAt),
-                Utc(r.FinishedAt), r.ResultCounts, r.Error)).ToList();
+                Utc(r.FinishedAt), r.ResultCounts, r.Error, r.ItemsSoFar)).ToList();
     }
 
     private static DateTimeOffset? Utc(DateTime? value) => value is { } v ? new DateTimeOffset(DateTime.SpecifyKind(v, DateTimeKind.Utc)) : null;

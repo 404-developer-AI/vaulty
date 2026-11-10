@@ -220,6 +220,8 @@ All notable changes to this project are documented in this file. The format foll
 - A protected object waiting for a free place within its tenant's budget of concurrent backups (20 mailboxes, 10
   drives) is queued, not a missed run; a missed-run alert is settled as soon as the backup starts, and its text names
   the worker service and object storage as the causes to check.
+- The jobs page shows for a running backup how many items it has stored so far, so a long first backup is visibly
+  moving.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.
