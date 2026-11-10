@@ -33,7 +33,7 @@ public sealed record Dashboard(IReadOnlyList<CustomerStatusRow> Customers, IRead
 public sealed class DashboardService(NpgsqlDataSource dataSource, TimeProvider clock)
 {
     private sealed record ObjectData(Guid Id, Guid TenantId, string DisplayName, string Kind, string? SubKind, string State, string? LastState,
-        DateTime? CommittedAt, string? ItemCounts, int Exceptions, DateTime? VerifiedAt, int Frequency, bool LastFailed);
+        DateTime? CommittedAt, string? ItemCounts, int Exceptions, DateTime? VerifiedAt, int Frequency, bool LastFailed, DateTime CreatedAt);
 
     private sealed record TenantData(Guid Id, Guid CustomerId, string DisplayName, string ConsentState, string State, DateTime? VerificationAt,
         int? VerificationFailures, bool VerificationAlert, long Requests, long Throttled);
@@ -65,7 +65,8 @@ public sealed class DashboardService(NpgsqlDataSource dataSource, TimeProvider c
                    s.item_counts::text AS item_counts, coalesce(jsonb_array_length(s.exceptions), 0) AS exceptions, s.verified_at,
                    coalesce(po.frequency_minutes, pt.frequency_minutes, 360) AS frequency,
                    EXISTS (SELECT 1 FROM vaulty.snapshots f WHERE f.protected_object_id = o.id AND f.state = 'failed'
-                             AND f.started_at > coalesce(s.started_at, '-infinity'::timestamptz)) AS last_failed
+                             AND f.started_at > coalesce(s.started_at, '-infinity'::timestamptz)) AS last_failed,
+                   o.created_at
               FROM vaulty.protected_objects o
               LEFT JOIN vaulty.snapshots s ON s.id = o.last_snapshot_id
               LEFT JOIN vaulty.policies po ON po.protected_object_id = o.id
@@ -92,7 +93,7 @@ public sealed class DashboardService(NpgsqlDataSource dataSource, TimeProvider c
                 var objectRows = objects.Where(o => o.TenantId == tenant.Id).Select(o =>
                 {
                     var (status, reason) = Protection.Of(new ProtectionInput(o.State, o.LastState, Utc(o.CommittedAt), o.Frequency, tenant.ConsentState, false,
-                        o.LastFailed), now);
+                        o.LastFailed, Utc(o.CreatedAt)), now);
                     return new ObjectStatusRow(o.Id, o.TenantId, o.DisplayName, o.Kind, o.SubKind, status, reason, Utc(o.CommittedAt), ItemsOf(o.ItemCounts),
                         o.LastState == "partial" ? o.Exceptions : 0, Utc(o.VerifiedAt));
                 }).OrderByDescending(o => o.Status).ThenBy(o => o.Name, StringComparer.OrdinalIgnoreCase).ToList();
@@ -121,6 +122,9 @@ public sealed class DashboardService(NpgsqlDataSource dataSource, TimeProvider c
         {
             ProtectionStatus.Failed => (worst, $"{count} protected object{(count == 1 ? " is" : "s are")} failed."),
             ProtectionStatus.Partial => (worst, $"{count} protected object{(count == 1 ? " has" : "s have")} a partial latest snapshot."),
+            // Not all green yet, but nothing wrong either: say how far the first backups are.
+            ProtectionStatus.NotRunYet => (worst, $"{objects.Count - count} of {objects.Count} protected objects have a snapshot; " +
+                                                  $"{count} {(count == 1 ? "waits" : "wait")} for {(count == 1 ? "its" : "their")} first backup."),
             _ => (worst, ""),
         };
     }

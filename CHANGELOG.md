@@ -204,6 +204,9 @@ All notable changes to this project are documented in this file. The format foll
 - A OneDrive backup's job shows the outcome of the whole backup: its sync step, a child workflow with the same input,
   marked the job as succeeded without counts before the backup had committed, so a partial or failed drive backup
   could show as succeeded. Only the workflow that owns a job writes it now.
+- A protected object without any snapshot is "awaiting first backup" for at most twice its backup interval (at least a
+  day); after that it is failed, so a first backup that never runs is no longer a quiet wait. A tenant that waits for
+  first backups says how many of its protected objects already have a snapshot.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

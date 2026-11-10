@@ -81,6 +81,25 @@ public class ProtectionStatusTests
     }
 
     [Fact]
+    public void An_object_waits_for_its_first_backup_only_for_a_while()
+    {
+        static (ProtectionStatus, string) Added(double hoursAgo, int frequency = 360) =>
+            Protection.Of(new ProtectionInput("active", null, null, frequency, "granted", false, false, Now.AddHours(-hoursAgo)), Now);
+
+        Assert.Equal(ProtectionStatus.NotRunYet, Added(2).Item1);
+        Assert.Equal("Awaiting first backup", Protection.Label(ProtectionStatus.NotRunYet));
+        // At least a day, and twice the interval for long intervals; after that the missing first snapshot is a failure.
+        Assert.Equal(ProtectionStatus.NotRunYet, Added(23).Item1);
+        var (late, reason) = Added(25);
+        Assert.Equal(ProtectionStatus.Failed, late);
+        Assert.Contains("first backup did not run", reason, StringComparison.Ordinal);
+        Assert.Equal(ProtectionStatus.NotRunYet, Added(40, frequency: 1440).Item1);
+        Assert.Equal(ProtectionStatus.Failed, Added(49, frequency: 1440).Item1);
+        // Without a known creation time nothing changes.
+        Assert.Equal(ProtectionStatus.NotRunYet, Of(neverRan: true).Status);
+    }
+
+    [Fact]
     public void Only_genuine_failures_are_red()
     {
         Assert.Equal(ProtectionStatus.Protected, Of().Status);

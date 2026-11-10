@@ -22,7 +22,8 @@ public sealed record ProtectionInput(
     int FrequencyMinutes,
     string ConsentState,
     bool VerificationFailed,
-    bool LastRunFailed);
+    bool LastRunFailed,
+    DateTimeOffset? AddedAt = null);
 
 public static class Protection
 {
@@ -37,9 +38,14 @@ public static class Protection
         if (input.VerificationFailed) return (ProtectionStatus.Failed, "Verification found a problem in stored data.");
         if (input.LastSnapshotAt is not { } at)
         {
-            return input.LastRunFailed
-                ? (ProtectionStatus.Failed, "No snapshot could be committed yet.")
-                : (ProtectionStatus.NotRunYet, "Not run yet.");
+            if (input.LastRunFailed) return (ProtectionStatus.Failed, "No snapshot could be committed yet.");
+            // An object that never got its first snapshot is waiting only while that is plausible: after twice the backup
+            // interval (at least a day) something stopped the first backup, and that is a failure, not a wait.
+            if (input.AddedAt is { } added && now - added > FirstBackupGrace(input.FrequencyMinutes))
+            {
+                return (ProtectionStatus.Failed, $"No snapshot {Age(now - added)} after it was added; the first backup did not run.");
+            }
+            return (ProtectionStatus.NotRunYet, "Waiting for its first backup.");
         }
         var age = now - at;
         if (age > TimeSpan.FromMinutes(2.0 * input.FrequencyMinutes))
@@ -50,6 +56,8 @@ public static class Protection
         if (input.LastSnapshotState == "partial") return (ProtectionStatus.Partial, "The latest snapshot is missing items; each has a reason.");
         return (ProtectionStatus.Protected, "");
     }
+
+    public static TimeSpan FirstBackupGrace(int frequencyMinutes) => TimeSpan.FromMinutes(Math.Max(2.0 * frequencyMinutes, 24 * 60));
 
     public static ProtectionStatus Worst(IEnumerable<ProtectionStatus> states)
     {
@@ -80,7 +88,7 @@ public static class Protection
         ProtectionStatus.Failed => "Failed",
         ProtectionStatus.SourceDeleted => "Source deleted",
         ProtectionStatus.Paused => "Paused",
-        _ => "Not run yet",
+        _ => "Awaiting first backup",
     };
 
     public static string Age(TimeSpan age) => age.TotalHours < 1 ? $"{Math.Max(1, (int)age.TotalMinutes)} min"
