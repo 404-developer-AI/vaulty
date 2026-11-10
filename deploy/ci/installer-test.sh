@@ -49,7 +49,12 @@ done
 curl -fsS http://127.0.0.1:5001/api/v1/healthz/ready | grep -q ready || fail "/api/v1/healthz/ready is not ready"
 curl -fsS http://127.0.0.1:5000/healthz >/dev/null || fail "web /healthz does not answer"
 curl -ksS -o /dev/null -w '%{http_code}' https://localhost/ | grep -qE '^(200|302)$' || fail "Caddy does not serve the web app"
-[ "$(curl -ks -o /dev/null -w '%{http_code}' https://localhost/metrics)" = "404" ] || fail "/metrics is reachable through Caddy"
+# From outside (the host's own network address, not loopback) health and metrics endpoints answer 404.
+outside=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+for path in /metrics /healthz/ready; do
+  code=$(curl -ks -o /dev/null -w '%{http_code}' --resolve "localhost:443:${outside}" "https://localhost${path}")
+  [ "$code" = "404" ] || fail "${path} answers ${code} from outside the host"
+done
 
 step "report present with mode 0600"
 report=$(sudo sh -c 'ls /root/vaulty-install-report-*.txt' | head -1)
