@@ -1,10 +1,53 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigests", "docker:pinDigests"],
-  "labels": ["dependencies"],
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "docker:pinDigests"
+  ],
+  "labels": [
+    "dependencies"
+  ],
   "prConcurrentLimit": 5,
   "packageRules": [
-    { "matchManagers": ["nuget"], "groupName": "NuGet minor and patch", "matchUpdateTypes": ["minor", "patch"] },
-    { "matchManagers": ["github-actions"], "groupName": "GitHub Actions" }
+    {
+      "matchManagers": [
+        "nuget"
+      ],
+      "groupName": "NuGet minor and patch",
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ]
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "matchFileNames": [
+        "deploy/install/compose/images.versions"
+      ],
+      "matchPackageNames": [
+        "temporalio/**"
+      ],
+      "groupName": "Temporal images"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Container images of a release (deploy/install/compose/images.versions); digests are pinned at release time",
+      "fileMatch": [
+        "^deploy/install/compose/images\\.versions$"
+      ],
+      "matchStrings": [
+        "^\\S+\\s+(?<depName>[a-z0-9./-]+)\\s+(?<currentValue>\\S+)\\s*$"
+      ],
+      "matchStringsStrategy": "any",
+      "datasourceTemplate": "docker"
+    }
   ]
 }

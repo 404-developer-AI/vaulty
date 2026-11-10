@@ -150,6 +150,11 @@ All notable changes to this project are documented in this file. The format foll
   unit, database access, firewall), `report` without secrets, `secrets`, `master-key restore`, `db`, `logs` and
   `uninstall [--purge]`.
 - A CI job installs, checks, updates, rolls back and purges a locally built release on an Ubuntu 24.04 runner.
+- Release pipeline on `v*` tags: a self-contained linux-x64 tarball (`bin/`, `compose/`, `templates/`) with container
+  images pinned by digest, a CycloneDX SBOM, `SHA256SUMS` signed keyless with cosign, size and start-up time in the
+  release notes, a repository format-change flag, and a pre-release for versions with a suffix. A follow-up job
+  installs the published release with `get-vaulty.sh` and its signature check, and proves that a manipulated
+  `SHA256SUMS` is refused. `get-vaulty.sh` installs cosign with a pinned checksum. Renovate follows the image tags.
 
 ### Changed
 

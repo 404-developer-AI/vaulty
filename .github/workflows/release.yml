@@ -1,0 +1,195 @@
+# Release for tags vX.Y.Z and pre-release tags vX.Y.Z-alpha.N (and test tags vX.Y.Z-test.N): builds the self-contained
+# linux-x64 tarball with pinned image digests and a CycloneDX SBOM, writes SHA256SUMS, signs it keyless with cosign
+# (Sigstore; the identity is this workflow on this tag, issuer GitHub Actions), and publishes a GitHub release
+# (pre-release for any version with a suffix). A second job installs the published release on a clean ubuntu-24.04
+# runner with get-vaulty.sh, signature check on, and proves that a manipulated SHA256SUMS is refused.
+#
+# A repository format change is announced by "[format-change]" in the annotated tag message; it is stated in the
+# release notes and in release.json, and vaulty update then asks for explicit consent.
+#
+# Third-party actions are pinned by full commit SHA (the comment names the version); tools by version and SHA-256.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  COSIGN_VERSION: 2.4.1
+  COSIGN_SHA256: 8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b
+  SYFT_VERSION: 1.57.1
+  SYFT_SHA256: bf52519eb57f675d47c07d43213cb6dff6449f3d6d1147ff6701ed91f44eef0c
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write   # create the release; nothing is pushed to the repository
+      id-token: write   # keyless signing with cosign
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Version and format-change flag
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in *[!A-Za-z0-9._-]*|"") echo "::error::invalid tag $GITHUB_REF_NAME"; exit 1 ;; esac
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          message="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
+          format=false
+          case "$message" in *"[format-change]"*) format=true ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "format=$format" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign and syft (checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cosign" "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/cosign" /usr/local/bin/cosign
+          curl -fsSL -o "$RUNNER_TEMP/syft.tgz" "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  $RUNNER_TEMP/syft.tgz" | sha256sum -c -
+          sudo tar -xzf "$RUNNER_TEMP/syft.tgz" -C /usr/local/bin syft
+
+      - name: Test
+        env:
+          VAULTY_TEST_PG: ""
+        run: dotnet test Vaulty.slnx -c Release --filter "FullyQualifiedName!~Integration"
+
+      - name: Build the release tarball
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          FORMAT: ${{ steps.meta.outputs.format }}
+        run: |
+          flag=()
+          [ "$FORMAT" = "true" ] && flag=(--format-change)
+          bash deploy/ci/build-release.sh "$VERSION" dist "${flag[@]}"
+          cp deploy/install/get-vaulty.sh dist/
+          (cd dist && sha256sum get-vaulty.sh >> SHA256SUMS && cat SHA256SUMS)
+
+      - name: Measure size and start-up time
+        id: measure
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/measure"
+          tar -xzf "dist/vaulty-${VERSION}-linux-x64.tar.gz" -C "$RUNNER_TEMP/measure"
+          bin="$RUNNER_TEMP/measure/vaulty-${VERSION}/bin"
+          size=$(du -sh "$bin" | cut -f1)
+          tarball=$(du -h "dist/vaulty-${VERSION}-linux-x64.tar.gz" | cut -f1)
+          start=$(date +%s%N); "$bin/vaulty" --help >/dev/null; cli_ms=$(( ($(date +%s%N) - start) / 1000000 ))
+          start=$(date +%s%N); "$bin/vaulty-recover" --help >/dev/null; recover_ms=$(( ($(date +%s%N) - start) / 1000000 ))
+          # The web app up to its first answer (without a database it answers /healthz and nothing else).
+          ASPNETCORE_URLS=http://127.0.0.1:5099 VAULTY_DEV_MASTER_KEY="$(head -c 32 /dev/urandom | base64)" DOTNET_ENVIRONMENT=Development \
+            "$bin/Vaulty.Web" >/dev/null 2>&1 & pid=$!
+          start=$(date +%s%N); web_ms="not reached"
+          for _ in $(seq 1 300); do
+            if curl -fs http://127.0.0.1:5099/healthz >/dev/null 2>&1; then web_ms="$(( ($(date +%s%N) - start) / 1000000 )) ms"; break; fi
+            sleep 0.1
+          done
+          kill "$pid" 2>/dev/null || true
+          {
+            echo "size=bin/ ${size}, tarball ${tarball}"
+            echo "startup=vaulty CLI ${cli_ms} ms, vaulty-recover ${recover_ms} ms, Vaulty.Web to /healthz ${web_ms}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sign SHA256SUMS (keyless) and verify the signature
+        run: |
+          cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore.json dist/SHA256SUMS
+          cosign verify-blob --bundle dist/SHA256SUMS.sigstore.json \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com dist/SHA256SUMS
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          FORMAT: ${{ steps.meta.outputs.format }}
+          SIZE: ${{ steps.measure.outputs.size }}
+          STARTUP: ${{ steps.measure.outputs.startup }}
+        run: |
+          prerelease=()
+          [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          images=$(tar -xzOf "dist/vaulty-${VERSION}-linux-x64.tar.gz" "vaulty-${VERSION}/compose/images.json")
+          format_line="Repository format change: no."
+          [ "$FORMAT" = "true" ] && format_line="Repository format change: YES. vaulty update asks for --accept-format-change; read the notes before updating."
+          {
+            echo "## Vaulty ${VERSION}"
+            echo
+            echo "${format_line}"
+            echo
+            echo "Install or update on Ubuntu 24.04 LTS:"
+            echo
+            echo '```'
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/get-vaulty.sh | sudo bash -s -- --version ${VERSION}"
+            echo '```'
+            echo
+            echo "SHA256SUMS is signed keyless with cosign by this repository's release workflow; get-vaulty.sh verifies the signature and the checksum before anything is unpacked."
+            echo
+            echo "- Size: ${SIZE} (self-contained, not trimmed)"
+            echo "- Start-up: ${STARTUP}"
+            echo "- Container images (pinned by digest): \`${images}\`"
+            echo "- SBOM: sbom.cdx.json in the tarball (CycloneDX)"
+            echo
+            echo "See CHANGELOG.md for the changes."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "${prerelease[@]}" --verify-tag --title "Vaulty ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md" \
+            "dist/vaulty-${VERSION}-linux-x64.tar.gz" dist/SHA256SUMS dist/SHA256SUMS.sigstore.json dist/get-vaulty.sh
+
+  install-test:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A manipulated SHA256SUMS is refused
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
+          mirror="$RUNNER_TEMP/mirror/v${VERSION}"
+          mkdir -p "$mirror"
+          for f in "vaulty-${VERSION}-linux-x64.tar.gz" SHA256SUMS SHA256SUMS.sigstore.json; do curl -fsSL -o "$mirror/$f" "$base/$f"; done
+          sed -i '1s/^./0/' "$mirror/SHA256SUMS"
+          if sudo VAULTY_REPO="$GITHUB_REPOSITORY" VAULTY_RELEASE_BASE_URL="file://$RUNNER_TEMP/mirror" bash deploy/install/get-vaulty.sh --version "$VERSION" --help; then
+            echo "::error::get-vaulty.sh accepted a manipulated SHA256SUMS"; exit 1
+          fi
+          sudo rm -rf "/opt/vaulty/releases/${VERSION}"
+
+      - name: Install the published release with the signature check
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          sudo systemctl stop mysql nginx apache2 2>/dev/null || true
+          sudo apt-get remove -y -qq 'postgresql*' 2>/dev/null || true
+          printf 'profile: all-in-one\nenvironment: development\nfqdn: localhost\nadmin_email: admin@example.com\nworkers:\n  instances: 1\n' > answers.yaml
+          sudo install -m 0600 -o root -g root answers.yaml /root/vaulty-answers.yaml
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/get-vaulty.sh" -o get-vaulty.sh
+          sudo VAULTY_REPO="$GITHUB_REPOSITORY" bash get-vaulty.sh --version "$VERSION" --answers /root/vaulty-answers.yaml
+          curl -fsS http://127.0.0.1:5001/api/v1/healthz/ready | grep -q ready
+          sudo /opt/vaulty/current/bin/vaulty status
+
+      - name: Journal on failure
+        if: failure()
+        run: sudo journalctl -u 'vaulty-*' -u caddy --since "-30min" --no-pager | tail -300

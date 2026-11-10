@@ -20,8 +20,8 @@ set -euo pipefail
 VAULTY_REPO="${VAULTY_REPO:-404-developer-AI/vaulty}"
 VAULTY_VERSION="${VAULTY_VERSION:-latest}"
 VAULTY_RELEASE_BASE_URL="${VAULTY_RELEASE_BASE_URL:-https://github.com/${VAULTY_REPO}/releases/download}"
-COSIGN_VERSION="2.4.1"                                          # TODO: pin and keep in sync with the release workflow
-COSIGN_SHA256_AMD64=""                                          # TODO: sha256 of cosign-linux-amd64 for COSIGN_VERSION
+COSIGN_VERSION="2.4.1"                                          # keep in sync with .github/workflows/release.yml
+COSIGN_SHA256_AMD64="8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b"  # cosign_checksums.txt of v2.4.1
 COSIGN_IDENTITY_RE="^https://github.com/${VAULTY_REPO}/\.github/workflows/release\.yml@refs/tags/v"
 COSIGN_ISSUER="https://token.actions.githubusercontent.com"
 INSTALL_ROOT="/opt/vaulty"
