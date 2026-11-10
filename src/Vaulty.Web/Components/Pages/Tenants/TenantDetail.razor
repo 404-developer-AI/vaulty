@@ -3,8 +3,11 @@
 @using System.Text.Json
 @using Vaulty.Graph.Onboarding
 @using Vaulty.Infrastructure.Tenants
+@using Vaulty.Infrastructure.Retention
 @using Vaulty.Workflows.Tenants
 @inject TenantService TenantService
+@inject TenantDeletion Deletion
+@inject LegalHold Holds
 @inject IWorkflowStarter Workflows
 @inject CurrentAccess Current
 @inject NavigationManager Navigation
@@ -73,6 +76,7 @@ else
             <MudTh>Type</MudTh>
             <MudTh>Status</MudTh>
             <MudTh>Last backup</MudTh>
+            <MudTh>Legal hold</MudTh>
             <MudTh></MudTh>
         </HeaderContent>
         <RowTemplate>
@@ -106,6 +110,17 @@ else
             </MudTd>
             <MudTd>@(context.LastBackupAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "")</MudTd>
             <MudTd>
+                @if (_canHold)
+                {
+                    <MudSwitch T="bool" Value="@_held.Contains(context.Id)" ValueChanged="@(v => SetObjectHoldAsync(context, v))" Color="Color.Warning"
+                               Disabled="@(_deletion?.LegalHold == true)" aria-label="@($"Legal hold for {context.DisplayName}")" />
+                }
+                else if (_held.Contains(context.Id))
+                {
+                    <span class="vy-status neutral">On hold</span>
+                }
+            </MudTd>
+            <MudTd>
                 @if (_canRun && context.State == "active" && Granted)
                 {
                     <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Backup" OnClick="@(() => BackUpNowAsync(context))">Back up now</MudButton>
@@ -114,6 +129,50 @@ else
         </RowTemplate>
         <NoRecordsContent><span class="vy-muted">Nothing found yet. Check permissions, then find mailboxes and OneDrives.</span></NoRecordsContent>
     </MudTable>
+
+    @if (_deletion is not null && (_canHold || _canDelete))
+    {
+        <MudPaper Class="pa-4 mt-4" Elevation="0" Outlined="true">
+            <MudText Typo="Typo.h6">Legal hold and deletion</MudText>
+            @if (_canHold)
+            {
+                <MudSwitch T="bool" Value="@_deletion.LegalHold" ValueChanged="SetTenantHoldAsync" Color="Color.Warning"
+                           Label="Legal hold for the whole tenant: no snapshot expires until the hold is released" />
+            }
+            else if (_deletion.LegalHold)
+            {
+                <p>This tenant is on legal hold: no snapshot expires until the hold is released.</p>
+            }
+            @if (_canDelete)
+            {
+                @switch (_deletion.State)
+                {
+                    case "active":
+                        <p class="vy-muted mt-2">Deleting a tenant stops its backups at once. A second administrator can confirm the deletion after 30 days;
+                            until then it can be withdrawn. After confirmation the data is removed as its retention lock expires.</p>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Error" OnClick="RequestDeletionAsync" Disabled="@(_busy || _deletion.LegalHold)">Request deletion</MudButton>
+                        break;
+                    case "deletion_requested":
+                        <MudAlert Severity="Severity.Warning" Class="mt-2">
+                            Deletion requested on @_deletion.RequestedAt?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture).
+                            Backups are stopped. A second administrator can confirm from @_deletion.ConfirmableFrom?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) (UTC).
+                        </MudAlert>
+                        <div class="mt-2">
+                            <MudButton Variant="Variant.Outlined" OnClick="WithdrawDeletionAsync" Disabled="_busy">Withdraw the request</MudButton>
+                            @if (_deletion.RequestedBy != _userId)
+                            {
+                                <MudButton Class="ml-2" Variant="Variant.Filled" Color="Color.Error" OnClick="ConfirmDeletionAsync"
+                                           Disabled="@(_busy || Clock.GetUtcNow() < _deletion.ConfirmableFrom)">Confirm deletion</MudButton>
+                            }
+                        </div>
+                        break;
+                    default:
+                        <p class="mt-2">This tenant is deleted. Its data is removed as its retention lock expires.</p>
+                        break;
+                }
+            }
+        </MudPaper>
+    }
 }
 
 @code {
@@ -129,6 +188,10 @@ else
     private bool _canBrowse;
     private bool _canManagePolicy;
     private bool _canChangeRetention;
+    private bool _canHold;
+    private bool _canDelete;
+    private TenantDeletionState? _deletion;
+    private IReadOnlySet<Guid> _held = new HashSet<Guid>();
     private int _frequencyHours = 6;
     private int _retentionDays = 90;
     private string? _excluded;
@@ -180,7 +243,11 @@ else
         _canBrowse = access.Allows(Permissions.SnapshotsBrowse, tenant.CustomerId);
         _canManagePolicy = access.Allows(Permissions.PoliciesManage, tenant.CustomerId);
         _canChangeRetention = access.Allows(Permissions.RetentionManage, tenant.CustomerId);
+        _canHold = access.Allows(Permissions.LegalHoldManage, tenant.CustomerId);
+        _canDelete = access.Allows(Permissions.TenantsDelete, tenant.CustomerId);
         _objects = await TenantService.ProtectedObjectsAsync(_organizationId, TenantId);
+        _deletion = await Deletion.StateAsync(access, TenantId);
+        _held = await Holds.ObjectsOnHoldAsync(access, TenantId);
         var policy = await TenantService.PolicyAsync(_organizationId, TenantId);
         (_frequencyHours, _retentionDays, _excluded) = (policy.FrequencyMinutes / 60, policy.RetentionDays, string.Join(", ", policy.ExcludedFolders));
     }
@@ -239,6 +306,53 @@ else
         catch (TenantException ex)
         {
             Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task SetObjectHoldAsync(ProtectedObjectRow row, bool hold)
+    {
+        await Holds.SetForObjectAsync(await Current.GetAsync(), row.Id, hold);
+        Snackbar.Add(hold ? $"Legal hold placed on {row.DisplayName}." : $"Legal hold on {row.DisplayName} released.", Severity.Info);
+        await LoadAsync();
+    }
+
+    private async Task SetTenantHoldAsync(bool hold)
+    {
+        await Holds.SetForTenantAsync(await Current.GetAsync(), TenantId, hold);
+        Snackbar.Add(hold ? "Legal hold placed on the tenant." : "Legal hold on the tenant released.", Severity.Info);
+        await LoadAsync();
+    }
+
+    private async Task RequestDeletionAsync() => await DeletionStepAsync(async (access, fresh) => await Deletion.RequestAsync(access, fresh, TenantId),
+        "Deletion requested. Backups are stopped; a second administrator can confirm in 30 days.");
+
+    private async Task WithdrawDeletionAsync() => await DeletionStepAsync(async (access, _) => await Deletion.WithdrawAsync(access, TenantId),
+        "The deletion request is withdrawn. Backups resume.");
+
+    private async Task ConfirmDeletionAsync() => await DeletionStepAsync(async (access, fresh) => await Deletion.ConfirmAsync(access, fresh, TenantId),
+        "The tenant is deleted.");
+
+    private async Task DeletionStepAsync(Func<Vaulty.Infrastructure.Access.UserAccess, bool, Task> step, string done)
+    {
+        var user = (await AuthenticationState).User;
+        _busy = true;
+        try
+        {
+            await step(await Current.GetAsync(user), VaultyWebSetup.HasFreshStepUp(user, Clock));
+            Snackbar.Add(done, Severity.Success);
+            await LoadAsync();
+        }
+        catch (Vaulty.Infrastructure.Restore.StepUpRequiredException)
+        {
+            await ConfirmedAsync();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Vaulty.Infrastructure.Access.AccessException)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
         }
     }
 

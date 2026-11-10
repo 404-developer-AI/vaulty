@@ -168,3 +168,10 @@ public sealed class RestoreMigration : SqlMigration
 {
     protected override string ScriptName => "0010_restore";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261110000011_Verification")]
+public sealed class VerificationMigration : SqlMigration
+{
+    protected override string ScriptName => "0011_verification";
+}

@@ -451,6 +451,19 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
                     now, countsJson, exceptionsJson, rootHash, objectKey = RepositoryLayout.Snapshot(target.TenantId, target.ProtectedObjectId, target.SnapshotId),
                     lockUntil, nextRun = now + frequency, sequence,
                 }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            // Drift: far fewer items than the previous snapshot usually means something went wrong at the source, not a clean-up.
+            var previousItems = await session.Connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+                """
+                SELECT (item_counts->>'items')::bigint FROM vaulty.snapshots
+                 WHERE protected_object_id = @ProtectedObjectId AND state IN ('committed', 'partial') AND id <> @SnapshotId
+                 ORDER BY sequence DESC LIMIT 1
+                """, new { target.ProtectedObjectId, target.SnapshotId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            if (Retention.DriftDetection.IsDrift(previousItems, counts["items"]))
+            {
+                await Retention.Alerts.RaiseAsync(session, target.TenantId, target.ProtectedObjectId, "backup.drift", "warning",
+                    $"The latest snapshot holds {counts["items"]} items, {Retention.DriftDetection.DropPercent(previousItems!.Value, counts["items"])}% fewer than the previous one ({previousItems}). Check whether items were deleted in Microsoft 365.",
+                    new { snapshot = target.SnapshotId, previous = previousItems, current = counts["items"] }, cancellationToken).ConfigureAwait(false);
+            }
             await Audit.AuditLog.WriteAsync(session, "system:backup", partial ? "backup.partial" : "backup.completed", $"object:{target.ProtectedObjectId}",
                 new { snapshot = target.SnapshotId, items = counts["items"], exceptions = allExceptions.Count }, cancellationToken).ConfigureAwait(false);
             await session.CommitAsync(cancellationToken).ConfigureAwait(false);

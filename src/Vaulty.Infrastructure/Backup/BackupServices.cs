@@ -23,7 +23,8 @@ public interface IBackupStorage
     Task<bool> ReadyAsync(CancellationToken cancellationToken = default);
 }
 
-public sealed class S3BackupStorage(StorageClientFactory factory) : IBackupStorage
+/// <summary>The backup bucket through one storage identity: the worker identity by default, the garbage-collection identity in the gc service.</summary>
+public sealed class S3BackupStorage(StorageClientFactory factory, StorageRole role = StorageRole.Worker) : IBackupStorage
 {
     private readonly SemaphoreSlim _lock = new(1, 1);
     private (string AccessKeyId, IObjectStore Store)? _cached;
@@ -32,12 +33,12 @@ public sealed class S3BackupStorage(StorageClientFactory factory) : IBackupStora
     {
         var settings = await factory.SettingsAsync(cancellationToken).ConfigureAwait(false)
                        ?? throw new InvalidOperationException("Object storage is not configured.");
-        var keyId = settings.Identities[StorageRole.Worker].AccessKeyId;
+        var keyId = settings.Identities[role].AccessKeyId;
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (_cached is { } c && c.AccessKeyId == keyId) return c.Store;
-            var store = await factory.CreateAsync(StorageRole.Worker, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var store = await factory.CreateAsync(role, cancellationToken: cancellationToken).ConfigureAwait(false);
             _cached = (keyId, store);
             return store;
         }

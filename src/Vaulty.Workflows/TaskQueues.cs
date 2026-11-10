@@ -13,6 +13,12 @@ public static class TaskQueues
     public const string Gc = "gc";
 
     public static readonly IReadOnlyList<string> All = [Backup, Restore, Verify, Gc];
+
+    /// <summary>The queues of the worker processes (worker database role and storage identity).</summary>
+    public static readonly IReadOnlyList<string> ForWorkers = [Backup, Restore];
+
+    /// <summary>The queues of the gc service: the only process with the garbage-collection role and identity.</summary>
+    public static readonly IReadOnlyList<string> ForGc = [Verify, Gc];
 }
 
 /// <summary>Activity options shared by the workflows.</summary>

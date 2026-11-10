@@ -196,6 +196,7 @@ public sealed class SchemaTests(PostgresDatabase db) : IClassFixture<PostgresDat
     }
 
     [PostgresFact]
+    // Garbage collection may remove the rows of item versions that only expired snapshots held, never add or change one.
     public async Task Gc_role_cannot_write_items()
     {
         var a = Guid.NewGuid();
@@ -205,7 +206,6 @@ public sealed class SchemaTests(PostgresDatabase db) : IClassFixture<PostgresDat
                  {
                      "INSERT INTO vaulty.items (organization_id, tenant_id, id, protected_object_id, first_snapshot_id, source_id, kind) SELECT organization_id, tenant_id, gen_random_uuid(), protected_object_id, first_snapshot_id, 'x', 'mail' FROM vaulty.items LIMIT 1",
                      "UPDATE vaulty.items SET size = 1",
-                     "DELETE FROM vaulty.items",
                      "INSERT INTO vaulty.chunk_index (organization_id, tenant_id, chunk_hash, pack_id, \"offset\", length, plaintext_length) SELECT organization_id, tenant_id, sha256('x'::bytea), pack_id, 0, 1, 1 FROM vaulty.chunk_index LIMIT 1",
                      "DELETE FROM vaulty.tenant_keys",
                  })

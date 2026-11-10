@@ -97,8 +97,25 @@ All notable changes to this project are documented in this file. The format foll
   export; the zip is removed after the download.
 - Restoring elsewhere and exporting need their own permissions and "Confirm it's you"; every request, link and download
   is written to the audit log.
+- Verification (daily, in the gc service): a scrub re-reads whole packs, oldest scrub first and at least 1% of a
+  tenant's packs per week; a restore drill rebuilds 10 random items in memory and checks their hash; the latest snapshot
+  of every protected object is opened. A snapshot is marked verified only when all of that passed and the tenant had a
+  scrub in the last 7 days. Anything that does not match raises a critical alert.
+- Drift detection: a snapshot with more than 30% fewer items than the previous one raises an alert.
+- Retention and garbage collection (daily, own database role and storage identity, the only ones that may delete):
+  snapshots outside their policy's retention expire, except under legal hold and except the newest snapshot of an
+  object that still exists; packs, index files, manifests and snapshot roots that no remaining snapshot needs are
+  removed once their Object Lock has expired. Every run starts as a dry run with a report. A run is refused when the
+  host clock differs more than 5 minutes from the database, while a backup of the tenant runs, or when it would remove
+  more than 25% of a tenant's data.
+- Legal hold per protected object or per tenant, set on the tenant page and written to the audit log.
+- Deleting a tenant: one administrator requests it after "Confirm it's you" and its backups stop at once; a reminder is
+  raised every day; a second administrator can confirm after 30 days; until then the request can be withdrawn. A tenant
+  on legal hold cannot be deleted.
 
 ### Changed
 
 - The repository engine reuses one pack buffer per writer and pooled chunk buffers, so streaming a 2 GB file adds less
   than 30 MB of memory. The stored format is unchanged.
+- The verifier and garbage collector run in the worker host with `--role gc` under the gc database role and storage
+  identity; the worker processes serve only the backup and restore queues.
