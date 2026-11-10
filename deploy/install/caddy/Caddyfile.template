@@ -22,17 +22,19 @@
 		-Server
 	}
 
-	# Health and metrics endpoints are reachable from the host only.
+	# Health and metrics endpoints are reachable from the host only. A handle block of its own: Caddy runs handle
+	# blocks before a bare respond, so the 404 must be one of them, and the first.
 	@internal {
-		path /healthz/* /metrics
+		path /healthz /healthz/* /metrics
 		not remote_ip 127.0.0.1 ::1
 	}
-	respond @internal 404
+	handle @internal {
+		respond 404
+	}
 
 	@api path /api/*
 	handle @api {
 		reverse_proxy 127.0.0.1:5001 {
-			header_up X-Forwarded-Proto {scheme}
 			transport http {
 				read_timeout 300s
 			}
@@ -40,9 +42,7 @@
 	}
 
 	handle {
-		reverse_proxy 127.0.0.1:5000 {
-			header_up X-Forwarded-Proto {scheme}
-		}
+		reverse_proxy 127.0.0.1:5000
 	}
 
 	handle_errors {
