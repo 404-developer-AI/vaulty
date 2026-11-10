@@ -304,6 +304,7 @@ public static class InstallSteps
         }
         await c.Shell.SystemctlAsync("enable", "postgresql@17-main").ConfigureAwait(false);
         await c.Shell.SystemctlAsync("restart", "postgresql@17-main").ConfigureAwait(false);
+        await WaitForPostgresAsync(c, ct).ConfigureAwait(false);
         var exists = await c.Shell.RunAsync("runuser", ["-u", "postgres", "--", "psql", "-tAc", "SELECT 1 FROM pg_roles WHERE rolname = 'vaulty_migrator'"],
             cancellationToken: ct).ConfigureAwait(false);
         if (exists.Output.Trim() != "1")
@@ -313,6 +314,22 @@ public static class InstallSteps
             var script = $"\\set temporal_password '''{c.Secrets.TemporalPassword}'''\n" + c.Shell.ReadFile(c.Template("postgres/roles.sql"));
             await c.Shell.RunCheckedAsync("runuser", ["-u", "postgres", "--", "psql", "-v", "ON_ERROR_STOP=1", "-q", "-f", "-"], script, cancellationToken: ct)
                 .ConfigureAwait(false);
+        }
+    }
+
+    private static async Task WaitForPostgresAsync(InstallContext c, CancellationToken ct)
+    {
+        try
+        {
+            await WaitAsync(c, "PostgreSQL", async () => (await c.Shell.RunAsync("pg_isready", ["-q", "-h", "/var/run/postgresql"], cancellationToken: ct)
+                .ConfigureAwait(false)).Succeeded, TimeSpan.FromSeconds(90), ct).ConfigureAwait(false);
+        }
+        catch (InstallException)
+        {
+            var clusters = await c.Shell.RunAsync("pg_lsclusters", [], cancellationToken: ct).ConfigureAwait(false);
+            var journal = await c.Shell.RunAsync("journalctl", ["-u", "postgresql@17-main", "-n", "30", "--no-pager"], cancellationToken: ct).ConfigureAwait(false);
+            var log = await c.Shell.RunAsync("sh", ["-c", "tail -n 30 /var/log/postgresql/postgresql-17-main.log 2>/dev/null"], cancellationToken: ct).ConfigureAwait(false);
+            throw new InstallException($"PostgreSQL did not start. {clusters.Output} {journal.Output} {log.Output}");
         }
     }
 

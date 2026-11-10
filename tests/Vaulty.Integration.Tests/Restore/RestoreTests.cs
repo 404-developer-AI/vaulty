@@ -237,14 +237,16 @@ public sealed class RestoreTests(TemporalFixture fixture, ITestOutputHelper outp
         Assert.False(backup.IsPartial);
         output.WriteLine($"backup of {simulator.Items.Count} items: {watch.Elapsed.TotalSeconds:F0} s");
 
-        var tempBefore = Directory.GetFiles(Path.GetTempPath()).Length;
+        // Other processes use the temp folder too; an export spilled to disk would leave a file of megabytes there.
+        var exportStarted = DateTime.UtcNow;
         watch.Restart();
         var (restoreId, outcome) = await harness.RestoreAsync(mailbox, snapshot, new RestoreSelection([], ["f-inbox"]), RestoreModes.Export);
         Assert.Equal("succeeded", outcome.State);
         Assert.Equal(5000, outcome.ItemCounts["restored"]);
         output.WriteLine($"export of 5,000 items: {watch.Elapsed.TotalSeconds:F1} s in {harness.ExportUploads.PartsUploaded} parts");
         Assert.True(harness.ExportUploads.PartsUploaded > 4, $"{harness.ExportUploads.PartsUploaded} parts");
-        Assert.True(Directory.GetFiles(Path.GetTempPath()).Length <= tempBefore, "the export wrote temporary files");
+        Assert.DoesNotContain(new DirectoryInfo(Path.GetTempPath()).EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
+            .Where(f => { try { return f.LastWriteTimeUtc >= exportStarted && f.Length >= 1024 * 1024; } catch (IOException) { return false; } }), f => true);
 
         var key = Assert.Single(harness.ExportStore.Keys);
         await using (var zipStream = await harness.ExportStore.GetAsync(key))
