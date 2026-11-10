@@ -182,6 +182,9 @@ All notable changes to this project are documented in this file. The format foll
 - The services run in the directory that holds their binaries, so the web app finds its `wwwroot` and serves its
   stylesheets, scripts and images on an installed host.
 - An update also renders the Caddyfile of the new release, so a fixed template reaches hosts installed earlier.
+- The customer list opens: a text array column is mapped by hand, as Npgsql reports it as `System.Array`.
+- The audit log shows the user's name instead of the user id (the id stays in the tooltip); the role picker no longer
+  shows an empty id; page headings no longer get a focus ring after navigation.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

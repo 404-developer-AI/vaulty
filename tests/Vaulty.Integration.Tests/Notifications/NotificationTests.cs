@@ -198,6 +198,8 @@ public sealed class NotificationTests(PostgresDatabase db) : IClassFixture<Postg
         var (hookId, secretText) = await service.CreateAsync(admin, "PSA", $"{server.Url}/hook", [NotificationKinds.BackupPartial, NotificationKinds.RestoreCompleted]);
         var secret = Convert.FromBase64String(secretText);
         await Assert.ThrowsAsync<AccessException>(() => service.ListAsync(new UserAccess(seed.User, seed.Org, true, new Dictionary<string, HashSet<Guid>?>())));
+        var listed = Assert.Single(await service.ListAsync(admin), w => w.Id == hookId);
+        Assert.Equal([NotificationKinds.BackupPartial, NotificationKinds.RestoreCompleted], listed.Events.Order(StringComparer.Ordinal));
 
         // An event the webhook subscribed to, and one it did not.
         await using (var session = await OrganizationSession.BeginAsync(worker, seed.Org))

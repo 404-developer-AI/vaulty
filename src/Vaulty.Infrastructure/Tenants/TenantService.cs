@@ -29,11 +29,13 @@ public sealed class CustomerService(NpgsqlDataSource dataSource)
     public async Task<IReadOnlyList<CustomerRow>> ListAsync(Guid organizationId, CancellationToken cancellationToken = default)
     {
         await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
-        return (await session.Connection.QueryAsync<CustomerRow>(new CommandDefinition(
+        // Npgsql reports a text[] column as System.Array, which no record constructor matches: the rows are mapped here.
+        var rows = await session.Connection.QueryAsync<(Guid Id, string Code, string Name, Array Tags, int Tenants)>(new CommandDefinition(
             """
             SELECT c.id, c.code, c.name, c.tags, (SELECT count(*)::int FROM vaulty.tenants t WHERE t.customer_id = c.id AND t.state <> 'deleted') AS tenants
               FROM vaulty.customers c WHERE c.deleted_at IS NULL ORDER BY lower(c.name)
-            """, transaction: session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false)).ToList();
+            """, transaction: session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        return rows.Select(r => new CustomerRow(r.Id, r.Code, r.Name, r.Tags.Cast<string>().ToArray(), r.Tenants)).ToList();
     }
 
     public async Task<Guid> CreateAsync(Guid organizationId, Guid actor, string code, string name, IEnumerable<string> tags,

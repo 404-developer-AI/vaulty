@@ -112,3 +112,6 @@ html, body {
 .vy-alert-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 0; border-bottom: 1px solid var(--vy-border); }
 .vy-alert-row:last-child { border-bottom: 0; }
 .vy-alert-message { flex: 1 1 320px; }
+
+/* Blazor moves focus to the page heading after navigation (for screen readers); it is not an input, so no ring. */
+h1:focus, h1:focus-visible { outline: none; }

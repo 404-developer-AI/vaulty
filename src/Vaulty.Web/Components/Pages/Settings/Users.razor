@@ -62,7 +62,7 @@
         <MudTd>
             @if (_canManageRoles)
             {
-                <MudSelect T="Guid" Dense="true" Label="Role" Value="Guid.Empty" ValueChanged="@(role => AssignAsync(context, role))">
+                <MudSelect T="Guid" Dense="true" Label="Role" Value="Guid.Empty" ToStringFunc="@RoleName" ValueChanged="@(role => AssignAsync(context, role))">
                     @foreach (var role in _roles)
                     {
                         <MudSelectItem Value="@role.Id">@role.Name</MudSelectItem>
@@ -74,6 +74,9 @@
 </MudTable>
 
 @code {
+    // No role selected yet shows an empty field, not the empty id.
+    private string RoleName(Guid id) => _roles.FirstOrDefault(r => r.Id == id)?.Name ?? string.Empty;
+
     [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
 
     private IReadOnlyList<UserRow> _users = [];

@@ -18,9 +18,9 @@
     </HeaderContent>
     <RowTemplate>
         <MudTd>@context.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</MudTd>
-        <MudTd>@context.Actor</MudTd>
+        <MudTd><span title="@context.Actor">@Label(context.Actor)</span></MudTd>
         <MudTd>@context.Action</MudTd>
-        <MudTd>@context.Target</MudTd>
+        <MudTd><span title="@context.Target">@Label(context.Target)</span></MudTd>
         <MudTd><code>@context.Details</code></MudTd>
     </RowTemplate>
 </MudTable>
@@ -35,13 +35,18 @@
     [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
 
     private List<AuditRow> _rows = [];
+    private Dictionary<string, string> _users = new(StringComparer.Ordinal);
     private Guid _organizationId;
 
     protected override async Task OnInitializedAsync()
     {
         _organizationId = VaultyWebSetup.OrganizationId((await AuthenticationState).User) ?? Guid.Empty;
+        // Entries keep the stable id ("user:<id>"); the page shows the user's name, with the id in the tooltip.
+        _users = (await Directory.UsersAsync(_organizationId)).ToDictionary(u => $"user:{u.Id}", u => u.DisplayName ?? u.UserName, StringComparer.Ordinal);
         _rows = (await Directory.AuditAsync(_organizationId, PageSize)).ToList();
     }
+
+    private string? Label(string? reference) => reference is not null && _users.TryGetValue(reference, out var name) ? name : reference;
 
     private async Task MoreAsync()
     {

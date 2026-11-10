@@ -58,6 +58,24 @@ public sealed class TenantTests(PostgresDatabase db) : IClassFixture<PostgresDat
             new GraphServices(tokens ?? new ScriptedTokens(), graphBaseUri: new Uri($"{_graph.Url}/v1.0/")), TimeProvider.System);
 
     [PostgresFact]
+    public async Task The_customer_list_shows_code_name_tags_and_tenant_count_and_is_empty_for_a_new_organization()
+    {
+        var (org, customer, admin, api, secrets) = await OrganizationAsync();
+        var customers = new CustomerService(api);
+        var row = Assert.Single(await customers.ListAsync(org));
+        Assert.Equal((customer, "Contoso", 0), (row.Id, row.Name, row.Tenants));
+        Assert.Equal(["gold"], row.Tags);
+
+        var tenants = Tenants(api, secrets);
+        var pending = await tenants.BeginConnectAsync(org, admin, customer, "Contoso tenant");
+        await tenants.CompleteConnectAsync(org, admin, pending.Id, Guid.NewGuid(), Guid.NewGuid());
+        Assert.Equal(1, Assert.Single(await customers.ListAsync(org)).Tenants);
+
+        var empty = await new OrganizationSetup(api, new AccessService(api)).CreateOrganizationAsync("Empty " + Guid.NewGuid(), Guid.NewGuid());
+        Assert.Empty(await customers.ListAsync(empty));
+    }
+
+    [PostgresFact]
     public async Task Connecting_stores_the_certificate_and_refuses_a_tenant_connected_elsewhere()
     {
         var (org, customer, admin, api, secrets) = await OrganizationAsync();
