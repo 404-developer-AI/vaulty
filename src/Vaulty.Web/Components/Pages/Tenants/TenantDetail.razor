@@ -20,7 +20,12 @@
 
 <PageTitle>@(_tenant?.DisplayName ?? "Tenant") · Vaulty</PageTitle>
 
-@if (_tenant is null)
+@if (!_loaded)
+{
+    @* Loading is not "does not exist": the message below only shows once loading found nothing. *@
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-4" />
+}
+else if (_tenant is null)
 {
     <p class="vy-muted">This tenant does not exist or you have no access to it.</p>
 }
@@ -278,7 +283,19 @@ else
         _ => row.Kind,
     };
 
-    protected override async Task OnParametersSetAsync() => await LoadAsync();
+    private bool _loaded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            await LoadAsync();
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
 
     private async Task LoadAsync()
     {

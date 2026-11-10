@@ -9,7 +9,12 @@
 
 <PageTitle>@(_object?.DisplayName ?? "Protected object") · Vaulty</PageTitle>
 
-@if (_object is null)
+@if (!_loaded)
+{
+    @* Loading is not "does not exist": the message below only shows once loading found nothing. *@
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-4" />
+}
+else if (_object is null)
 {
     <p class="vy-muted">This protected object does not exist or you have no access to it.</p>
 }
@@ -74,7 +79,21 @@ else
     private List<BreadcrumbItem> _crumbs = [];
     private IReadOnlyList<RestoreSummary> _restores = [];
 
+    private bool _loaded;
+
     protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            await LoadPageAsync();
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task LoadPageAsync()
     {
         await Time.LoadAsync();
         var access = await Current.GetAsync();

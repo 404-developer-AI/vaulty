@@ -119,6 +119,23 @@ public sealed class CliTests
         new(host, answers ?? Answers, Host, FakeHost.Release, "0.1.0", log ?? TextWriter.Null) { SignatureVerified = true };
 
     [Fact]
+    public void A_page_says_something_does_not_exist_only_after_it_has_loaded()
+    {
+        // While the interactive circuit loads a page again, its data is still empty; a "does not exist" message shown then
+        // is wrong. Every page with such a message shows a loading state first.
+        var pages = Directory.GetFiles(Path.Combine(FakeHost.Repository, "src", "Vaulty.Web", "Components", "Pages"), "*.razor", SearchOption.AllDirectories)
+            .Where(p => File.ReadAllText(p).Contains("does not exist", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(pages);
+        foreach (var page in pages)
+        {
+            var text = File.ReadAllText(page);
+            var loading = text.IndexOf("@if (!_loaded)", StringComparison.Ordinal);
+            Assert.True(loading >= 0 && loading < text.IndexOf("does not exist", StringComparison.Ordinal),
+                $"{Path.GetFileName(page)} shows \"does not exist\" without a loading state before it");
+        }
+    }
+
+    [Fact]
     public void Every_tree_view_in_the_web_app_has_an_item_template()
     {
         // MudBlazor renders nothing for a tree view that gets Items without an ItemTemplate: the snapshot browser showed an
