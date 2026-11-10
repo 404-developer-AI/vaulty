@@ -507,9 +507,18 @@ public static class InstallSteps
     internal static async Task ServicesAsync(InstallContext c, CancellationToken ct)
     {
         await InstallUnitsAsync(c, c.ReleaseDirectory, ct).ConfigureAwait(false);
-        await c.Shell.SystemctlAsync("start", "vaulty-migrate.service").ConfigureAwait(false);
+        await StartUnitAsync(c, ct, "start", "vaulty-migrate.service").ConfigureAwait(false);
         await c.Shell.SystemctlAsync("enable", "vaulty.target", "vaulty-update-check.timer").ConfigureAwait(false);
-        foreach (var unit in Paths.Services(c.Workers)) await c.Shell.SystemctlAsync("enable", "--now", unit).ConfigureAwait(false);
+        foreach (var unit in Paths.Services(c.Workers)) await StartUnitAsync(c, ct, "enable", "--now", unit).ConfigureAwait(false);
+    }
+
+    /// <summary>systemctl, with the unit's last journal lines in the error when it does not start.</summary>
+    private static async Task StartUnitAsync(InstallContext c, CancellationToken ct, params string[] args)
+    {
+        var result = await c.Shell.RunAsync("systemctl", args, cancellationToken: ct).ConfigureAwait(false);
+        if (result.Succeeded) return;
+        var journal = await c.Shell.RunAsync("journalctl", ["-u", args[^1], "-n", "40", "--no-pager", "-o", "cat"], cancellationToken: ct).ConfigureAwait(false);
+        throw new InstallException($"{args[^1]} did not start: {result.Error.Trim()} Journal: {Redaction.Apply(journal.Output)}");
     }
 
     internal static async Task CaddyAsync(InstallContext c, CancellationToken ct)
