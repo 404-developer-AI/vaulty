@@ -322,7 +322,7 @@ public static class InstallSteps
     {
         try
         {
-            await WaitAsync(c, "PostgreSQL", async () => (await c.Shell.RunAsync("pg_isready", ["-q", "-h", "/var/run/postgresql"], cancellationToken: ct)
+            await WaitAsync(c, "PostgreSQL", async () => (await c.Shell.RunAsync("pg_isready", ["-t", "5", "-q", "-h", "/var/run/postgresql"], cancellationToken: ct)
                 .ConfigureAwait(false)).Succeeded, TimeSpan.FromSeconds(90), ct).ConfigureAwait(false);
         }
         catch (InstallException)
@@ -436,10 +436,10 @@ public static class InstallSteps
         }
         await InstallUnitsAsync(c, c.ReleaseDirectory, ct).ConfigureAwait(false);
         await c.Shell.SystemctlAsync("enable", "--now", "vaulty-temporal.service").ConfigureAwait(false);
-        await WaitAsync(c, "Temporal", async () => (await c.Shell.RunAsync("docker", ["exec", "vaulty-temporal", "temporal", "operator", "cluster", "health",
+        await WaitAsync(c, "Temporal", async () => (await c.Shell.RunAsync("timeout", ["15", "docker", "exec", "vaulty-temporal", "temporal", "operator", "cluster", "health",
             "--address", "127.0.0.1:7233"], cancellationToken: ct).ConfigureAwait(false)).Output.Contains("SERVING", StringComparison.Ordinal), TimeSpan.FromMinutes(5), ct)
             .ConfigureAwait(false);
-        var described = await c.Shell.RunAsync("docker", ["exec", "vaulty-temporal", "temporal", "operator", "namespace", "describe", "--namespace", "vaulty",
+        var described = await c.Shell.RunAsync("timeout", ["15", "docker", "exec", "vaulty-temporal", "temporal", "operator", "namespace", "describe", "--namespace", "vaulty",
             "--address", "127.0.0.1:7233"], cancellationToken: ct).ConfigureAwait(false);
         if (!described.Succeeded)
         {

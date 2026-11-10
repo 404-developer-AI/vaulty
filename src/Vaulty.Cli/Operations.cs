@@ -26,15 +26,15 @@ public static class Health
                 var answer = await shell.RunAsync("curl", ["-fsS", "--max-time", "5", url], cancellationToken: ct).ConfigureAwait(false);
                 if (!answer.Succeeded) failures.Add($"{name} health endpoint does not answer");
             }
-            var temporal = await shell.RunAsync("docker", ["exec", "vaulty-temporal", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"],
+            var temporal = await shell.RunAsync("timeout", ["15", "docker", "exec", "vaulty-temporal", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"],
                 cancellationToken: ct).ConfigureAwait(false);
             if (!temporal.Output.Contains("SERVING", StringComparison.Ordinal)) failures.Add("Temporal is not serving");
-            var valkey = await shell.RunAsync("sh", ["-c", "REDISCLI_AUTH=\"$(systemd-creds decrypt --name=valkey /etc/vaulty/credentials/valkey.cred -)\" docker exec -e REDISCLI_AUTH vaulty-valkey valkey-cli ping"],
+            var valkey = await shell.RunAsync("timeout", ["15", "sh", "-c", "REDISCLI_AUTH=\"$(systemd-creds decrypt --name=valkey /etc/vaulty/credentials/valkey.cred -)\" docker exec -e REDISCLI_AUTH vaulty-valkey valkey-cli ping"],
                 cancellationToken: ct).ConfigureAwait(false);
             if (!valkey.Output.Contains("PONG", StringComparison.Ordinal)) failures.Add("Valkey does not answer");
             foreach (var (user, role) in new[] { ("vaulty-web", "vaulty_api"), ("vaulty-worker", "vaulty_worker"), ("vaulty-gc", "vaulty_gc") })
             {
-                var select = await shell.RunAsync("runuser", ["-u", user, "--", "psql", "-h", "/var/run/postgresql", "-d", "vaulty", "-U", role, "-tAc", "SELECT 1"],
+                var select = await shell.RunAsync("timeout", ["15", "runuser", "-u", user, "--", "psql", "-h", "/var/run/postgresql", "-d", "vaulty", "-U", role, "-tAc", "SELECT 1"],
                     cancellationToken: ct).ConfigureAwait(false);
                 if (select.Output.Trim() != "1") failures.Add($"PostgreSQL role {role} cannot connect");
             }

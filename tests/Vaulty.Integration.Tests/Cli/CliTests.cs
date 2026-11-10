@@ -59,6 +59,7 @@ internal sealed class FakeHost : IHostShell
     public Task<ProcessResult> RunAsync(string file, IReadOnlyList<string> args, string? input = null, IReadOnlyDictionary<string, string>? environment = null,
         CancellationToken cancellationToken = default)
     {
+        if (file == "timeout") return RunAsync(args[1], args.Skip(2).ToList(), input, environment, cancellationToken); // coreutils timeout <seconds> <command>
         var a = args.ToArray();
         Commands.Add((file, a, input, environment));
         var scripted = Script(file, a);

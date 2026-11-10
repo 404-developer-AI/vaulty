@@ -56,6 +56,8 @@ public static class HostShellExtensions
 [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
 public sealed class LinuxHostShell : IHostShell
 {
+    public static readonly TimeSpan MaxDuration = TimeSpan.FromMinutes(20);
+
     public async Task<ProcessResult> RunAsync(string file, IReadOnlyList<string> args, string? input = null, IReadOnlyDictionary<string, string>? environment = null,
         CancellationToken cancellationToken = default)
     {
@@ -78,7 +80,18 @@ public sealed class LinuxHostShell : IHostShell
         var error = process.StandardError.ReadToEndAsync(cancellationToken);
         if (input is not null) await process.StandardInput.WriteAsync(input.AsMemory(), cancellationToken).ConfigureAwait(false);
         process.StandardInput.Close();
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        // No step may hang the installer: a command that takes longer than this is stopped and reported.
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(MaxDuration);
+        try
+        {
+            await process.WaitForExitAsync(limit.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            process.Kill(entireProcessTree: true);
+            return new ProcessResult(124, "", $"{file} did not finish within {MaxDuration.TotalMinutes:F0} minutes and was stopped.");
+        }
         return new ProcessResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
     }
 
