@@ -12,7 +12,8 @@ services:
     container_name: vaulty-temporal
     network_mode: host
     restart: unless-stopped
-    read_only: true
+    # Not read-only: the server renders its configuration file from the template at start. Still no new privileges
+    # and no capabilities.
     tmpfs:
       - /tmp
     security_opt:
@@ -50,7 +51,7 @@ services:
     container_name: vaulty-temporal-ui
     network_mode: host
     restart: unless-stopped
-    read_only: true
+    # Not read-only: the UI writes its configuration file at start, like the server.
     security_opt:
       - no-new-privileges:true
     cap_drop:
