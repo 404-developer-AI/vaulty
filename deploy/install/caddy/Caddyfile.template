@@ -56,8 +56,7 @@
 
 	log {
 		output stderr
-		format json
-		# Query strings can carry tokens; never log them.
+		# JSON, and query strings never logged: they can carry tokens.
 		format filter {
 			wrap json
 			fields {
