@@ -201,6 +201,9 @@ All notable changes to this project are documented in this file. The format foll
   the connection test reports a stored key it cannot use.
 - The snapshot browser shows the folder tree again: the tree view had no item template, and MudBlazor renders no items
   without one. A test requires an item template for every tree view of the web app.
+- A OneDrive backup's job shows the outcome of the whole backup: its sync step, a child workflow with the same input,
+  marked the job as succeeded without counts before the backup had committed, so a partial or failed drive backup
+  could show as succeeded. Only the workflow that owns a job writes it now.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

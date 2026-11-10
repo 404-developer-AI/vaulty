@@ -110,6 +110,11 @@ public sealed class DriveBackupTests(TemporalFixture fixture, ITestOutputHelper 
         await using var owner = new NpgsqlConnection(fixture.Database.Migrator);
         Assert.Equal("hash_mismatch", await owner.ExecuteScalarAsync<string>(
             "SELECT error_code FROM vaulty.item_failures WHERE source_id = @corrupt AND last_snapshot_id = @snapshotId", new { corrupt, snapshotId }));
+        // The job shows the outcome of the whole backup, not of its sync step: partial, with the exact counts.
+        var job = await owner.QuerySingleAsync<(string State, string Counts)>(
+            "SELECT state, result_counts::text FROM vaulty.jobs WHERE protected_object_id = @drive ORDER BY created_at DESC LIMIT 1", new { drive });
+        Assert.Equal("partial", job.State);
+        Assert.Contains($"\"file\": {simulator.Files.Count() - 1}", job.Counts, StringComparison.Ordinal);
 
         // Once the transfer is right again, the next run picks the file up and the snapshot is complete.
         simulator.CorruptHashes.Clear();

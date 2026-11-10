@@ -84,7 +84,7 @@ public sealed class JobActivities(NpgsqlDataSource dataSource)
 /// <summary>
 /// Mirrors every workflow whose input is an <see cref="IJobInput"/> into the jobs table: start, end, counts and error.
 /// The writes are local activities, so they are part of the deterministic workflow history and survive worker crashes.
-/// A run that continues as new is not an end.
+/// A run that continues as new is not an end, and a child workflow never writes the job of its parent.
 /// </summary>
 public sealed class JobMirrorInterceptor : IWorkerInterceptor
 {
@@ -102,7 +102,12 @@ public sealed class JobMirrorInterceptor : IWorkerInterceptor
 
         public override async Task<object?> ExecuteWorkflowAsync(ExecuteWorkflowInput input)
         {
-            if (input.Args.FirstOrDefault() is not IJobInput job || job.JobId == Guid.Empty) return await Next.ExecuteWorkflowAsync(input);
+            // Only the workflow that owns the job mirrors it. A child that receives the same input (the sync step of a drive
+            // backup) would otherwise mark the job as finished, with no counts, before the backup itself had committed.
+            if (input.Args.FirstOrDefault() is not IJobInput job || job.JobId == Guid.Empty || Workflow.Info.Parent is not null)
+            {
+                return await Next.ExecuteWorkflowAsync(input);
+            }
 
             if (!Workflow.Info.ContinuedRunId.HasValue())
             {
