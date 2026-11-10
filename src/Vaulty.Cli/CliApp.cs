@@ -133,6 +133,11 @@ public static class CliApp
         var email = AnsiConsole.Prompt(new TextPrompt<string>("E-mail address for certificates and the first administrator:")
             .Validate(v => System.Net.Mail.MailAddress.TryCreate(v, out _) ? ValidationResult.Success() : ValidationResult.Error("Enter an e-mail address.")));
         var environment = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Environment:").AddChoices("production", "staging", "development"));
+        // A selection disappears once chosen; repeat it so the answer stays on screen.
+        AnsiConsole.MarkupLine($"Environment: {environment}");
+        var timeZone = AnsiConsole.Prompt(new TextPrompt<string>("Time zone of this host (IANA name, for example Europe/Brussels):")
+            .DefaultValue(InstallAnswers.HostTimeZone())
+            .Validate(v => InstallAnswers.IsTimeZone(v) ? ValidationResult.Success() : ValidationResult.Error("Enter a time zone such as Europe/Brussels or Etc/UTC.")));
         var disk = AnsiConsole.Prompt(new TextPrompt<string>("Data disk for PostgreSQL (block device, or empty for the system disk):").AllowEmpty());
         var workers = AnsiConsole.Prompt(new TextPrompt<int>("Worker instances:").DefaultValue(Tuning.DefaultWorkers(host.Vcpu))
             .Validate(n => n >= 1 && n <= host.Vcpu ? ValidationResult.Success() : ValidationResult.Error($"Between 1 and {host.Vcpu}.")));
@@ -144,9 +149,9 @@ public static class CliApp
         }
         var answers = new InstallAnswers
         {
-            Fqdn = fqdn, AdminEmail = email, Environment = environment, DataDisk = disk.Length == 0 ? null : disk, Workers = workers, Smtp = smtp,
+            Fqdn = fqdn, AdminEmail = email, Environment = environment, TimeZone = timeZone, DataDisk = disk.Length == 0 ? null : disk, Workers = workers, Smtp = smtp,
         };
-        AnsiConsole.MarkupLine($"[bold]Summary[/]: {fqdn}, {environment}, data on {(answers.DataDisk ?? "the system disk")}{(answers.DataDisk is null ? "" : " (LUKS)")}, {workers} workers, SMTP {(smtp is null ? "later" : smtp.Host)}");
+        AnsiConsole.MarkupLine($"[bold]Summary[/]: {fqdn}, {environment}, {timeZone}, data on {(answers.DataDisk ?? "the system disk")}{(answers.DataDisk is null ? "" : " (LUKS)")}, {workers} workers, SMTP {(smtp is null ? "later" : smtp.Host)}");
         if (!AnsiConsole.Confirm("Install now?")) throw new InstallException("Cancelled; nothing was changed.");
         return answers;
     }

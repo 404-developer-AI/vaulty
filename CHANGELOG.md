@@ -209,6 +209,8 @@ All notable changes to this project are documented in this file. The format foll
   first backups says how many of its protected objects already have a snapshot.
 - The menu and the users page no longer empty themselves for a moment when a page becomes interactive: what the
   prerendered page loaded is carried over to the circuit.
+- The installation wizard asks for the host's time zone (default: the current one) and repeats the chosen environment
+  on screen; a time zone in the answers file must exist in the host's zone database.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

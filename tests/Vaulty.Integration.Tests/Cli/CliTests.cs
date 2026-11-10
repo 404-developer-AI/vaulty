@@ -168,6 +168,13 @@ public sealed class CliTests
         Assert.NotEmpty((answers with { Fqdn = "not a host" }).Validate(8));
         Assert.NotEmpty((answers with { AutoUpdate = "patch" }).Validate(8)); // production
         Assert.NotEmpty((answers with { Workers = 9 }).Validate(8));
+        // The time zone must be one timedatectl knows; an IANA name, not a Windows name or a typo.
+        Assert.Empty((answers with { TimeZone = "Etc/UTC" }).Validate(8));
+        Assert.NotEmpty((answers with { TimeZone = "Romance Standard Time" }).Validate(8));
+        Assert.NotEmpty((answers with { TimeZone = "../etc/passwd" }).Validate(8));
+        // A typo is only detectable where the zone database is (the host, and the Linux CI runner).
+        if (OperatingSystem.IsLinux()) Assert.NotEmpty((answers with { TimeZone = "Europe/Brusels" }).Validate(8));
+        Assert.True(InstallAnswers.IsTimeZone(InstallAnswers.HostTimeZone()));
     }
 
     [Fact]

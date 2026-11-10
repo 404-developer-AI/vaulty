@@ -6,7 +6,7 @@ namespace Vaulty.Cli;
 /// The answers of the wizard, from the prompts or from an answers file (deploy/install/answers.example.yaml). The file
 /// format is the small YAML subset that example uses: <c>key: value</c>, one level of nested blocks, comments.
 /// </summary>
-public sealed record InstallAnswers
+public sealed partial record InstallAnswers
 {
     public string Profile { get; init; } = "all-in-one";
     public string Environment { get; init; } = "production";
@@ -21,6 +21,25 @@ public sealed record InstallAnswers
     public SmtpAnswers? Smtp { get; init; }
     public string AutoUpdate { get; init; } = "none";
 
+    /// <summary>An IANA time zone name the host knows (what timedatectl set-timezone accepts).</summary>
+    public static bool IsTimeZone(string? zone)
+    {
+        if (string.IsNullOrWhiteSpace(zone) || zone.Contains("..", StringComparison.Ordinal) || !ZonePattern().IsMatch(zone)) return false;
+        // On the host (Linux) the zone must exist where timedatectl looks for it; elsewhere only its form can be checked.
+        return !OperatingSystem.IsLinux() || File.Exists(Path.Combine("/usr/share/zoneinfo", zone));
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^(UTC|[A-Za-z]+(/[A-Za-z0-9_+\-]+)+)$")]
+    private static partial System.Text.RegularExpressions.Regex ZonePattern();
+
+    /// <summary>The host's current time zone as an IANA name, Etc/UTC when it has none.</summary>
+    public static string HostTimeZone()
+    {
+        var local = TimeZoneInfo.Local.Id;
+        if (local.Contains('/', StringComparison.Ordinal)) return local;
+        return TimeZoneInfo.TryConvertWindowsIdToIanaId(local, out var iana) && iana is not null ? iana : "Etc/UTC";
+    }
+
     public IReadOnlyList<string> Validate(int vcpu)
     {
         var problems = new List<string>();
@@ -30,6 +49,7 @@ public sealed record InstallAnswers
         if (!System.Net.Mail.MailAddress.TryCreate(AdminEmail, out _)) problems.Add("admin_email must be an e-mail address.");
         if (Workers is { } w && (w < 1 || w > Math.Max(1, vcpu))) problems.Add($"workers.instances must be between 1 and {Math.Max(1, vcpu)}.");
         if (DataDisk is { } disk && !disk.StartsWith("/dev/", StringComparison.Ordinal)) problems.Add("data_disk.device must be a block device such as /dev/sdb.");
+        if (TimeZone is { } zone && !IsTimeZone(zone)) problems.Add($"timezone '{zone}' is not a known time zone; use an IANA name such as Europe/Brussels.");
         if (AutoUpdate is not ("none" or "patch")) problems.Add("update.auto must be none or patch.");
         if (AutoUpdate == "patch" && Environment == "production") problems.Add("automatic patch updates are for staging only.");
         if (PgBackRest is { } p && (p.Bucket.Length == 0 || p.AccessKey.Length == 0 || p.SecretKey.Length == 0)) problems.Add("pgbackrest needs bucket, access_key and secret_key.");
