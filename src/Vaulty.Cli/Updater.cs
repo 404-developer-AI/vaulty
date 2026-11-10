@@ -110,6 +110,7 @@ public sealed class Updater(IHostShell shell, TextWriter log)
     {
         InstallSteps.RenderCompose(context, release);
         await InstallSteps.InstallUnitsAsync(context, release, ct).ConfigureAwait(false);
+        await InstallSteps.RenderCaddyAsync(context, ct).ConfigureAwait(false);
         await shell.RunAsync("systemctl", ["restart", "vaulty-temporal.service"], cancellationToken: ct).ConfigureAwait(false);
         foreach (var unit in Paths.Services(context.Workers).Skip(1))
         {

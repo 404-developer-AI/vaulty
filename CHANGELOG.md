@@ -179,6 +179,9 @@ All notable changes to this project are documented in this file. The format foll
 - A staging host gets a certificate from the trusted Let's Encrypt CA; only development hosts use the staging CA.
 - The Caddy access log no longer records query strings, nor the Referer and Location headers that repeat them.
 - `curl ... | sudo bash` starts the interactive wizard: the bootstrap script hands the terminal to the installer.
+- The services run in the directory that holds their binaries, so the web app finds its `wwwroot` and serves its
+  stylesheets, scripts and images on an installed host.
+- An update also renders the Caddyfile of the new release, so a fixed template reaches hosts installed earlier.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

@@ -94,6 +94,23 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
     }
 
     [PostgresFact]
+    public async Task The_sign_in_page_and_its_stylesheets_reach_a_visitor_who_is_not_signed_in()
+    {
+        var anonymous = app.Client();
+        var login = await anonymous.GetAsync("/account/login");
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        var html = await login.Content.ReadAsStringAsync();
+        var stylesheets = System.Text.RegularExpressions.Regex.Matches(html, """href="([^"]+\.css)" """.TrimEnd()).Select(m => m.Groups[1].Value).Distinct().ToList();
+        Assert.NotEmpty(stylesheets);
+        foreach (var href in stylesheets)
+        {
+            var css = await anonymous.GetAsync(href.StartsWith('/') ? href : "/" + href);
+            Assert.True(css.StatusCode == HttpStatusCode.OK, $"{href}: {css.StatusCode}");
+            Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
+        }
+    }
+
+    [PostgresFact]
     public async Task A_user_without_a_permission_cannot_open_its_page_and_anonymous_users_are_sent_to_sign_in()
     {
         var anonymous = app.Client();

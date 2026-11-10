@@ -536,6 +536,13 @@ public static class InstallSteps
             await c.Shell.RunCheckedAsync("apt-get", ["update", "-qq"], cancellationToken: ct).ConfigureAwait(false);
             await Apt(c, ct, "caddy").ConfigureAwait(false);
         }
+        await RenderCaddyAsync(c, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The Caddyfile of a release for this host; also on every update, so a fixed template reaches existing hosts.</summary>
+    public static async Task RenderCaddyAsync(InstallContext c, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(c);
         c.Values["FQDN"] = c.Answers.Fqdn;
         c.Values["ACME_EMAIL"] = c.Answers.AdminEmail;
         // Production and staging hosts are opened in ordinary browsers and need a trusted certificate; only development

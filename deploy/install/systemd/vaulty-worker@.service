@@ -10,7 +10,7 @@ Requires=vaulty-migrate.service
 Type=notify
 User=vaulty-worker
 Group=vaulty
-WorkingDirectory=/opt/vaulty/current
+WorkingDirectory=/opt/vaulty/current/bin
 ExecStart=/opt/vaulty/current/bin/Vaulty.Workers --instance %i
 Environment=VAULTY_CONFIG_DIR=/etc/vaulty
 Environment=DOTNET_EnableDiagnostics=0

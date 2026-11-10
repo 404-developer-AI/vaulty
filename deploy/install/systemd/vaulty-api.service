@@ -10,7 +10,7 @@ Requires=vaulty-migrate.service
 Type=notify
 User=vaulty-api
 Group=vaulty
-WorkingDirectory=/opt/vaulty/current
+WorkingDirectory=/opt/vaulty/current/bin
 ExecStart=/opt/vaulty/current/bin/Vaulty.Api
 Environment=VAULTY_CONFIG_DIR=/etc/vaulty
 Environment=ASPNETCORE_URLS=http://127.0.0.1:5001

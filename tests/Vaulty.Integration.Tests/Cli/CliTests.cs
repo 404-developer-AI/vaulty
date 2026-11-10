@@ -249,6 +249,11 @@ public sealed class CliTests
         Assert.True(At("stop vaulty-worker@1.service") < At("stop vaulty-web.service"), "workers stop first");
         Assert.True(At($"{FakeHost.NextRelease}/bin/vaulty-migrate") < At("start vaulty-api.service"), "migrations run with the new binaries before the start");
         Assert.Contains($"{FakeHost.NextRelease}/compose", host.Files.Keys.First(k => k.EndsWith("temporal.compose.yml", StringComparison.Ordinal) && k.StartsWith(FakeHost.NextRelease, StringComparison.Ordinal)), StringComparison.Ordinal);
+        // The update renders the units and the Caddyfile of the new release, so fixed templates reach existing hosts;
+        // the services run in the directory that holds their binaries and wwwroot.
+        Assert.Contains("WorkingDirectory=/opt/vaulty/current/bin", host.Files["/etc/systemd/system/vaulty-web.service"], StringComparison.Ordinal);
+        Assert.True(At("reload-or-restart caddy") >= 0, "the update reloads Caddy with the new Caddyfile");
+        Assert.Contains("request>uri regexp", host.Files["/etc/caddy/Caddyfile"], StringComparison.Ordinal);
 
         // A release whose web service does not come up: rolled back to the previous one automatically.
         host.Links[Paths.Current] = FakeHost.Release;
