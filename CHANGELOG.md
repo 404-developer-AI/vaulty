@@ -169,3 +169,16 @@ All notable changes to this project are documented in this file. The format foll
   migration binary, as in its unit.
 - The verifier and garbage collector run in the worker host with `--role gc` under the gc database role and storage
   identity; the worker processes serve only the backup and restore queues.
+
+### Fixed
+
+- The web app and API take the scheme and client address from the reverse proxy on the same host: redirects stay on
+  https and the secure-only cookies work behind Caddy (sign-in no longer loops).
+- Stylesheets, scripts and images are served to visitors who are not signed in, so the sign-in and set-up pages are
+  styled; `/error` is a real page that needs no sign-in.
+- A staging host gets a certificate from the trusted Let's Encrypt CA; only development hosts use the staging CA.
+- The Caddy access log no longer records query strings, nor the Referer and Location headers that repeat them.
+- `curl ... | sudo bash` starts the interactive wizard: the bootstrap script hands the terminal to the installer.
+- The installer prints `[ ok ]` when a step finishes.
+- The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
+  that a query string never reaches the access log.

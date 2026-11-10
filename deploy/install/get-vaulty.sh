@@ -147,4 +147,9 @@ fi
 # Hand over to the CLI: it decides between install and update
 # ---------------------------------------------------------------------------
 say "Starting vaulty ${VAULTY_VERSION} bootstrap ..."
+# With `curl ... | sudo bash` standard input is the pipe that carried this script, so the wizard
+# would see no terminal. Reattach it to the controlling terminal when there is one.
+if [ ! -t 0 ] && (exec </dev/tty) 2>/dev/null; then
+  exec "${RELEASE_DIR}/bin/vaulty" bootstrap --release-dir "${RELEASE_DIR}" "${PASSTHROUGH[@]}" </dev/tty
+fi
 exec "${RELEASE_DIR}/bin/vaulty" bootstrap --release-dir "${RELEASE_DIR}" "${PASSTHROUGH[@]}"

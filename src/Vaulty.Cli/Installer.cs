@@ -89,6 +89,7 @@ public sealed class Installer(IReadOnlyList<IInstallStep>? steps = null)
                     .ConfigureAwait(false);
                 return 1;
             }
+            await context.Log.WriteLineAsync($"  [ ok ] {step.Name}").ConfigureAwait(false);
             completed.Add(step.Name);
             await SaveAsync(context, completed, cancellationToken).ConfigureAwait(false);
         }
@@ -537,9 +538,11 @@ public static class InstallSteps
         }
         c.Values["FQDN"] = c.Answers.Fqdn;
         c.Values["ACME_EMAIL"] = c.Answers.AdminEmail;
-        c.Values["ACME_CA"] = c.Answers.Environment == "production"
-            ? "https://acme-v02.api.letsencrypt.org/directory"
-            : "https://acme-staging-v02.api.letsencrypt.org/directory";
+        // Production and staging hosts are opened in ordinary browsers and need a trusted certificate; only development
+        // hosts use the Let's Encrypt staging CA, which no browser trusts.
+        c.Values["ACME_CA"] = c.Answers.Environment == "development"
+            ? "https://acme-staging-v02.api.letsencrypt.org/directory"
+            : "https://acme-v02.api.letsencrypt.org/directory";
         c.Shell.WriteFile("/etc/caddy/Caddyfile", Templates.Render(c.Shell.ReadFile(c.Template("caddy/Caddyfile.template")), c.Values, "Caddyfile"), RwR);
         await c.Shell.SystemctlAsync("enable", "caddy").ConfigureAwait(false);
         await c.Shell.SystemctlAsync("reload-or-restart", "caddy").ConfigureAwait(false);

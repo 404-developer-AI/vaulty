@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -304,6 +305,19 @@ public sealed class PermissionHandler(CurrentAccess current) : AuthorizationHand
         var access = await current.GetAsync(context.User).ConfigureAwait(false);
         if (access.Allows(requirement.Permission)) context.Succeed(requirement);
     }
+}
+
+/// <summary>The scheme and client address as the reverse proxy on the same host saw them.</summary>
+public static class ProxyHeaders
+{
+    /// <summary>
+    /// Vaulty listens on loopback behind Caddy, which terminates TLS. Without this every request looks like plain HTTP:
+    /// redirects point to http:// and the Secure-only cookies fail. Only loopback proxies are trusted (the default).
+    /// </summary>
+    public static IApplicationBuilder UseVaultyForwardedHeaders(this IApplicationBuilder app) => app.UseForwardedHeaders(new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    });
 }
 
 /// <summary>Security headers and a strict Content Security Policy with a per-response nonce.</summary>

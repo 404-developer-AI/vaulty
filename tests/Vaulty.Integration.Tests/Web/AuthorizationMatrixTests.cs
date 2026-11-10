@@ -23,6 +23,7 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/account/login"] = "anonymous",
         ["/account/login/second-factor"] = "anonymous",
         ["/setup"] = "anonymous",
+        ["/error"] = "anonymous",      // the exception handler re-executes here, also for visitors who are not signed in
         ["/account/mfa-setup"] = VaultyPolicies.SignedIn,
         ["/account/recovery-codes"] = VaultyPolicies.SignedIn,
         ["/access-denied"] = VaultyPolicies.SignedIn,
@@ -75,10 +76,13 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         var endpoints = app.Factory.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>().ToList();
         Assert.NotEmpty(endpoints);
         var anonymous = new[] { "/account/login", "/account/login/second-factor", "/account/passkey/request-options", "/account/passkey/login",
-            "/setup", "/healthz" };
+            "/setup", "/error", "/healthz" };
         foreach (var endpoint in endpoints)
         {
             var route = "/" + endpoint.RoutePattern.RawText?.TrimStart('/');
+            // Stylesheets and scripts must reach visitors who are not signed in, or the sign-in page is unstyled.
+            if (route.EndsWith(".css", StringComparison.Ordinal) || route.EndsWith(".js", StringComparison.Ordinal))
+                Assert.True(endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null, $"{route} must allow anonymous access");
             if (endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null)
             {
                 // Static assets and framework endpoints are anonymous by design; application endpoints only when listed.

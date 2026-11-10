@@ -77,6 +77,7 @@ if (args.Contains("--issue-setup-token"))
     return;
 }
 
+app.UseVaultyForwardedHeaders();
 if (!app.Environment.IsDevelopment()) app.UseExceptionHandler("/error", createScopeForErrors: true);
 app.UseVaultySecurityHeaders();
 app.UseStaticFiles();
@@ -84,7 +85,8 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
 
-app.MapStaticAssets();
+// Stylesheets, scripts and images are public; without this the fallback policy sends them to the login page.
+app.MapStaticAssets().AllowAnonymous();
 app.MapAccountEndpoints();
 Vaulty.Web.Browse.PreviewEndpoints.MapPreviewEndpoints(app);
 Vaulty.Web.Browse.ExportEndpoints.MapExportEndpoints(app);

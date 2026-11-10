@@ -149,7 +149,9 @@ public sealed class CliTests
         }
         Assert.Contains("@sha256:1111", host.Files[$"{FakeHost.Release}/compose/temporal.compose.yml"], StringComparison.Ordinal);
         Assert.Contains("backup.example.com", host.Files["/etc/caddy/Caddyfile"], StringComparison.Ordinal);
-        Assert.Contains("acme-staging", host.Files["/etc/caddy/Caddyfile"], StringComparison.Ordinal);
+        // A staging host is opened in ordinary browsers: it gets the trusted CA, not the Let's Encrypt staging CA.
+        Assert.Contains("acme_ca https://acme-v02.api.letsencrypt.org/directory", host.Files["/etc/caddy/Caddyfile"], StringComparison.Ordinal);
+        Assert.Contains("  [ ok ] report", log.ToString(), StringComparison.Ordinal);
 
         // The report: written 0600, with the one-time secrets and the first-administrator link.
         var report = Assert.Single(host.Files, f => f.Key.StartsWith("/root/vaulty-install-report-", StringComparison.Ordinal));

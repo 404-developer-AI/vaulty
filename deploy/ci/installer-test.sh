@@ -49,6 +49,24 @@ done
 curl -fsS http://127.0.0.1:5001/api/v1/healthz/ready | grep -q ready || fail "/api/v1/healthz/ready is not ready"
 curl -fsS http://127.0.0.1:5000/healthz >/dev/null || fail "web /healthz does not answer"
 curl -ksS -o /dev/null -w '%{http_code}' https://localhost/ | grep -qE '^(200|302)$' || fail "Caddy does not serve the web app"
+
+step "sign-in page through Caddy: https redirects, styled, no tokens in the access log"
+# The start page sends an anonymous visitor to the sign-in page, over https (the app sees the proxy's scheme).
+location=$(curl -ksS -o /dev/null -w '%{redirect_url}' https://localhost/)
+case "$location" in https://localhost/account/login*) ;; *) fail "the start page redirects to '${location}', not to the https sign-in page" ;; esac
+login=$(curl -ksS -w '\n%{http_code}' https://localhost/account/login)
+[ "$(printf '%s' "$login" | tail -1)" = "200" ] || fail "the sign-in page does not answer 200"
+# Every stylesheet the sign-in page links is served to an anonymous visitor.
+css=$(printf '%s' "$login" | grep -o 'href="[^"]*\.css"' | sed 's/^href="//; s/"$//' | sort -u)
+[ -n "$css" ] || fail "the sign-in page links no stylesheet"
+for href in $css; do
+  case "$href" in /*) url="https://localhost${href}" ;; *) url="https://localhost/${href}" ;; esac
+  code=$(curl -ks -o /dev/null -w '%{http_code} %{content_type}' "$url")
+  case "$code" in "200 text/css"*) ;; *) fail "stylesheet ${href} answers '${code}'" ;; esac
+done
+curl -ks -o /dev/null "https://localhost/setup?token=ci-canary-token-in-query"
+sleep 1
+if sudo journalctl -u caddy --since "-2min" --no-pager | grep -q "ci-canary-token-in-query"; then fail "a query string reached the Caddy access log"; fi
 # From outside (the host's own network address, not loopback) health and metrics endpoints answer 404.
 outside=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')
 for path in /metrics /healthz/ready; do

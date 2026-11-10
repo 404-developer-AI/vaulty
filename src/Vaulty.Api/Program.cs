@@ -32,6 +32,7 @@ builder.Services.AddSingleton<Vaulty.Infrastructure.Reporting.DashboardService>(
 builder.Services.AddSingleton<Vaulty.Infrastructure.Reporting.PlatformMetrics>();
 
 var app = builder.Build();
+app.UseVaultyForwardedHeaders();
 app.UseVaultySecurityHeaders();
 app.UseAuthentication();
 app.UseAuthorization();

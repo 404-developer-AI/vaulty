@@ -1,6 +1,6 @@
 # Caddyfile for a Vaulty all-in-one host. Rendered by the installer into /etc/caddy/Caddyfile.
-# {{ACME_CA}} is the Let's Encrypt staging CA for environment=staging until the first successful
-# issuance, then the production CA.
+# {{ACME_CA}} is the Let's Encrypt production CA, and the staging CA (not trusted by browsers) only for
+# environment=development.
 
 {
 	email {{ACME_EMAIL}}
@@ -56,13 +56,14 @@
 
 	log {
 		output stderr
-		# JSON, and query strings never logged: they can carry tokens.
+		# JSON, and query strings never logged: they can carry tokens (a first-administrator link, a return URL). The
+		# Referer and Location headers repeat URLs with their query string, so they are dropped as a whole.
 		format filter {
 			wrap json
 			fields {
-				request>uri query {
-					delete *
-				}
+				request>uri regexp [?].*$ ?redacted
+				request>headers>Referer delete
+				resp_headers>Location delete
 			}
 		}
 	}
