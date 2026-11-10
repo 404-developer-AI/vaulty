@@ -38,7 +38,7 @@ public sealed class SystemdNotifyTests
             var start = Run("sudo", "systemd-run", $"--unit={unit}", "--collect", "-p", "Type=notify", "-p", "TimeoutStartSec=120",
                 "--setenv=DOTNET_ENVIRONMENT=Development", "--setenv=DOTNET_CLI_HOME=/tmp", "--setenv=ASPNETCORE_URLS=http://127.0.0.1:0",
                 $"--setenv=VAULTY_DEV_MASTER_KEY={Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))}",
-                "--setenv=Vaulty__Database__ConnectionString=Host=127.0.0.1;Port=1;Database=none",
+                "--setenv=Vaulty__Database__ConnectionString=Host=/nonexistent-socket-directory;Database=none;Timeout=2",
                 dotnet, assemblyPath);
             try
             {
