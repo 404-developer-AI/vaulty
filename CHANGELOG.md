@@ -207,6 +207,8 @@ All notable changes to this project are documented in this file. The format foll
 - A protected object without any snapshot is "awaiting first backup" for at most twice its backup interval (at least a
   day); after that it is failed, so a first backup that never runs is no longer a quiet wait. A tenant that waits for
   first backups says how many of its protected objects already have a snapshot.
+- The menu and the users page no longer empty themselves for a moment when a page becomes interactive: what the
+  prerendered page loaded is carried over to the circuit.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

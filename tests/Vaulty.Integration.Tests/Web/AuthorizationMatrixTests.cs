@@ -70,6 +70,23 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         }
     }
 
+    [Fact]
+    public void State_carried_from_prerendering_to_the_circuit_survives_serialization()
+    {
+        // A value that does not deserialize would end the circuit as soon as the page becomes interactive.
+        var data = new Vaulty.Web.Components.Pages.Settings.Users.PageData(
+            [new(Guid.NewGuid(), "admin@contoso.example", "Admin", true, null)],
+            [new(Guid.NewGuid(), "Organization admin", true, ["users.manage", "roles.manage"])],
+            [new(Guid.NewGuid(), Guid.NewGuid(), "Organization admin", null, null)], true);
+        var options = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var back = System.Text.Json.JsonSerializer.Deserialize<Vaulty.Web.Components.Pages.Settings.Users.PageData>(
+            System.Text.Json.JsonSerializer.Serialize(data, options), options)!;
+        Assert.Equal(data.Users, back.Users);
+        Assert.Equal(data.Roles.Single().Permissions, back.Roles.Single().Permissions);
+        Assert.Equal(data.Assignments, back.Assignments);
+        Assert.True(back.CanManageRoles);
+    }
+
     [PostgresFact]
     public void Every_endpoint_of_the_web_app_declares_its_authorization()
     {

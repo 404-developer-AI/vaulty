@@ -51,9 +51,18 @@
 
     private IReadOnlyList<NavItem> _links = [];
 
+    // The prerendered page and the interactive circuit each initialize the layout. Without carrying the result over, the
+    // interactive render starts with an empty menu until permissions are loaded again. Only which links to show is
+    // carried; every page checks its own permission on the server.
+    [PersistentState] public string[]? VisibleLinks { get; set; }
+
     protected override async Task OnInitializedAsync()
     {
-        var access = await Access.GetAsync();
-        _links = AllLinks.Where(l => access.Allows(l.Permission)).ToList();
+        if (VisibleLinks is null)
+        {
+            var access = await Access.GetAsync();
+            VisibleLinks = AllLinks.Where(l => access.Allows(l.Permission)).Select(l => l.Href).ToArray();
+        }
+        _links = AllLinks.Where(l => VisibleLinks.Contains(l.Href, StringComparer.Ordinal)).ToList();
     }
 }

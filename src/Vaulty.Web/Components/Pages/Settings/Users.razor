@@ -89,13 +89,25 @@
     private Guid _organizationId;
     private Guid _userId;
 
+    public sealed record PageData(List<UserRow> Users, List<RoleRow> Roles, List<AssignmentRow> Assignments, bool CanManageRoles);
+
+    // Carried from the prerendered page to the interactive circuit, so the table does not empty itself while it loads again.
+    [PersistentState] public PageData? Loaded { get; set; }
+
     protected override async Task OnInitializedAsync()
     {
         var state = await AuthenticationState;
         _organizationId = VaultyWebSetup.OrganizationId(state.User) ?? Guid.Empty;
         _userId = VaultyWebSetup.UserId(state.User) ?? Guid.Empty;
-        _canManageRoles = (await Current.GetAsync(state.User)).Allows(Permissions.RolesManage);
-        await LoadAsync();
+        if (Loaded is null)
+        {
+            _canManageRoles = (await Current.GetAsync(state.User)).Allows(Permissions.RolesManage);
+            await LoadAsync();
+        }
+        else
+        {
+            (_users, _roles, _assignments, _canManageRoles) = (Loaded.Users, Loaded.Roles, Loaded.Assignments, Loaded.CanManageRoles);
+        }
     }
 
     private async Task LoadAsync()
@@ -103,6 +115,7 @@
         _users = await Directory.UsersAsync(_organizationId);
         _roles = await Directory.RolesAsync(_organizationId);
         _assignments = await Directory.AssignmentsAsync(_organizationId);
+        Loaded = new PageData([.. _users], [.. _roles], [.. _assignments], _canManageRoles);
     }
 
     /// <summary>Sensitive changes need a recent "Confirm it's you".</summary>
