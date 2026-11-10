@@ -230,6 +230,11 @@ public sealed class RestoreStore(NpgsqlDataSource dataSource, TimeProvider clock
                 cancellationToken: cancellationToken)).ConfigureAwait(false);
             await AuditLog.WriteAsync(session, "system:restore", $"{kind}.{state}", $"restore:{restoreId}",
                 new { counts.Total, counts.Restored, counts.Skipped, counts.Failed }, cancellationToken).ConfigureAwait(false);
+            var target = await session.Connection.QuerySingleAsync<(Guid TenantId, Guid ObjectId)>(new CommandDefinition(
+                "SELECT tenant_id, protected_object_id FROM vaulty.restores WHERE id = @restoreId", new { restoreId }, session.Transaction,
+                cancellationToken: cancellationToken)).ConfigureAwait(false);
+            await Notifications.NotificationEvents.PublishAsync(session, Core.Notifications.NotificationKinds.RestoreCompleted, target.TenantId, target.ObjectId,
+                new { restore = restoreId, kind, state, counts.Total, counts.Restored, counts.Skipped, counts.Failed }, cancellationToken).ConfigureAwait(false);
             await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         return (state, counts);

@@ -103,3 +103,12 @@ html, body {
 .vy-fields dd { margin: 0; overflow-wrap: anywhere; }
 .vy-preview { width: 100%; height: 480px; border: 1px solid var(--vy-border); border-radius: 8px; background: #fff; }
 .vy-preview-image { max-width: 100%; border: 1px solid var(--vy-border); border-radius: 8px; }
+
+/* Dashboard */
+.vy-totals { display: flex; flex-wrap: wrap; gap: 8px; }
+.vy-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.vy-tenant { margin-top: 12px; padding-left: 12px; border-left: 2px solid var(--vy-border); }
+.vy-objects { margin-top: 6px; }
+.vy-alert-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 0; border-bottom: 1px solid var(--vy-border); }
+.vy-alert-row:last-child { border-bottom: 0; }
+.vy-alert-message { flex: 1 1 320px; }

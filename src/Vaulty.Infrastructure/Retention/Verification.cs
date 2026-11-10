@@ -172,21 +172,40 @@ public sealed class VerificationService(NpgsqlDataSource dataSource, IBackupStor
     }
 }
 
-/// <summary>Raising an alert: one open alert per kind and target, so a daily failure does not flood the list.</summary>
+/// <summary>
+/// Raising an alert: one open alert per kind and target, so a daily failure does not flood the list. A new alert is also
+/// published as a notification event for webhooks unless the caller publishes its own event for every occurrence.
+/// </summary>
 public static class Alerts
 {
-    public static async Task RaiseAsync(OrganizationSession session, Guid? tenantId, Guid? objectId, string kind, string severity, string message, object? details,
-        CancellationToken cancellationToken = default)
+    public static async Task<bool> RaiseAsync(OrganizationSession session, Guid? tenantId, Guid? objectId, string kind, string severity, string message, object? details,
+        CancellationToken cancellationToken = default, bool publishEvent = true)
     {
         ArgumentNullException.ThrowIfNull(session);
-        await session.Connection.ExecuteAsync(new CommandDefinition(
+        var inserted = await session.Connection.ExecuteAsync(new CommandDefinition(
             """
             INSERT INTO vaulty.alerts (id, organization_id, tenant_id, protected_object_id, kind, severity, message, details)
             SELECT @id, vaulty.current_organization_id(), @tenantId, @objectId, @kind, @severity, @message, @details::jsonb
              WHERE NOT EXISTS (SELECT 1 FROM vaulty.alerts WHERE kind = @kind AND resolved_at IS NULL
                                  AND tenant_id IS NOT DISTINCT FROM @tenantId AND protected_object_id IS NOT DISTINCT FROM @objectId)
             """, new { id = Guid.CreateVersion7(), tenantId, objectId, kind, severity, message, details = JsonSerializer.Serialize(details ?? new { }) },
-            session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false) > 0;
+        if (inserted && publishEvent)
+        {
+            await Notifications.NotificationEvents.PublishAsync(session, kind, tenantId, objectId, new { severity, message, details }, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        return inserted;
+    }
+
+    /// <summary>Closes the open alerts of these kinds for a protected object (a later success settles them).</summary>
+    public static async Task<int> ResolveAsync(OrganizationSession session, Guid objectId, IReadOnlyCollection<string> kinds, DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return await session.Connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE vaulty.alerts SET resolved_at = @now WHERE protected_object_id = @objectId AND kind = ANY(@kinds) AND resolved_at IS NULL",
+            new { objectId, kinds = kinds.ToArray(), now }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
     }
 }
 

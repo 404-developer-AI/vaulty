@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using OpenTelemetry.Resources;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using Serilog;
 using Serilog.Formatting.Compact;
@@ -20,6 +21,9 @@ using Vaulty.Infrastructure.Backup;
 using Vaulty.Workflows;
 using Vaulty.Workflows.Jobs;
 using Vaulty.Workflows.Synthetic;
+using Vaulty.Workflows.Notifications;
+using Vaulty.Infrastructure.Notifications;
+using Vaulty.Graph.Http;
 
 namespace Vaulty.Workers;
 
@@ -85,6 +89,11 @@ public static class WorkerHost
                 tracing.AddSource(TracingInterceptor.ClientSource.Name, TracingInterceptor.WorkflowsSource.Name,
                     TracingInterceptor.ActivitiesSource.Name);
                 if (!string.IsNullOrEmpty(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"])) tracing.AddOtlpExporter();
+            })
+            .WithMetrics(metrics =>
+            {
+                metrics.AddMeter(GraphTelemetry.Meter.Name);
+                if (!string.IsNullOrEmpty(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"])) metrics.AddOtlpExporter();
             });
 
         builder.Services.AddTemporalClient(options =>
@@ -117,6 +126,8 @@ public static class WorkerHost
                 worker.AddScopedActivities<TenantActivities>()
                     .AddWorkflow<DiscoveryWorkflow>()
                     .AddWorkflow<TenantHealthWorkflow>();
+                worker.AddScopedActivities<NotificationActivities>()
+                    .AddWorkflow<NotificationSweepWorkflow>();
             }
             if (queue == TaskQueues.Restore)
             {
@@ -160,6 +171,14 @@ public static class WorkerHost
         }
         builder.Services.AddSingleton<BackupStore>();
         builder.Services.AddSingleton<IBackupStorage, S3BackupStorage>();
+        builder.Services.AddSingleton<Vaulty.Infrastructure.Reporting.DashboardService>();
+        builder.Services.AddSingleton<Vaulty.Infrastructure.Platform.IMailSender, Vaulty.Infrastructure.Platform.SmtpMailSender>();
+        builder.Services.AddSingleton(new WebhookOptions());
+        builder.Services.AddSingleton<IWebhookSender>(sp => new WebhookSender(sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<WebhookOptions>()));
+        builder.Services.AddSingleton(new NotificationOptions());
+        builder.Services.AddSingleton<NotificationDispatcher>();
+        builder.Services.AddSingleton<GraphUsageStore>();
+        builder.Services.AddHostedService<GraphUsageFlusher>();
         builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.RestoreStore>();
         builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.IExportStorage>(sp => new Vaulty.Infrastructure.Restore.S3ExportStorage(
             sp.GetRequiredService<Vaulty.Infrastructure.Storage.StorageClientFactory>(), Vaulty.Infrastructure.Storage.StorageRole.Worker));
@@ -192,6 +211,8 @@ public sealed class RecurringWorkflows(ITemporalClient client, WorkerSettings se
         }
         await StartAsync("tenant health check", () => client.StartWorkflowAsync((TenantHealthWorkflow w) => w.RunAsync(),
             new WorkflowOptions(TenantHealthWorkflow.Id, TaskQueues.Backup) { CronSchedule = TenantHealthWorkflow.Cron })).ConfigureAwait(false);
+        await StartAsync("notification sweep", () => client.StartWorkflowAsync((NotificationSweepWorkflow w) => w.RunAsync(),
+            new WorkflowOptions(NotificationSweepWorkflow.Id, TaskQueues.Backup) { CronSchedule = NotificationSweepWorkflow.Cron })).ConfigureAwait(false);
     }
 
     private async Task StartAsync(string name, Func<Task> start)
@@ -203,6 +224,37 @@ public sealed class RecurringWorkflows(ITemporalClient client, WorkerSettings se
         catch (Temporalio.Exceptions.WorkflowAlreadyStartedException)
         {
             logger.LogDebug("The {Name} is already scheduled", name);
+        }
+    }
+}
+
+/// <summary>Writes this process's Graph request counts per tenant to the database every minute (and once at shutdown).</summary>
+public sealed class GraphUsageFlusher(GraphUsageStore store, ILogger<GraphUsageFlusher> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false)) await FlushAsync(stoppingToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            await FlushAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task FlushAsync(CancellationToken cancellationToken)
+    {
+        var usage = GraphUsage.Drain();
+        if (usage.Count == 0) return;
+        try
+        {
+            await store.FlushAsync(usage, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is NpgsqlException or TimeoutException)
+        {
+            logger.LogWarning("Graph usage could not be written: {Error}", ex.Message);
         }
     }
 }

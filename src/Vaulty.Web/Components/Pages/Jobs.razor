@@ -1,0 +1,117 @@
+@page "/jobs"
+@attribute [Authorize(Policy = "perm:" + Permissions.JobsView)]
+@using Vaulty.Infrastructure.Notifications
+@inject JobsService JobsService
+@inject CurrentAccess Current
+@inject DisplayTime Time
+
+<PageTitle>Jobs · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">Jobs</h1>
+<p class="vy-page-lede">Every discovery, backup, restore, export, verification and clean-up, newest first. Quote the request ID when you contact support.</p>
+
+<MudGrid Spacing="2" Class="mb-2">
+    <MudItem xs="12" sm="4" md="3">
+        <MudSelect T="string" Label="Status" Value="_state" ValueChanged="@(async v => { _state = v; await LoadAsync(reset: true); })" Clearable="true">
+            @foreach (var s in States) { <MudSelectItem Value="@s">@StateText(s)</MudSelectItem> }
+        </MudSelect>
+    </MudItem>
+    <MudItem xs="12" sm="4" md="3">
+        <MudSelect T="string" Label="Type" Value="_kind" ValueChanged="@(async v => { _kind = v; await LoadAsync(reset: true); })" Clearable="true">
+            @foreach (var k in Kinds) { <MudSelectItem Value="@k">@KindText(k)</MudSelectItem> }
+        </MudSelect>
+    </MudItem>
+</MudGrid>
+
+<MudTable Items="_jobs" Dense="true" Hover="true" Elevation="0" Outlined="true">
+    <HeaderContent>
+        <MudTh>Type</MudTh>
+        <MudTh>Status</MudTh>
+        <MudTh>Target</MudTh>
+        <MudTh>Started</MudTh>
+        <MudTh>Finished</MudTh>
+        <MudTh>Result</MudTh>
+        <MudTh>Request ID</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>@KindText(context.Kind)</MudTd>
+        <MudTd><span class="vy-status @StateClass(context.State)">@StateText(context.State)</span></MudTd>
+        <MudTd>@(context.ObjectName ?? context.TenantName ?? "")</MudTd>
+        <MudTd>@Time.Relative(context.StartedAt ?? context.CreatedAt)</MudTd>
+        <MudTd>@Time.Relative(context.FinishedAt)</MudTd>
+        <MudTd>
+            @Counts(context.ResultCounts)
+            @if (!string.IsNullOrEmpty(context.Error)) { <div class="vy-muted">@context.Error</div> }
+        </MudTd>
+        <MudTd><code class="vy-request-id" title="@context.WorkflowId">@context.Id</code></MudTd>
+    </RowTemplate>
+    <NoRecordsContent><span class="vy-muted">No jobs yet.</span></NoRecordsContent>
+</MudTable>
+@if (_jobs.Count >= JobsService.PageSize)
+{
+    <MudButton Class="mt-2" Variant="Variant.Text" OnClick="@(() => LoadAsync(reset: false))">Older jobs</MudButton>
+}
+
+@code {
+    private static readonly string[] States = ["queued", "running", "succeeded", "partial", "failed", "cancelled"];
+    private static readonly string[] Kinds = ["discovery", "backup", "restore", "export", "verification", "garbage_collection"];
+    private List<JobRow> _jobs = [];
+    private string? _state;
+    private string? _kind;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Time.LoadAsync();
+        await LoadAsync(reset: true);
+    }
+
+    private async Task LoadAsync(bool reset)
+    {
+        var before = reset || _jobs.Count == 0 ? (DateTimeOffset?)null : _jobs[^1].CreatedAt;
+        var page = await JobsService.ListAsync(await Current.GetAsync(), _state, _kind, before);
+        _jobs = reset ? page.ToList() : [.. _jobs, .. page];
+    }
+
+    private static string StateClass(string state) => state switch
+    {
+        "succeeded" => "succeeded",
+        "partial" => "partial",
+        "failed" => "failed",
+        "running" or "queued" => "running",
+        _ => "neutral",
+    };
+
+    private static string StateText(string state) => state switch
+    {
+        "queued" => "Queued",
+        "running" => "Running",
+        "succeeded" => "Succeeded",
+        "partial" => "Partial",
+        "failed" => "Failed",
+        _ => "Cancelled",
+    };
+
+    private static string KindText(string kind) => kind switch
+    {
+        "discovery" => "Discovery",
+        "backup" => "Backup",
+        "restore" => "Restore",
+        "export" => "Export",
+        "verification" => "Verification",
+        _ => "Clean-up",
+    };
+
+    private static string Counts(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return string.Join(", ", doc.RootElement.EnumerateObject().Where(p => p.Value.ValueKind == System.Text.Json.JsonValueKind.Number)
+                .Select(p => $"{p.Value.GetInt64().ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} {p.Name.Replace('_', ' ')}"));
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "";
+        }
+    }
+}

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Net;
@@ -118,9 +119,42 @@ public sealed class TelemetryHandler : DelegatingHandler
         activity?.SetTag("graph.request_id", requestId);
         var tags = new TagList { { "workload", context.Workload }, { "status", (int)response.StatusCode } };
         GraphTelemetry.Requests.Add(1, tags);
+        GraphUsage.Record(context.TenantId, (int)response.StatusCode == 429);
         GraphTelemetry.Duration.Record(elapsed.TotalMilliseconds, tags);
         if (response.Content.Headers.ContentLength is { } length) GraphTelemetry.Bytes.Add(length, tags);
         return response;
+    }
+}
+
+/// <summary>
+/// Requests and throttled responses per tenant since the last drain, kept in memory and written to the database by the
+/// worker host every minute (the 429 ratio of tenant health).
+/// </summary>
+public static class GraphUsage
+{
+    private static ConcurrentDictionary<Guid, Counts> _counts = new();
+
+    public sealed class Counts
+    {
+        internal long RequestCount;
+        internal long ThrottledCount;
+        public long Requests => Interlocked.Read(ref RequestCount);
+        public long Throttled => Interlocked.Read(ref ThrottledCount);
+    }
+
+    public static void Record(Guid tenantId, bool throttled)
+    {
+        if (tenantId == Guid.Empty) return;
+        var counts = _counts.GetOrAdd(tenantId, _ => new Counts());
+        Interlocked.Increment(ref counts.RequestCount);
+        if (throttled) Interlocked.Increment(ref counts.ThrottledCount);
+    }
+
+    /// <summary>Everything counted since the previous drain; counting continues in a fresh set.</summary>
+    public static IReadOnlyDictionary<Guid, (long Requests, long Throttled)> Drain()
+    {
+        var previous = Interlocked.Exchange(ref _counts, new ConcurrentDictionary<Guid, Counts>());
+        return previous.ToDictionary(p => p.Key, p => (p.Value.Requests, p.Value.Throttled));
     }
 }
 

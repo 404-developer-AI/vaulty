@@ -32,6 +32,8 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/settings/audit"] = VaultyPolicies.Permission(Permissions.AuditView),
         ["/settings/storage"] = VaultyPolicies.Permission(Permissions.StorageManage),
         ["/settings/platform"] = VaultyPolicies.Permission(Permissions.SettingsManage),
+        ["/settings/webhooks"] = VaultyPolicies.Permission(Permissions.SettingsManage),
+        ["/jobs"] = VaultyPolicies.Permission(Permissions.JobsView),
         ["/customers"] = VaultyPolicies.Permission(Permissions.CustomersView),
         ["/customers/{CustomerId:guid}"] = VaultyPolicies.Permission(Permissions.CustomersView),
         ["/tenants/{TenantId:guid}"] = VaultyPolicies.Permission(Permissions.CustomersView),
@@ -222,6 +224,13 @@ public sealed class ApiTests(WebAppFixture app) : IClassFixture<WebAppFixture>
         var client = api.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), AllowAutoRedirect = false });
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/healthz")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/healthz/ready")).StatusCode);
+        // The test server has no loopback peer address: like any remote caller, it gets nothing from /metrics.
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/metrics")).StatusCode);
+        using (var forwarded = new HttpRequestMessage(HttpMethod.Get, "/metrics"))
+        {
+            forwarded.Headers.Add("X-Forwarded-For", "203.0.113.7");
+            Assert.Equal(HttpStatusCode.NotFound, (await client.SendAsync(forwarded)).StatusCode);
+        }
         var openApi = await client.GetAsync("/api/v1/openapi.json");
         Assert.Equal(HttpStatusCode.OK, openApi.StatusCode);
         Assert.Contains("Vaulty API", await openApi.Content.ReadAsStringAsync(), StringComparison.Ordinal);
@@ -232,7 +241,8 @@ public sealed class ApiTests(WebAppFixture app) : IClassFixture<WebAppFixture>
         {
             var route = "/" + endpoint.RoutePattern.RawText?.TrimStart('/');
             var anonymous = endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null;
-            if (anonymous) Assert.Contains(route, new[] { "/api/v1/healthz", "/api/v1/healthz/ready", "/api/v1/openapi.json" });
+            // /metrics answers only on the loopback interface and never through the reverse proxy (checked below).
+            if (anonymous) Assert.Contains(route, new[] { "/api/v1/healthz", "/api/v1/healthz/ready", "/api/v1/openapi.json", "/metrics" });
             else Assert.NotEmpty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
         }
     }

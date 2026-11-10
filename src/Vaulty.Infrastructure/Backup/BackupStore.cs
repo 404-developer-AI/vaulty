@@ -451,6 +451,22 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
                     now, countsJson, exceptionsJson, rootHash, objectKey = RepositoryLayout.Snapshot(target.TenantId, target.ProtectedObjectId, target.SnapshotId),
                     lockUntil, nextRun = now + frequency, sequence,
                 }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            // Notifications: a partial snapshot is an event every time and one open alert; a clean snapshot settles earlier alerts.
+            var objectName = await session.Connection.ExecuteScalarAsync<string>(new CommandDefinition(
+                "SELECT display_name FROM vaulty.protected_objects WHERE id = @ProtectedObjectId", new { target.ProtectedObjectId }, session.Transaction,
+                cancellationToken: cancellationToken)).ConfigureAwait(false);
+            await Retention.Alerts.ResolveAsync(session, target.ProtectedObjectId,
+                partial ? [Core.Notifications.NotificationKinds.BackupFailed, Core.Notifications.NotificationKinds.BackupMissed]
+                        : [Core.Notifications.NotificationKinds.BackupFailed, Core.Notifications.NotificationKinds.BackupMissed, Core.Notifications.NotificationKinds.BackupPartial],
+                now, cancellationToken).ConfigureAwait(false);
+            if (partial)
+            {
+                var partialMessage = $"Backup of {objectName} is partial: {allExceptions.Count} item{(allExceptions.Count == 1 ? " is" : "s are")} missing, each with a reason. Open the snapshot to see what is missing and why.";
+                await Retention.Alerts.RaiseAsync(session, target.TenantId, target.ProtectedObjectId, Core.Notifications.NotificationKinds.BackupPartial, "warning",
+                    partialMessage, new { snapshot = target.SnapshotId, missing = allExceptions.Count }, cancellationToken, publishEvent: false).ConfigureAwait(false);
+                await Notifications.NotificationEvents.PublishAsync(session, Core.Notifications.NotificationKinds.BackupPartial, target.TenantId, target.ProtectedObjectId,
+                    new { snapshot = target.SnapshotId, items = counts["items"], missing = allExceptions.Count, message = partialMessage }, cancellationToken).ConfigureAwait(false);
+            }
             // Drift: far fewer items than the previous snapshot usually means something went wrong at the source, not a clean-up.
             var previousItems = await session.Connection.ExecuteScalarAsync<long?>(new CommandDefinition(
                 """
@@ -481,6 +497,14 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
             cancellationToken: cancellationToken)).ConfigureAwait(false);
         await Audit.AuditLog.WriteAsync(session, "system:backup", "backup.failed", $"object:{target.ProtectedObjectId}",
             new { snapshot = target.SnapshotId, reason }, cancellationToken).ConfigureAwait(false);
+        var objectName = await session.Connection.ExecuteScalarAsync<string>(new CommandDefinition(
+            "SELECT display_name FROM vaulty.protected_objects WHERE id = @ProtectedObjectId", new { target.ProtectedObjectId }, session.Transaction,
+            cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var message = $"Backup of {objectName} failed: no snapshot was committed. Vaulty retries at the next run; check the job for details.";
+        await Retention.Alerts.RaiseAsync(session, target.TenantId, target.ProtectedObjectId, Core.Notifications.NotificationKinds.BackupFailed, "critical", message,
+            new { snapshot = target.SnapshotId }, cancellationToken, publishEvent: false).ConfigureAwait(false);
+        await Notifications.NotificationEvents.PublishAsync(session, Core.Notifications.NotificationKinds.BackupFailed, target.TenantId, target.ProtectedObjectId,
+            new { snapshot = target.SnapshotId, message }, cancellationToken).ConfigureAwait(false);
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 

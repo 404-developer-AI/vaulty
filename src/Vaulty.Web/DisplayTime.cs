@@ -16,7 +16,7 @@ public sealed class DisplayTime(PlatformSettings settings, TimeProvider clock)
     {
         if (_zone is not null) return this;
         var display = await settings.GetAsync<DisplaySettings>(DisplaySettings.SettingKey) ?? DisplaySettings.Default;
-        _zone = TimeZoneInfo.TryFindSystemTimeZoneById(display.TimeZone, out var zone) ? zone : TimeZoneInfo.Utc;
+        _zone = TimeZones.Resolve(display.TimeZone);
         return this;
     }
 

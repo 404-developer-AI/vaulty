@@ -107,11 +107,20 @@ public sealed class TenantHealthCheck(NpgsqlDataSource dataSource, IGraphTokenPr
         {
             await AuditLog.WriteAsync(session, "system:health", "tenant.consent_lost", $"tenant:{tenantId}", new { detail }, cancellationToken)
                 .ConfigureAwait(false);
+            var name = await session.Connection.ExecuteScalarAsync<string>(new CommandDefinition("SELECT display_name FROM vaulty.tenants WHERE id = @tenantId",
+                new { tenantId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            await Retention.Alerts.RaiseAsync(session, tenantId, null, Core.Notifications.NotificationKinds.ConsentLost, "critical",
+                $"Vaulty lost access to tenant {name}: {detail} Backups of this tenant stop until the app works again; check its permissions on the tenant page.",
+                new { detail }, cancellationToken).ConfigureAwait(false);
         }
         else if (outcome == HealthOutcome.Healthy && tenant.ConsentState == "lost")
         {
             await AuditLog.WriteAsync(session, "system:health", "tenant.consent_restored", $"tenant:{tenantId}", null, cancellationToken)
                 .ConfigureAwait(false);
+            await session.Connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE vaulty.alerts SET resolved_at = @now WHERE tenant_id = @tenantId AND kind = @kind AND resolved_at IS NULL",
+                new { tenantId, now = clock.GetUtcNow(), kind = Core.Notifications.NotificationKinds.ConsentLost }, session.Transaction,
+                cancellationToken: cancellationToken)).ConfigureAwait(false);
         }
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new HealthResult(outcome, detail, becameLost);

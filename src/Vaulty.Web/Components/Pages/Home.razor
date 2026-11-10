@@ -1,7 +1,151 @@
 @page "/"
 @attribute [Authorize]
+@using Vaulty.Core.Domain
+@using Vaulty.Infrastructure.Reporting
+@using Vaulty.Infrastructure.Notifications
+@inject DashboardService Dashboards
+@inject AlertService AlertService
+@inject CurrentAccess Current
+@inject DisplayTime Time
+@inject ISnackbar Snackbar
 
 <PageTitle>Dashboard · Vaulty</PageTitle>
 
 <h1 class="vy-page-title">Dashboard</h1>
 <p class="vy-page-lede">Every customer, tenant and protected object, worst status first.</p>
+
+@if (_dashboard is null)
+{
+    <MudProgressLinear Indeterminate="true" />
+}
+else
+{
+    <div class="vy-totals mb-4" aria-label="Protected objects by status">
+        @foreach (var status in Order)
+        {
+            var count = _dashboard.Totals.GetValueOrDefault(status);
+            if (count == 0 && status is not (ProtectionStatus.Protected or ProtectionStatus.Partial or ProtectionStatus.Failed)) continue;
+            <div class="vy-total"><StatusChip Status="status" Text="@($"{count} {Protection.Label(status).ToLowerInvariant()}")" /></div>
+        }
+    </div>
+
+    @if (_dashboard.OpenAlerts.Count > 0)
+    {
+        <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+            <MudText Typo="Typo.h6">Needs attention</MudText>
+            @foreach (var alert in _dashboard.OpenAlerts.Take(_showAllAlerts ? 200 : 10))
+            {
+                <div class="vy-alert-row">
+                    <span class="vy-status @(alert.Severity == "critical" ? "failed" : alert.Severity == "warning" ? "partial" : "neutral")">@SeverityLabel(alert.Severity)</span>
+                    <span class="vy-alert-message">@alert.Message</span>
+                    <span class="vy-muted">@Time.Relative(alert.CreatedAt)</span>
+                    @if (alert.TenantId is { } t)
+                    {
+                        <MudLink Href="@($"/tenants/{t}")">Tenant</MudLink>
+                    }
+                    @if (CanResolve(alert))
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => ResolveAsync(alert))">Resolve</MudButton>
+                    }
+                </div>
+            }
+            @if (_dashboard.OpenAlerts.Count > 10 && !_showAllAlerts)
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _showAllAlerts = true)">Show all @_dashboard.OpenAlerts.Count</MudButton>
+            }
+        </MudPaper>
+    }
+
+    @if (_dashboard.Customers.Count == 0)
+    {
+        <p class="vy-muted">No customers yet. Add a customer and connect its tenant to start.</p>
+    }
+    @foreach (var customer in _dashboard.Customers)
+    {
+        <MudPaper Class="pa-4 mb-3" Elevation="0" Outlined="true">
+            <div class="vy-row-head">
+                <StatusChip Status="customer.Status" />
+                <MudLink Href="@($"/customers/{customer.Id}")" Typo="Typo.h6">@customer.Code · @customer.Name</MudLink>
+                <span class="vy-muted">@CountText(customer.Counts)</span>
+            </div>
+            @foreach (var tenant in customer.Tenants)
+            {
+                <div class="vy-tenant">
+                    <div class="vy-row-head">
+                        <StatusChip Status="tenant.Status" Reason="@tenant.Reason" />
+                        <MudLink Href="@($"/tenants/{tenant.Id}")">@tenant.Name</MudLink>
+                        <span class="vy-muted">@CountText(tenant.Counts)</span>
+                        @if (!string.IsNullOrEmpty(tenant.Reason))
+                        {
+                            <span class="vy-muted">@tenant.Reason</span>
+                        }
+                    </div>
+                    <MudSimpleTable Dense="true" Elevation="0" Class="vy-objects">
+                        <thead><tr><th>Protected object</th><th>Status</th><th>Latest snapshot</th><th>Items</th></tr></thead>
+                        <tbody>
+                            @foreach (var o in tenant.Objects.Take(Expanded(tenant.Id) ? int.MaxValue : 10))
+                            {
+                                <tr>
+                                    <td>@o.Name</td>
+                                    <td><StatusChip Status="o.Status" Reason="@o.Reason" Text="@(o.Status == ProtectionStatus.Partial ? $"Partial: {o.Missing} missing" : null)" />
+                                        @if (!string.IsNullOrEmpty(o.Reason) && o.Status != ProtectionStatus.Partial) { <span class="vy-muted ml-1">@o.Reason</span> }</td>
+                                    <td>@(o.LastSnapshotAt is { } at ? Time.Relative(at) : "")</td>
+                                    <td>@(o.Items?.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) ?? "")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                    @if (tenant.Objects.Count > 10 && !Expanded(tenant.Id))
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _expanded.Add(tenant.Id))">Show all @tenant.Objects.Count protected objects</MudButton>
+                    }
+                </div>
+            }
+        </MudPaper>
+    }
+}
+
+@code {
+    private static readonly ProtectionStatus[] Order =
+        [ProtectionStatus.Failed, ProtectionStatus.Partial, ProtectionStatus.Protected, ProtectionStatus.NotRunYet, ProtectionStatus.Paused, ProtectionStatus.SourceDeleted];
+
+    private Dashboard? _dashboard;
+    private Vaulty.Infrastructure.Access.UserAccess? _access;
+    private bool _showAllAlerts;
+    private readonly HashSet<Guid> _expanded = [];
+
+    private bool Expanded(Guid tenantId) => _expanded.Contains(tenantId);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await Time.LoadAsync();
+        _access = await Current.GetAsync();
+        _dashboard = await Dashboards.LoadAsync(_access);
+    }
+
+    private static string SeverityLabel(string severity) => severity switch
+    {
+        "critical" => "Critical",
+        "warning" => "Warning",
+        _ => "Info",
+    };
+
+    private bool CanResolve(AlertRow alert)
+    {
+        if (_access is null || _dashboard is null) return false;
+        var customer = alert.TenantId is { } t ? _dashboard.Tenants.FirstOrDefault(x => x.Id == t)?.CustomerId : null;
+        return customer is { } c ? _access.Allows(Permissions.BackupsRun, c) : _access.Allows(Permissions.SettingsManage);
+    }
+
+    private async Task ResolveAsync(AlertRow alert)
+    {
+        await AlertService.ResolveAsync(await Current.GetAsync(), alert.Id);
+        Snackbar.Add("Alert resolved. It comes back if the problem happens again.", Severity.Info);
+        await LoadAsync();
+    }
+
+    /// <summary>Exact counts, never percentages: "40 protected, 2 partial, 1 failed".</summary>
+    private static string CountText(IReadOnlyDictionary<ProtectionStatus, int> counts) => DigestMail.Counts(counts);
+}

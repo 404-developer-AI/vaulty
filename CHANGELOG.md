@@ -112,6 +112,25 @@ All notable changes to this project are documented in this file. The format foll
 - Deleting a tenant: one administrator requests it after "Confirm it's you" and its backups stop at once; a reminder is
   raised every day; a second administrator can confirm after 30 days; until then the request can be withdrawn. A tenant
   on legal hold cannot be deleted.
+- Dashboard: every customer, tenant and protected object, worst status first, with exact counts and no percentages; a
+  tenant takes the worst state of its objects and a customer the worst of its tenants. Partial is amber everywhere and
+  never counts as protected; red is kept for genuine failure (no snapshot committed, a latest snapshot older than twice
+  the interval, consent lost, verification failed). Open alerts are listed on top and can be resolved.
+- Jobs page on the job mirror, filtered by status and type, with the request ID to quote to support.
+- Tenant health on the tenant page: status, counts, the oldest latest snapshot, the last verification and its result, and
+  Microsoft Graph requests and throttled responses of the last 24 hours.
+- Alerts by e-mail to the users who may see reports for the customer (per-user opt-out), plain text with an HTML card,
+  once per alert. A scheduled backup that has not started 10 minutes after its planned time raises a "missed run"
+  alert; partial and failed backups raise alerts that a later clean snapshot resolves; lost consent raises an alert.
+- Webhooks (Settings → Webhooks): events `backup.failed`, `backup.partial`, `backup.missed`, `backup.drift`,
+  `tenant.consent_lost`, `verification.failed`, `restore.completed` and `tenant.deletion_pending`, JSON bodies signed
+  with HMAC-SHA256 over timestamp and body (`Vaulty-Signature: t=...,v1=...`) with a delivery ID for replay protection,
+  retries with backoff over about 15 hours, a delivery log and a test button. Webhooks go to https only and never to
+  private, loopback or link-local addresses, checked again at connect time.
+- A daily digest by e-mail at 07:00 in the display time zone with exact counts and every protected object that needs
+  attention.
+- Metrics: OpenTelemetry metrics in the workers (exported when an OTLP endpoint is set) and `/metrics` in Prometheus
+  format on the API, reachable from the host only, aggregated without customer, tenant or object names.
 
 ### Changed
 

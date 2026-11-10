@@ -32,6 +32,17 @@ public sealed record DisplaySettings(
         ["backup.failed", "backup.partial", "tenant.consent_lost", "verification.failed", "restore.completed"]);
 }
 
+/// <summary>Time zones by IANA id on every platform (Windows hosts resolve the matching Windows zone); UTC when unknown.</summary>
+public static class TimeZones
+{
+    public static TimeZoneInfo Resolve(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return TimeZoneInfo.Utc;
+        if (TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone)) return zone;
+        return TimeZoneInfo.TryConvertIanaIdToWindowsId(id, out var windows) && TimeZoneInfo.TryFindSystemTimeZoneById(windows, out var w) ? w : TimeZoneInfo.Utc;
+    }
+}
+
 public sealed record MailMessage(string To, string Subject, string Text, string? Html);
 
 public interface IMailSender

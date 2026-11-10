@@ -1,0 +1,138 @@
+@page "/settings/webhooks"
+@attribute [Authorize(Policy = "perm:" + Permissions.SettingsManage)]
+@using Vaulty.Core.Notifications
+@using Vaulty.Infrastructure.Notifications
+@inject WebhookService WebhookService
+@inject CurrentAccess Current
+@inject DisplayTime Time
+@inject ISnackbar Snackbar
+
+<PageTitle>Webhooks · Vaulty</PageTitle>
+
+<h1 class="vy-page-title">Webhooks</h1>
+<p class="vy-page-lede">Vaulty posts a signed JSON message to your endpoint when something happens. Verify the <code>Vaulty-Signature</code> header with the
+    secret: HMAC-SHA256 over the timestamp, a dot and the raw body. Reject messages older than five minutes and repeated <code>Vaulty-Delivery</code> IDs.</p>
+
+<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+    <MudText Typo="Typo.h6">Add a webhook</MudText>
+    <MudGrid Spacing="2">
+        <MudItem xs="12" md="3"><MudTextField @bind-Value="_name" Label="Name" /></MudItem>
+        <MudItem xs="12" md="6"><MudTextField @bind-Value="_url" Label="URL" HelperText="https only, for example https://hooks.example.com/vaulty" /></MudItem>
+    </MudGrid>
+    <div class="mt-2">
+        @foreach (var (kind, description) in NotificationKinds.All)
+        {
+            <MudCheckBox T="bool" Value="@_events.Contains(kind)" ValueChanged="@(v => Toggle(kind, v))" Label="@($"{kind} · {description}")" Dense="true" />
+        }
+    </div>
+    <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" OnClick="CreateAsync">Add webhook</MudButton>
+    @if (_secret is not null)
+    {
+        <MudAlert Severity="Severity.Info" Class="mt-3">Signing secret, shown once. Store it in the receiver now.</MudAlert>
+        <pre class="vy-secret mt-2">@_secret</pre>
+    }
+</MudPaper>
+
+@foreach (var hook in _hooks)
+{
+    <MudPaper Class="pa-4 mb-3" Elevation="0" Outlined="true">
+        <div class="vy-row-head">
+            <span class="vy-status @(hook.Enabled ? "protected" : "neutral")">@(hook.Enabled ? "Enabled" : "Disabled")</span>
+            <strong>@hook.Name</strong>
+            <span class="vy-muted">@hook.Url</span>
+        </div>
+        <div class="vy-muted mt-1">@string.Join(", ", hook.Events)</div>
+        <div class="mt-2">
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => TestAsync(hook))">Send a test</MudButton>
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => SetEnabledAsync(hook, !hook.Enabled))">@(hook.Enabled ? "Disable" : "Enable")</MudButton>
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => RotateAsync(hook))">New secret</MudButton>
+            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => DeleteAsync(hook))">Delete</MudButton>
+        </div>
+        @if (_deliveries.TryGetValue(hook.Id, out var deliveries) && deliveries.Count > 0)
+        {
+            <MudSimpleTable Dense="true" Elevation="0" Class="mt-2">
+                <thead><tr><th>Event</th><th>Status</th><th>Attempts</th><th>Last answer</th><th>Created</th></tr></thead>
+                <tbody>
+                    @foreach (var d in deliveries.Take(10))
+                    {
+                        <tr>
+                            <td>@d.Kind</td>
+                            <td><span class="vy-status @(d.State == "delivered" ? "succeeded" : d.State == "failed" ? "failed" : "running")">@(d.State == "delivered" ? "Delivered" : d.State == "failed" ? "Failed" : "Retrying")</span></td>
+                            <td>@d.Attempts</td>
+                            <td>@(d.LastStatus?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? d.LastError ?? "")</td>
+                            <td>@Time.Relative(d.CreatedAt)</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        }
+    </MudPaper>
+}
+
+@code {
+    private IReadOnlyList<WebhookRow> _hooks = [];
+    private readonly Dictionary<Guid, IReadOnlyList<DeliveryRow>> _deliveries = [];
+    private string? _name;
+    private string? _url;
+    private readonly HashSet<string> _events = [.. Vaulty.Infrastructure.Platform.DisplaySettings.Default.WebhookEvents];
+    private string? _secret;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Time.LoadAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var access = await Current.GetAsync();
+        _hooks = await WebhookService.ListAsync(access);
+        _deliveries.Clear();
+        foreach (var hook in _hooks) _deliveries[hook.Id] = await WebhookService.DeliveriesAsync(access, hook.Id);
+    }
+
+    private void Toggle(string kind, bool on)
+    {
+        if (on) _events.Add(kind);
+        else _events.Remove(kind);
+    }
+
+    private async Task CreateAsync()
+    {
+        try
+        {
+            (_, _secret) = await WebhookService.CreateAsync(await Current.GetAsync(), _name ?? "", _url ?? "", _events);
+            (_name, _url) = (null, null);
+            await LoadAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task TestAsync(WebhookRow hook)
+    {
+        await WebhookService.SendTestAsync(await Current.GetAsync(), hook.Id);
+        Snackbar.Add("Test queued. It is delivered within a minute; the result appears below.", Severity.Info);
+        await LoadAsync();
+    }
+
+    private async Task SetEnabledAsync(WebhookRow hook, bool enabled)
+    {
+        await WebhookService.SetEnabledAsync(await Current.GetAsync(), hook.Id, enabled);
+        await LoadAsync();
+    }
+
+    private async Task RotateAsync(WebhookRow hook)
+    {
+        _secret = await WebhookService.RotateAsync(await Current.GetAsync(), hook.Id);
+        Snackbar.Add("New secret created. Deliveries are signed with it from now on.", Severity.Info);
+    }
+
+    private async Task DeleteAsync(WebhookRow hook)
+    {
+        await WebhookService.DeleteAsync(await Current.GetAsync(), hook.Id);
+        await LoadAsync();
+    }
+}

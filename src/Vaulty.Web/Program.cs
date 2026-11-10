@@ -41,6 +41,11 @@ builder.Services.AddScoped<Vaulty.Web.DisplayTime>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.RestoreService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Retention.TenantDeletion>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Retention.LegalHold>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Reporting.DashboardService>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Notifications.AlertService>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Notifications.JobsService>();
+builder.Services.AddSingleton(new Vaulty.Infrastructure.Notifications.WebhookOptions());
+builder.Services.AddSingleton<Vaulty.Infrastructure.Notifications.WebhookService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.IExportStorage>(sp => new Vaulty.Infrastructure.Restore.S3ExportStorage(
     sp.GetRequiredService<Vaulty.Infrastructure.Storage.StorageClientFactory>(), Vaulty.Infrastructure.Storage.StorageRole.Api));
 var temporal = new Lazy<Task<Temporalio.Client.ITemporalClient>>(async () => await Temporalio.Client.TemporalClient.ConnectAsync(

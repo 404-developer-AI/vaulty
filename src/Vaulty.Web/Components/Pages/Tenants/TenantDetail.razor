@@ -4,10 +4,14 @@
 @using Vaulty.Graph.Onboarding
 @using Vaulty.Infrastructure.Tenants
 @using Vaulty.Infrastructure.Retention
+@using Vaulty.Infrastructure.Reporting
+@using Vaulty.Core.Domain
 @using Vaulty.Workflows.Tenants
 @inject TenantService TenantService
 @inject TenantDeletion Deletion
 @inject LegalHold Holds
+@inject DashboardService Dashboards
+@inject DisplayTime Time
 @inject IWorkflowStarter Workflows
 @inject CurrentAccess Current
 @inject NavigationManager Navigation
@@ -60,6 +64,22 @@ else
         }
     </MudPaper>
 
+    @if (_health is { } health)
+    {
+        <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+            <MudText Typo="Typo.h6">Health</MudText>
+            <MudSimpleTable Dense="true" Elevation="0">
+                <tbody>
+                    <tr><td>Status</td><td><StatusChip Status="health.Status" Reason="@health.Reason" /> @health.Reason</td></tr>
+                    <tr><td>Protected objects</td><td>@Vaulty.Infrastructure.Notifications.DigestMail.Counts(health.Counts)</td></tr>
+                    <tr><td>Oldest latest snapshot</td><td>@(health.OldestLatestSnapshotAt is { } oldest ? $"{Time.Absolute(oldest)} ({Protection.Age(Clock.GetUtcNow() - oldest)} ago)" : "none yet")</td></tr>
+                    <tr><td>Last verification</td><td>@(health.LastVerificationAt is { } v ? $"{Time.Absolute(v)}, {(health.LastVerificationFailures ?? 0)} problem{((health.LastVerificationFailures ?? 0) == 1 ? "" : "s")} found" : "not run yet")</td></tr>
+                    <tr><td>Microsoft Graph, last 24 hours</td><td>@health.Requests24h.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) requests, @health.Throttled24h.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) throttled (429)</td></tr>
+                </tbody>
+            </MudSimpleTable>
+        </MudPaper>
+    }
+
     <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
         <MudText Typo="Typo.h6">Policy</MudText>
         <MudGrid Spacing="2">
@@ -104,7 +124,10 @@ else
                         <span class="vy-status neutral">Paused</span>
                         break;
                     default:
-                        <span class="vy-status @(context.LastBackupAt is null ? "neutral" : context.LastSnapshotState == "partial" ? "partial" : "protected")">@(context.LastBackupAt is null ? "Not run yet" : context.LastSnapshotState == "partial" ? "Partial" : "Protected")</span>
+                        @if (_health?.Objects.FirstOrDefault(o => o.Id == context.Id) is { } status)
+                        {
+                            <StatusChip Status="status.Status" Reason="@status.Reason" />
+                        }
                         break;
                 }
             </MudTd>
@@ -191,6 +214,7 @@ else
     private bool _canHold;
     private bool _canDelete;
     private TenantDeletionState? _deletion;
+    private TenantStatusRow? _health;
     private IReadOnlySet<Guid> _held = new HashSet<Guid>();
     private int _frequencyHours = 6;
     private int _retentionDays = 90;
@@ -247,6 +271,8 @@ else
         _canDelete = access.Allows(Permissions.TenantsDelete, tenant.CustomerId);
         _objects = await TenantService.ProtectedObjectsAsync(_organizationId, TenantId);
         _deletion = await Deletion.StateAsync(access, TenantId);
+        await Time.LoadAsync();
+        _health = (await Dashboards.LoadAsync(access, TenantId)).Tenants.FirstOrDefault(t => t.Id == TenantId);
         _held = await Holds.ObjectsOnHoldAsync(access, TenantId);
         var policy = await TenantService.PolicyAsync(_organizationId, TenantId);
         (_frequencyHours, _retentionDays, _excluded) = (policy.FrequencyMinutes / 60, policy.RetentionDays, string.Join(", ", policy.ExcludedFolders));

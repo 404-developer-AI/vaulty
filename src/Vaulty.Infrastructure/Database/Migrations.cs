@@ -175,3 +175,10 @@ public sealed class VerificationMigration : SqlMigration
 {
     protected override string ScriptName => "0011_verification";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261110000012_Notifications")]
+public sealed class NotificationsMigration : SqlMigration
+{
+    protected override string ScriptName => "0012_notifications";
+}
