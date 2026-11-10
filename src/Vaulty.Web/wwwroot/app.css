@@ -48,7 +48,7 @@ html, body {
     margin: 0;
     padding: 0;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    font-size: 14px;
+    font-size: 15px;
     color: var(--vy-text);
     background: var(--vy-bg);
     -webkit-font-smoothing: antialiased;
@@ -56,14 +56,16 @@ html, body {
 
 .mud-drawer--left { top: 0 !important; height: 100vh !important; }
 .mud-main-content { padding-top: 0 !important; min-height: 100vh; background: var(--vy-bg); }
-.content-area { padding: 28px 36px; max-width: 1400px; }
+.content-area { padding: 32px 40px; max-width: 1600px; }
+@media (min-width: 1920px) { .content-area { max-width: 1800px; } }
+@media (max-width: 960px) { .content-area { padding: 20px 16px; } }
 
 .vy-brand { display: flex; align-items: center; gap: 10px; padding: 20px 20px 12px; font-weight: 600; font-size: 1.05rem; }
 .vy-mark { width: 32px; height: 32px; border-radius: 8px; background: var(--vy-primary); display: inline-flex; align-items: center; justify-content: center; color: #fff; }
 .vy-eyebrow { color: var(--vy-text-secondary); font-size: 0.75rem; font-weight: 500; }
 .vy-muted { color: var(--vy-text-secondary); }
-.vy-page-title { font-size: 1.5rem; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
-.vy-page-lede { color: var(--vy-text-secondary); margin: 0 0 24px; }
+.vy-page-title { font-size: 1.75rem; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.015em; }
+.vy-page-lede { color: var(--vy-text-secondary); margin: 0 0 28px; max-width: 80ch; line-height: 1.55; }
 
 /* Account pages: a centered card */
 .vy-account { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
@@ -115,3 +117,23 @@ html, body {
 
 /* Blazor moves focus to the page heading after navigation (for screen readers); it is not an input, so no ring. */
 h1:focus, h1:focus-visible { outline: none; }
+
+/* Panels, tables, buttons and inputs: more room, quieter headers, one radius. */
+.content-area .mud-paper.pa-4 { padding: 20px 24px !important; }
+.content-area .mud-paper + .mud-paper, .content-area .mud-paper + .mud-table, .content-area .mud-table + .mud-paper { margin-top: 20px; }
+/* A data table stands on its own; a simple key/value table inside a panel stays flat. */
+.mud-table:not(.mud-simple-table) { border-radius: var(--vy-radius-lg) !important; overflow: hidden; border: 1px solid var(--vy-border); background: var(--vy-surface); box-shadow: var(--vy-shadow-sm); }
+.mud-simple-table { border: 0 !important; box-shadow: none !important; background: transparent !important; }
+.mud-table .mud-table-head .mud-table-cell { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--mud-palette-text-secondary); }
+.mud-table .mud-table-body .mud-table-row:hover { background: var(--vy-bg) !important; }
+.mud-table .mud-table-cell { background: transparent !important; font-size: 0.9rem; }
+.mud-table-dense .mud-table-cell { padding-top: 10px !important; padding-bottom: 10px !important; }
+.mud-simple-table td { padding: 8px 16px 8px 0 !important; font-size: 0.9rem; }
+.mud-button-root { border-radius: var(--vy-radius) !important; text-transform: none !important; font-weight: 600; letter-spacing: 0; }
+.mud-dialog { border-radius: var(--vy-radius-lg) !important; border: 1px solid var(--vy-border); }
+.mud-chip { border-radius: 6px !important; font-weight: 500; font-size: 0.75rem; }
+.mud-alert { border-radius: var(--vy-radius) !important; }
+.mud-input-outlined .mud-input-outlined-border { border-radius: var(--vy-radius) !important; }
+.mud-input-control { margin-bottom: 4px; }
+.mud-input-helper-text { font-size: 0.75rem; }
+.mud-nav-link { font-size: 0.9rem; padding-top: 9px !important; padding-bottom: 9px !important; border-radius: var(--vy-radius); margin: 1px 8px; }

@@ -211,6 +211,9 @@ All notable changes to this project are documented in this file. The format foll
   prerendered page loaded is carried over to the circuit.
 - The installation wizard asks for the host's time zone (default: the current one) and repeats the chosen environment
   on screen; a time zone in the answers file must exist in the host's zone database.
+- Layout: body text at 15px, wider content (up to 1600px, 1800px on large screens), more room in panels and table rows,
+  quieter table headers and one corner radius for tables, buttons and inputs, after the sibling product's style; simple
+  key/value tables inside a panel stay flat.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

@@ -43,7 +43,7 @@ public static class VaultyTheme
             Default = new DefaultTypography
             {
                 FontFamily = ["Inter", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "sans-serif"],
-                FontSize = "0.875rem"
+                FontSize = "0.9375rem"
             },
             H1 = new H1Typography { FontWeight = "600", FontSize = "2.25rem", LetterSpacing = "-0.02em" },
             H2 = new H2Typography { FontWeight = "600", FontSize = "1.875rem", LetterSpacing = "-0.02em" },
@@ -53,8 +53,8 @@ public static class VaultyTheme
             H6 = new H6Typography { FontWeight = "600", FontSize = "1rem" },
             Subtitle1 = new Subtitle1Typography { FontWeight = "500", FontSize = "0.9375rem" },
             Subtitle2 = new Subtitle2Typography { FontWeight = "500", FontSize = "0.8125rem" },
-            Body1 = new Body1Typography { FontSize = "0.875rem", LineHeight = "1.6" },
-            Body2 = new Body2Typography { FontSize = "0.8125rem", LineHeight = "1.5" },
+            Body1 = new Body1Typography { FontSize = "0.9375rem", LineHeight = "1.6" },
+            Body2 = new Body2Typography { FontSize = "0.875rem", LineHeight = "1.5" },
             Button = new ButtonTypography { FontWeight = "600", FontSize = "0.875rem", LetterSpacing = "0", TextTransform = "none" },
             Caption = new CaptionTypography { FontSize = "0.75rem", FontWeight = "500" },
             Overline = new OverlineTypography { FontSize = "0.6875rem", FontWeight = "600", LetterSpacing = "0.08em" }
