@@ -209,7 +209,9 @@ public static class InstallSteps
         c.Shell.CreateDirectory(Paths.Releases, Public);
         c.Shell.CreateDirectory(Paths.Lib, RwxRx);
         c.Shell.CreateDirectory(Paths.State, Rwx);
-        await c.Shell.RunCheckedAsync("chgrp", ["vaulty", Paths.Etc, Paths.Lib], cancellationToken: ct).ConfigureAwait(false);
+        // Paths the units name in ReadWritePaths must exist, or systemd cannot set up their namespace (226/NAMESPACE).
+        c.Shell.CreateDirectory($"{Paths.Lib}/dataprotection", RwxRx | UnixFileMode.GroupWrite);
+        await c.Shell.RunCheckedAsync("chgrp", ["vaulty", Paths.Etc, Paths.Lib, $"{Paths.Lib}/dataprotection"], cancellationToken: ct).ConfigureAwait(false);
     }
 
     internal static async Task DataDiskAsync(InstallContext c, CancellationToken ct)

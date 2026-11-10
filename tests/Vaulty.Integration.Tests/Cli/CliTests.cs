@@ -181,6 +181,14 @@ public sealed class CliTests
         Assert.True(At("enable --now vaulty-temporal.service") < At("enable --now vaulty-api.service"));
         Assert.True(At("enable --now vaulty-worker@2.service") < At("enable --now vaulty-gc.service"));
         Assert.Equal(FakeHost.Release, host.Links[Paths.Current]);
+        // systemd refuses to start a unit whose ReadWritePaths do not exist.
+        foreach (var unit in Paths.UnitTemplates)
+        {
+            foreach (var line in host.Files[$"/etc/systemd/system/{unit}"].Split(Environment.NewLine.Last()).Where(l => l.StartsWith("ReadWritePaths=", StringComparison.Ordinal)))
+            {
+                foreach (var path in line["ReadWritePaths=".Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries)) Assert.True(host.DirectoryExists(path), $"{unit}: {path} is not created");
+            }
+        }
         Assert.False(host.FileExists(Paths.InstallState));
         Assert.False(host.FileExists(Paths.PendingReport));
     }
