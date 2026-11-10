@@ -180,6 +180,20 @@ jobs:
         if: failure()
         run: sudo journalctl -u 'vaulty-*' -u caddy -u 'postgresql*' --since "-30min" --no-pager | tail -400
 
+      - name: Diagnose a service that does not start
+        if: failure()
+        run: |
+          for pair in vaulty-web:Vaulty.Web vaulty-api:Vaulty.Api; do
+            unit="${pair%%:*}"; bin="/opt/vaulty/current/bin/${pair##*:}"
+            echo "=== $unit: state"
+            systemctl status "$unit" --no-pager -l | head -20 || true
+            echo "=== $unit: started once without the unit's hardening (same user and credential); its own output"
+            sudo timeout 60 systemd-run --quiet --wait --pipe --collect -p User="$unit" -p Group=vaulty \
+              -p LoadCredentialEncrypted=master-key:/etc/vaulty/credentials/master-key.cred \
+              --setenv=VAULTY_CONFIG_DIR=/etc/vaulty --setenv=ASPNETCORE_URLS=http://127.0.0.1:5099 \
+              --setenv=Logging__LogLevel__Default=Debug "$bin" 2>&1 | tail -60 || true
+          done
+
   shell:
     name: shell scripts
     runs-on: ubuntu-24.04
