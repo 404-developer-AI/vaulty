@@ -10,6 +10,7 @@ using Vaulty.Infrastructure.Web;
 // The REST API (/api/v1). Phase 1: health checks, the OpenAPI document and the signed-in user's access; the public API
 // with API keys follows later. Shares the session cookie with the web app through the common key ring.
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddVaultyConfigFile();
 builder.Services.AddSystemd();
 builder.Host.UseSerilog((_, configuration) => configuration
     .MinimumLevel.Information()

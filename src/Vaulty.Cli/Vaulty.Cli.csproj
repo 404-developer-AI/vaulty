@@ -2,9 +2,18 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <AssemblyName>vaulty</AssemblyName>
+    <RootNamespace>Vaulty.Cli</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />  </ItemGroup>
+    <PackageReference Include="Spectre.Console" />
+    <ProjectReference Include="../Vaulty.Core/Vaulty.Core.csproj" />
+    <ProjectReference Include="../Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Vaulty.Integration.Tests" />
+  </ItemGroup>
 
 </Project>

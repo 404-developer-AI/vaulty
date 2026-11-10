@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <AssemblyName>vaulty-migrate</AssemblyName>
+    <RootNamespace>Vaulty.Migrate</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

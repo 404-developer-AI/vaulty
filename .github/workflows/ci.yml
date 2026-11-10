@@ -152,6 +152,33 @@ jobs:
       - run: bash deploy/ci/branding-check-selftest.sh
       - run: bash deploy/ci/branding-check.sh
 
+  installer:
+    name: installer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      # The runner image ships its own Docker, PostgreSQL client and a service on port 80/443 in some images;
+      # the installer brings its own, so the preinstalled ones are removed first.
+      - name: Clean runner
+        run: |
+          sudo systemctl stop mysql nginx apache2 2>/dev/null || true
+          sudo apt-get remove -y -qq postgresql\* 2>/dev/null || true
+
+      - name: Install, doctor, update, rollback, uninstall
+        run: bash deploy/ci/installer-test.sh
+
+      - name: Journal on failure
+        if: failure()
+        run: sudo journalctl -u 'vaulty-*' -u caddy -u 'postgresql*' --since "-30min" --no-pager | tail -400
+
   shell:
     name: shell scripts
     runs-on: ubuntu-24.04

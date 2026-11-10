@@ -1,0 +1,7 @@
+# Container images of a release: name, image, tag. The release build resolves each tag to its digest once and pins it
+# in compose/images.json; hosts never pull a moving tag. Renovate proposes new tags; Temporal follows the versions the
+# .NET SDK is tested against.
+temporal     temporalio/server       1.28.1
+temporal-ui  temporalio/ui           2.39.0
+admin-tools  temporalio/admin-tools  1.28.1-tctl-1.18.4-cli-1.4.1
+valkey       valkey/valkey           8.1.3

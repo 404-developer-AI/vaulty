@@ -137,6 +137,19 @@ All notable changes to this project are documented in this file. The format foll
   and writes every item exactly as an export through the platform does: messages as EML, events as ICS, contacts as VCF,
   files as they are, a manifest per snapshot and a report per item. Every chunk is authenticated and every content hash
   checked; an item that fails is reported and never written half.
+- Installer and updater (`vaulty`, run as root on Ubuntu 24.04): a wizard or an answers file (mode 0600, removed after
+  success); idempotent steps with `--resume` for OS hardening and firewall, service users, an optional LUKS2 data disk
+  enrolled to TPM 2.0, the master key and container passwords as encrypted systemd credentials (TPM-bound when
+  present, host key with a warning otherwise), PostgreSQL 17 from PGDG with checksums and tuning from RAM and vCPU,
+  optional pgBackRest, Docker for Temporal and Valkey with pinned image digests, schema setup with the Temporal SQL
+  tool, systemd units with memory limits, migrations, Caddy with ACME, the first-administrator link, a health check and
+  the installation report (0600, shown once). Secrets never appear on a command line or in a file.
+- `vaulty update` stops workers first, migrates with the new binaries, switches the release link, starts in order and
+  rolls back automatically when the health check fails; it refuses a repository format change without
+  `--accept-format-change` and waits for running restores. Also `status`, `doctor` (secrets in files, hardening score per
+  unit, database access, firewall), `report` without secrets, `secrets`, `master-key restore`, `db`, `logs` and
+  `uninstall [--purge]`.
+- A CI job installs, checks, updates, rolls back and purges a locally built release on an Ubuntu 24.04 runner.
 
 ### Changed
 
@@ -147,5 +160,7 @@ All notable changes to this project are documented in this file. The format foll
   restore needs. The binary format is unchanged.
 - Exported messages are deterministic: the original Message-Id (or one derived from the item) and the item's own date,
   so the same snapshot always exports to the same bytes.
+- Services read the host configuration from `$VAULTY_CONFIG_DIR/vaulty.json`; `vaulty-migrate` is the name of the
+  migration binary, as in its unit.
 - The verifier and garbage collector run in the worker host with `--role gc` under the gc database role and storage
   identity; the worker processes serve only the backup and restore queues.

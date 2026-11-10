@@ -25,6 +25,7 @@
     <ProjectReference Include="../../src/Vaulty.Web/Vaulty.Web.csproj" />
     <ProjectReference Include="../../src/Vaulty.Api/Vaulty.Api.csproj" />
     <ProjectReference Include="../../src/Vaulty.Recover/Vaulty.Recover.csproj" />
+    <ProjectReference Include="../../src/Vaulty.Cli/Vaulty.Cli.csproj" />
   </ItemGroup>
 
 </Project>

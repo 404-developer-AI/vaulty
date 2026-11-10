@@ -49,6 +49,7 @@ public static class WorkerHost
     public static IHost Build(string[] args)
     {
         var builder = Host.CreateApplicationBuilder(args);
+        builder.Configuration.AddVaultyConfigFile();
         builder.Services.AddSystemd();
         var role = builder.Configuration["role"] ?? builder.Configuration["Vaulty:Workers:Role"] ?? "worker";
         if (role is not ("worker" or "gc")) throw new InvalidOperationException($"Unknown worker role '{role}'; use worker or gc.");

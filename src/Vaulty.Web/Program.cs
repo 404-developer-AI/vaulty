@@ -11,6 +11,7 @@ using Vaulty.Web.Account;
 using Vaulty.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddVaultyConfigFile();
 builder.Services.AddSystemd();
 builder.Host.UseSerilog((context, configuration) => configuration
     .MinimumLevel.Information()

@@ -8,7 +8,8 @@ using Vaulty.Infrastructure.Database;
 var connectionString = Environment.GetEnvironmentVariable("VAULTY_MIGRATE_PG")
                        ?? "Host=/var/run/postgresql;Database=vaulty;Username=vaulty_migrator;Search Path=vaulty";
 
-switch (args.FirstOrDefault())
+// Options such as --config-dir are accepted for symmetry with the other services; the socket needs no configuration.
+switch (args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal) && !a.StartsWith('/')))
 {
     case "script":
         Console.Out.Write(DatabaseMigrator.Script());

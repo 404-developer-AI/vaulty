@@ -58,10 +58,19 @@ report.template.txt      installation report template
 ## CLI
 
 ```
-vaulty status | doctor | report
-vaulty update [--check] [--to <version>] [--rollback]
-vaulty secrets list | set | rotate | rekey | export | import
-vaulty db backup-now | restore --target-time <ts> | verify
+vaulty install [--answers <file>] [--resume]
+vaulty update [--check] [--to <version>] [--rollback] [--accept-format-change] [--force]
+vaulty status [--json] | doctor | report
+vaulty secrets list | set <name> | rotate <name> | prune <name> [--keep <n>] | rekey
+vaulty master-key restore
+vaulty db backup-now | verify | restore --target-time <ts>
 vaulty logs [unit] [--since <ts>]
-vaulty uninstall [--purge]
+vaulty uninstall [--purge --confirm <hostname>]
 ```
+
+Every installation step is idempotent; after a failure, fix the cause and run `vaulty install --resume`. An update
+stops the workers first, migrates the database with the new binaries, switches `/opt/vaulty/current` and starts the
+services again; when the health check fails it switches back to the previous release by itself.
+
+Releases can be built locally with `deploy/ci/build-release.sh <version> <directory>`; container images are pinned
+by digest in the release (`compose/images.json`, from `compose/images.versions`).
