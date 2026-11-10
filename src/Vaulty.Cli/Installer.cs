@@ -424,14 +424,15 @@ public static class InstallSteps
         {
             // The password reaches the one-off container as process environment only (the documented exception for containers).
             var environment = new Dictionary<string, string> { ["SQL_PASSWORD"] = password };
-            string[] common = ["run", "--rm", "--network", "host", "-e", "SQL_PASSWORD", tools, "temporal-sql-tool", "--plugin", "postgres12", "--ep", "127.0.0.1", "-p", "5432",
+            // The schema tool talks to PostgreSQL only; five minutes is ample, and a stuck tool must not hold the installer.
+            string[] common = ["300", "docker", "run", "--rm", "--network", "host", "-e", "SQL_PASSWORD", tools, "temporal-sql-tool", "--plugin", "postgres12", "--ep", "127.0.0.1", "-p", "5432",
                 "-u", "temporal", "--db", database];
-            var version = await c.Shell.RunAsync("docker", [.. common, "describe-schema"], environment: environment, cancellationToken: ct).ConfigureAwait(false);
+            var version = await c.Shell.RunAsync("timeout", [.. common, "describe-schema"], environment: environment, cancellationToken: ct).ConfigureAwait(false);
             if (!version.Succeeded || version.Output.Contains("0.0", StringComparison.Ordinal) || version.Output.Trim().Length == 0)
             {
-                await c.Shell.RunAsync("docker", [.. common, "setup-schema", "-v", "0.0"], environment: environment, cancellationToken: ct).ConfigureAwait(false);
+                await c.Shell.RunAsync("timeout", [.. common, "setup-schema", "-v", "0.0"], environment: environment, cancellationToken: ct).ConfigureAwait(false);
             }
-            await c.Shell.RunCheckedAsync("docker", [.. common, "update-schema", "-d", $"/etc/temporal/schema/postgresql/v12/{schema}/versioned"], environment: environment,
+            await c.Shell.RunCheckedAsync("timeout", [.. common, "update-schema", "-d", $"/etc/temporal/schema/postgresql/v12/{schema}/versioned"], environment: environment,
                 cancellationToken: ct).ConfigureAwait(false);
         }
         await InstallUnitsAsync(c, c.ReleaseDirectory, ct).ConfigureAwait(false);

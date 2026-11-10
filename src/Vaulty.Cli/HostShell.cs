@@ -75,6 +75,9 @@ public sealed class LinuxHostShell : IHostShell
         start.Environment["DEBIAN_FRONTEND"] = "noninteractive";
         start.Environment["LC_ALL"] = "C.UTF-8";
         if (environment is not null) foreach (var (k, v) in environment) start.Environment[k] = v;
+        var verbose = Environment.GetEnvironmentVariable("VAULTY_INSTALL_VERBOSE") == "1";
+        var started = Stopwatch.GetTimestamp();
+        if (verbose) await Console.Error.WriteLineAsync($"      $ {Redaction.Apply(file + " " + string.Join(' ', args))}").ConfigureAwait(false);
         using var process = Process.Start(start) ?? throw new InstallException($"{file} could not be started.");
         var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var error = process.StandardError.ReadToEndAsync(cancellationToken);
@@ -92,7 +95,13 @@ public sealed class LinuxHostShell : IHostShell
             process.Kill(entireProcessTree: true);
             return new ProcessResult(124, "", $"{file} did not finish within {MaxDuration.TotalMinutes:F0} minutes and was stopped.");
         }
-        return new ProcessResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
+        var result = new ProcessResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
+        if (verbose)
+        {
+            await Console.Error.WriteLineAsync($"        exit {result.ExitCode} after {Stopwatch.GetElapsedTime(started).TotalSeconds:F1} s"
+                + (result.Succeeded ? "" : $": {Redaction.Apply(result.Error.Trim())}")).ConfigureAwait(false);
+        }
+        return result;
     }
 
     public bool FileExists(string path) => File.Exists(path);

@@ -25,6 +25,7 @@ tar -C "$REL/broken" -czf "$REL/v0.0.0-ci.3/vaulty-0.0.0-ci.3-linux-x64.tar.gz" 
 
 export VAULTY_RELEASE_BASE_URL="file://$REL"
 export VAULTY_SKIP_SIGNATURE_CHECK=1
+export VAULTY_INSTALL_VERBOSE=1
 
 step "install with an answers file"
 answers=$(mktemp)
