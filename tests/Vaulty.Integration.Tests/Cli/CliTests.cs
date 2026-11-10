@@ -73,7 +73,7 @@ internal sealed class FakeHost : IHostShell
             ("uname", _) => "x86_64",
             ("hostname", _) => "vaulty-test.example.com",
             ("systemctl", "is-active") => "active",
-            ("docker", "exec") when a.Contains("health") => "SERVING",
+            ("docker", "run") when a.Contains("health") => "SERVING",
             ("sh", "-c") when a[1].Contains("valkey-cli", StringComparison.Ordinal) => "PONG",
             ("runuser", _) when a.Contains("SELECT 1") => "1",
             ("runuser", _) when a.Contains("count(*)", StringComparer.Ordinal) || a.Any(x => x.Contains("count(*)", StringComparison.Ordinal)) => "0",
@@ -89,7 +89,7 @@ internal sealed class FakeHost : IHostShell
             ("getent", _) or ("id", _) or ("findmnt", _) or ("blkid", _) or ("cryptsetup", "isLuks") => 1,
             ("systemd-creds", "has-tpm2") => 1,
             ("docker", "run") when a.Contains("describe-schema") => 1,
-            ("docker", "exec") when a.Contains("describe") => 1,
+            ("docker", "run") when a.Contains("describe") && a.Contains("namespace") => 1,
             _ => 0,
         };
         return Task.FromResult(new ProcessResult(exit, output, ""));

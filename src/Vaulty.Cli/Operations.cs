@@ -26,8 +26,11 @@ public static class Health
                 var answer = await shell.RunAsync("curl", ["-fsS", "--max-time", "5", url], cancellationToken: ct).ConfigureAwait(false);
                 if (!answer.Succeeded) failures.Add($"{name} health endpoint does not answer");
             }
-            var temporal = await shell.RunAsync("timeout", ["15", "docker", "exec", "vaulty-temporal", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"],
-                cancellationToken: ct).ConfigureAwait(false);
+            var images = new Dictionary<string, string>(StringComparer.Ordinal);
+            var release = shell.ReadLink(Paths.Current) ?? Paths.Current;
+            if (shell.FileExists($"{release}/compose/images.json")) InstallSteps.AddImages(shell, release, images);
+            var temporal = images.Count == 0 ? new ProcessResult(1, "", "no images.json")
+                : await shell.RunAsync("timeout", InstallSteps.TemporalCli(images, "operator", "cluster", "health"), cancellationToken: ct).ConfigureAwait(false);
             if (!temporal.Output.Contains("SERVING", StringComparison.Ordinal)) failures.Add("Temporal is not serving");
             var valkey = await shell.RunAsync("timeout", ["15", "sh", "-c", "REDISCLI_AUTH=\"$(systemd-creds decrypt --name=valkey /etc/vaulty/credentials/valkey.cred -)\" docker exec -e REDISCLI_AUTH vaulty-valkey valkey-cli ping"],
                 cancellationToken: ct).ConfigureAwait(false);

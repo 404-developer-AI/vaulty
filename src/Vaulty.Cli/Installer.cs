@@ -425,7 +425,8 @@ public static class InstallSteps
             // The password reaches the one-off container as process environment only (the documented exception for containers).
             var environment = new Dictionary<string, string> { ["SQL_PASSWORD"] = password };
             // The schema tool talks to PostgreSQL only; five minutes is ample, and a stuck tool must not hold the installer.
-            string[] common = ["300", "docker", "run", "--rm", "--network", "host", "-e", "SQL_PASSWORD", tools, "temporal-sql-tool", "--plugin", "postgres12", "--ep", "127.0.0.1", "-p", "5432",
+            // The image's entrypoint only sleeps; the tool is chosen with --entrypoint.
+            string[] common = ["300", "docker", "run", "--rm", "--network", "host", "-e", "SQL_PASSWORD", "--entrypoint", "temporal-sql-tool", tools, "--plugin", "postgres12", "--ep", "127.0.0.1", "-p", "5432",
                 "-u", "temporal", "--db", database];
             var version = await c.Shell.RunAsync("timeout", [.. common, "describe-schema"], environment: environment, cancellationToken: ct).ConfigureAwait(false);
             if (!version.Succeeded || version.Output.Contains("0.0", StringComparison.Ordinal) || version.Output.Trim().Length == 0)
@@ -437,16 +438,23 @@ public static class InstallSteps
         }
         await InstallUnitsAsync(c, c.ReleaseDirectory, ct).ConfigureAwait(false);
         await c.Shell.SystemctlAsync("enable", "--now", "vaulty-temporal.service").ConfigureAwait(false);
-        await WaitAsync(c, "Temporal", async () => (await c.Shell.RunAsync("timeout", ["15", "docker", "exec", "vaulty-temporal", "temporal", "operator", "cluster", "health",
-            "--address", "127.0.0.1:7233"], cancellationToken: ct).ConfigureAwait(false)).Output.Contains("SERVING", StringComparison.Ordinal), TimeSpan.FromMinutes(5), ct)
+        await WaitAsync(c, "Temporal", async () => (await c.Shell.RunAsync("timeout", TemporalCli(c.Values, "operator", "cluster", "health"), cancellationToken: ct)
+            .ConfigureAwait(false)).Output.Contains("SERVING", StringComparison.Ordinal), TimeSpan.FromMinutes(5), ct).ConfigureAwait(false);
+        var described = await c.Shell.RunAsync("timeout", TemporalCli(c.Values, "operator", "namespace", "describe", "--namespace", "vaulty"), cancellationToken: ct)
             .ConfigureAwait(false);
-        var described = await c.Shell.RunAsync("timeout", ["15", "docker", "exec", "vaulty-temporal", "temporal", "operator", "namespace", "describe", "--namespace", "vaulty",
-            "--address", "127.0.0.1:7233"], cancellationToken: ct).ConfigureAwait(false);
         if (!described.Succeeded)
         {
-            await c.Shell.RunCheckedAsync("docker", ["exec", "vaulty-temporal", "temporal", "operator", "namespace", "create", "--namespace", "vaulty", "--retention", "30d",
-                "--address", "127.0.0.1:7233"], cancellationToken: ct).ConfigureAwait(false);
+            await c.Shell.RunCheckedAsync("timeout", TemporalCli(c.Values, "operator", "namespace", "create", "--namespace", "vaulty", "--retention", "30d"),
+                cancellationToken: ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>The Temporal CLI of the pinned admin-tools image, against the local server, for at most 30 seconds (arguments for coreutils timeout).</summary>
+    public static string[] TemporalCli(IReadOnlyDictionary<string, string> values, params string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        var tools = $"temporalio/admin-tools:{values["TEMPORAL_ADMIN_TOOLS_VERSION"]}@{values["TEMPORAL_ADMIN_TOOLS_DIGEST"]}";
+        return ["30", "docker", "run", "--rm", "--network", "host", "--entrypoint", "temporal", tools, .. args, "--address", "127.0.0.1:7233"];
     }
 
     public static async Task<string> DecryptAsync(IHostShell shell, string name, CancellationToken ct) =>
