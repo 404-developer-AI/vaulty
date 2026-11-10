@@ -49,17 +49,30 @@ public sealed class NotificationDispatcher(NpgsqlDataSource dataSource, IWebhook
         foreach (var organization in await OrganizationsAsync(cancellationToken).ConfigureAwait(false))
         {
             await using var session = await OrganizationSession.BeginAsync(dataSource, organization, cancellationToken).ConfigureAwait(false);
+            // A missed run that has started since is settled at once, without waiting for its snapshot to commit.
+            await session.Connection.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE vaulty.alerts a SET resolved_at = @now
+                 WHERE a.kind = @kind AND a.resolved_at IS NULL
+                   AND EXISTS (SELECT 1 FROM vaulty.snapshots s WHERE s.protected_object_id = a.protected_object_id AND s.state = 'staged')
+                """, new { now, kind = NotificationKinds.BackupMissed }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            // An object waiting for a free place within its tenant's budget of concurrent backups is queued by design, not missed.
             var missed = await session.Connection.QueryAsync<(Guid Id, Guid TenantId, string Name, DateTime NextRunAt)>(new CommandDefinition(
                 """
                 SELECT o.id, o.tenant_id, o.display_name, o.next_run_at FROM vaulty.protected_objects o JOIN vaulty.tenants t ON t.id = o.tenant_id
                  WHERE o.state = 'active' AND t.state = 'active' AND t.consent_state = 'granted' AND o.next_run_at < @cutoff
                    AND NOT EXISTS (SELECT 1 FROM vaulty.snapshots s WHERE s.protected_object_id = o.id AND s.state = 'staged')
-                """, new { cutoff = now - _options.MissedRunGrace }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+                   AND (SELECT count(*) FROM vaulty.snapshots s JOIN vaulty.protected_objects p ON p.id = s.protected_object_id
+                         WHERE s.tenant_id = o.tenant_id AND s.state = 'staged' AND p.kind = o.kind)
+                       < CASE WHEN o.kind = 'drive' THEN @driveBudget ELSE @mailboxBudget END
+                """, new { cutoff = now - _options.MissedRunGrace, driveBudget = BackupBudget.DrivesPerTenant, mailboxBudget = BackupBudget.MailboxesPerTenant },
+                session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
             foreach (var o in missed)
             {
                 var planned = new DateTimeOffset(DateTime.SpecifyKind(o.NextRunAt, DateTimeKind.Utc));
                 if (await Alerts.RaiseAsync(session, o.TenantId, o.Id, NotificationKinds.BackupMissed, "warning",
-                        $"The backup of {o.Name} planned for {planned.ToString("d MMM yyyy HH:mm", CultureInfo.InvariantCulture)} UTC has not started. Check that object storage passed its connection test and look at the Jobs page; Vaulty keeps trying.",
+                        $"The backup of {o.Name} planned for {planned.ToString("d MMM yyyy HH:mm", CultureInfo.InvariantCulture)} UTC has not started, and its tenant has room for it. " +
+                        "Check that the worker service runs and that object storage passed its connection test; Vaulty keeps trying.",
                         new { planned }, cancellationToken).ConfigureAwait(false))
                 {
                     raised++;

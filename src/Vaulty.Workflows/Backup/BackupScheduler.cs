@@ -14,8 +14,8 @@ namespace Vaulty.Workflows.Backup;
 public sealed record SchedulerOptions
 {
     public TimeSpan Interval { get; init; } = TimeSpan.FromMinutes(1);
-    public int MailboxesPerTenant { get; init; } = 20;
-    public int DrivesPerTenant { get; init; } = 10;
+    public int MailboxesPerTenant { get; init; } = Vaulty.Core.Domain.BackupBudget.MailboxesPerTenant;
+    public int DrivesPerTenant { get; init; } = Vaulty.Core.Domain.BackupBudget.DrivesPerTenant;
     public int BatchSize { get; init; } = 200;
 }
 

@@ -1,3 +1,4 @@
+using Vaulty.Core.Domain;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
@@ -176,6 +177,48 @@ public sealed class NotificationTests(PostgresDatabase db) : IClassFixture<Postg
         await dispatcher.FindMissedRunsAsync();
         await using var check = new NpgsqlConnection(db.Migrator);
         Assert.Equal(0, await check.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.alerts WHERE protected_object_id = @o", new { o = seed.Object }));
+    }
+
+    [PostgresFact]
+    public async Task An_object_queued_behind_its_tenants_budget_is_not_missed_and_a_started_run_settles_its_alert()
+    {
+        var due = DateTimeOffset.UtcNow.AddHours(-2);
+        var seed = new NotificationSeed();
+        await seed.SeedAsync(db, due);
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        // The tenant runs as many mailbox backups as its budget allows; the seeded mailbox waits for a free place.
+        for (var i = 0; i < BackupBudget.MailboxesPerTenant; i++)
+        {
+            var other = Guid.NewGuid();
+            await owner.ExecuteAsync(
+                """
+                INSERT INTO vaulty.protected_objects (id, organization_id, tenant_id, kind, sub_kind, source_id, display_name, next_run_at)
+                    VALUES (@other, @org, @tenant, 'mailbox', 'user', @source, @name, @due);
+                INSERT INTO vaulty.snapshots (id, organization_id, tenant_id, protected_object_id, state) VALUES (@snapshot, @org, @tenant, @other, 'staged');
+                """, new { other, org = seed.Org, tenant = seed.Tenant, source = $"busy-{i}", name = $"Busy {i}", due, snapshot = Guid.NewGuid() });
+        }
+        await using var worker = VaultyDataSource.Create(db.Worker);
+        var dispatcher = Dispatcher(worker, TimeProvider.System, new RecordingMailSender(), new MemorySecretStore());
+        const string Open = "SELECT count(*) FROM vaulty.alerts WHERE protected_object_id = @o AND kind = 'backup.missed' AND resolved_at IS NULL";
+        await dispatcher.FindMissedRunsAsync();
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>(Open, new { o = seed.Object }));
+
+        // A place frees up and the run still does not start: that is missed, with the causes that remain.
+        await owner.ExecuteAsync("UPDATE vaulty.snapshots SET state = 'failed' WHERE tenant_id = @tenant AND protected_object_id <> @o AND state = 'staged' " +
+                                 "AND id = (SELECT id FROM vaulty.snapshots WHERE tenant_id = @tenant AND state = 'staged' LIMIT 1)", new { tenant = seed.Tenant, o = seed.Object });
+        await dispatcher.FindMissedRunsAsync();
+        Assert.Equal(1, await owner.ExecuteScalarAsync<int>(Open, new { o = seed.Object }));
+        Assert.Contains("worker service", await owner.ExecuteScalarAsync<string>(
+            "SELECT message FROM vaulty.alerts WHERE protected_object_id = @o AND kind = 'backup.missed'", new { o = seed.Object }), StringComparison.Ordinal);
+
+        // Once its backup starts, the alert is settled without waiting for the snapshot.
+        await owner.ExecuteAsync("INSERT INTO vaulty.snapshots (id, organization_id, tenant_id, protected_object_id, state) VALUES (@id, @org, @tenant, @o, 'staged')",
+            new { id = Guid.NewGuid(), org = seed.Org, tenant = seed.Tenant, o = seed.Object });
+        await dispatcher.FindMissedRunsAsync();
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>(Open, new { o = seed.Object }));
+        // The sweep walks every organization of the shared test database: leave nothing for other tests to mail.
+        await owner.ExecuteAsync("UPDATE vaulty.alerts SET notified_at = now() WHERE organization_id = @org; UPDATE vaulty.protected_objects SET state = 'paused' WHERE organization_id = @org",
+            new { org = seed.Org });
     }
 
     [PostgresFact]
