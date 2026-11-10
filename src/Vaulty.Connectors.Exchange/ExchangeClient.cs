@@ -36,7 +36,8 @@ public sealed class MailboxItemChange
 /// <summary>Searchable metadata of an item, read best-effort from the regular mail, calendar and contacts endpoints.</summary>
 /// <param name="Body">The body as Microsoft 365 returns it (HTML or text, see <paramref name="BodyIsHtml"/>), stored as the preview.</param>
 public sealed record ItemMetadata(string? Subject, string? From, IReadOnlyList<string> To, DateTimeOffset? Received, bool HasAttachments,
-    string? BodyPreview, IReadOnlyList<string> Categories, bool? IsRead, string? Flag, string? Body = null, bool BodyIsHtml = false);
+    string? BodyPreview, IReadOnlyList<string> Categories, bool? IsRead, string? Flag, string? Body = null, bool BodyIsHtml = false,
+    DateTimeOffset? Start = null, DateTimeOffset? End = null);
 
 [JsonSerializable(typeof(GraphCollection<MailboxFolderInfo>), TypeInfoPropertyName = "Folders")]
 [JsonSerializable(typeof(GraphCollection<MailboxItemChange>), TypeInfoPropertyName = "ItemChanges")]
@@ -132,7 +133,7 @@ public sealed class ExchangeClient(GraphClient graph)
 
     private static string Select(string? type) => Kind(type) switch
     {
-        "event" => "subject,organizer,attendees,start,hasAttachments,categories,bodyPreview,body",
+        "event" => "subject,organizer,attendees,start,end,hasAttachments,categories,bodyPreview,body",
         "contact" => "displayName,emailAddresses,companyName,categories",
         _ => "subject,from,toRecipients,receivedDateTime,hasAttachments,categories,bodyPreview,isRead,flag,body",
     };
@@ -169,6 +170,12 @@ public sealed class ExchangeClient(GraphClient graph)
             content = Str(b, "content");
             html = string.Equals(Str(b, "contentType"), "html", StringComparison.OrdinalIgnoreCase);
         }
-        return new ItemMetadata(subject, from, to, received, attachments, Str(body, "bodyPreview"), categories, isRead, flag, content, html);
+        // Event times come as {dateTime, timeZone}; without a Prefer header Graph answers in UTC.
+        static DateTimeOffset? When(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var w) && w.ValueKind == JsonValueKind.Object && Str(w, "dateTime") is { } dt
+            && (Str(w, "timeZone") is null or "UTC" or "Etc/UTC")
+            && DateTimeOffset.TryParse(dt, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var at) ? at : null;
+        return new ItemMetadata(subject, from, to, received, attachments, Str(body, "bodyPreview"), categories, isRead, flag, content, html,
+            When(body, "start"), When(body, "end"));
     }
 }

@@ -89,7 +89,8 @@ public sealed class PostgresDatabase : IAsyncLifetime
 
     public static async Task Execute(NpgsqlConnection connection, string sql)
     {
-        await using var command = new NpgsqlCommand(sql, connection);
+        // Creating or dropping a database with all its partitions can take long while many tests run at once.
+        await using var command = new NpgsqlCommand(sql, connection) { CommandTimeout = 600 };
         await command.ExecuteNonQueryAsync();
     }
 }

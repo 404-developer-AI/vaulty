@@ -15,6 +15,29 @@ public class GraphException(HttpStatusCode status, string? code, string message,
     public HttpStatusCode Status { get; } = status;
     public string? Code { get; } = code;
     public string? RequestId { get; } = requestId;
+
+    /// <summary>The exception for an error response read from a host outside Graph (upload and import sessions).</summary>
+    public static GraphException FromBody(HttpStatusCode status, string? body)
+    {
+        string? code = null;
+        var message = $"HTTP {(int)status}";
+        try
+        {
+            if (!string.IsNullOrEmpty(body))
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(body);
+                if (document.RootElement.TryGetProperty("error", out var error) && error.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    code = error.TryGetProperty("code", out var c) ? c.GetString() : null;
+                    message = error.TryGetProperty("message", out var m) ? m.GetString() ?? message : message;
+                }
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+        }
+        return new GraphException(status, code, message, null);
+    }
 }
 
 /// <summary>The delta token is no longer valid (410 Gone or resyncRequired): start the resync route, never a silent full run.</summary>

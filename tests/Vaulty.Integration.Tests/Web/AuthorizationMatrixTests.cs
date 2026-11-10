@@ -38,10 +38,11 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/search"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),
         ["/objects/{ObjectId:guid}"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),
         ["/objects/{ObjectId:guid}/snapshots/{SnapshotId:guid}"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),
+        ["/restores/{RestoreId:guid}"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),
     };
 
     private static string Concrete(string route) => route.Replace("{CustomerId:guid}", Guid.NewGuid().ToString()).Replace("{TenantId:guid}", Guid.NewGuid().ToString())
-        .Replace("{ObjectId:guid}", Guid.NewGuid().ToString()).Replace("{SnapshotId:guid}", Guid.NewGuid().ToString());
+        .Replace("{ObjectId:guid}", Guid.NewGuid().ToString()).Replace("{SnapshotId:guid}", Guid.NewGuid().ToString()).Replace("{RestoreId:guid}", Guid.NewGuid().ToString());
 
     [Fact]
     public void Every_page_declares_exactly_the_expected_authorization()
@@ -109,6 +110,9 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         // Previews follow the same permission.
         Assert.NotEqual(HttpStatusCode.OK, (await client.GetAsync($"/preview/{Guid.NewGuid()}/{Guid.NewGuid()}/{Guid.NewGuid()}")).StatusCode);
         Assert.Equal(HttpStatusCode.Redirect, (await anonymous.GetAsync($"/preview/{Guid.NewGuid()}/{Guid.NewGuid()}/{Guid.NewGuid()}")).StatusCode);
+        // Export downloads need the export permission.
+        Assert.NotEqual(HttpStatusCode.OK, (await client.GetAsync($"/exports/{Guid.NewGuid()}/download?t=x")).StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, (await anonymous.GetAsync($"/exports/{Guid.NewGuid()}/download?t=x")).StatusCode);
     }
 
     [PostgresFact]

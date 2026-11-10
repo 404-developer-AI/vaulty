@@ -24,6 +24,12 @@ using Xunit.Abstractions;
 
 namespace Vaulty.Integration.Tests.Backup;
 
+internal sealed class MemoryExportStorage(InMemoryObjectStore store, InMemoryObjectUploads uploads) : Vaulty.Infrastructure.Restore.IExportStorage
+{
+    public Task<IObjectUploads> UploadsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IObjectUploads>(uploads);
+    public Task<IObjectStore> StoreAsync(CancellationToken cancellationToken = default) => Task.FromResult<IObjectStore>(store);
+}
+
 internal sealed class MemoryBackupStorage(InMemoryObjectStore store) : IBackupStorage
 {
     public Task<IObjectStore> WorkerStoreAsync(CancellationToken cancellationToken = default) => Task.FromResult<IObjectStore>(store);
@@ -50,6 +56,9 @@ internal sealed class BackupHarness : IAsyncDisposable
     {
         _fixture = fixture;
         _source = source;
+        ExportUploads = new InMemoryObjectUploads(ExportStore, partSize: 256 * 1024);
+        Api = VaultyDataSource.Create(fixture.Database.Api);
+        Restores = new Vaulty.Infrastructure.Restore.RestoreStore(VaultyDataSource.Create(fixture.Database.Worker), TimeProvider.System);
         DataSource = VaultyDataSource.Create(fixture.Database.Worker);
         Storage = new MemoryBackupStorage(Store);
         Keys = new TenantKeyProvider(DataSource, new StaticMasterKeySource(MasterKey), Storage, TimeProvider.System);
@@ -65,6 +74,10 @@ internal sealed class BackupHarness : IAsyncDisposable
     public TenantKeyProvider Keys { get; }
     public GraphServices Graph { get; }
     public byte[] MasterKey { get; } = RandomNumberGenerator.GetBytes(32);
+    public InMemoryObjectStore ExportStore { get; } = new();
+    public InMemoryObjectUploads ExportUploads { get; private set; } = null!;
+    public NpgsqlDataSource Api { get; private set; } = null!;
+    public Vaulty.Infrastructure.Restore.RestoreStore Restores { get; private set; } = null!;
     public Guid Org { get; private set; }
     public Guid Tenant { get; private set; }
 
@@ -72,6 +85,8 @@ internal sealed class BackupHarness : IAsyncDisposable
     {
         var activities = new MailboxActivities(DataSource, Graph, new BackupStore(DataSource, TimeProvider.System), Storage, Keys, TimeProvider.System,
             NullLogger<MailboxActivities>.Instance);
+        var restores = new Vaulty.Workflows.Restore.RestoreActivities(DataSource, Graph, Restores, Storage, Keys, new MemoryExportStorage(ExportStore, ExportUploads),
+            TimeProvider.System, NullLogger<Vaulty.Workflows.Restore.RestoreActivities>.Instance);
         var drives = new DriveActivities(DataSource, Graph, new BackupStore(DataSource, TimeProvider.System), Storage, Keys, TimeProvider.System,
             NullLogger<DriveActivities>.Instance);
         _worker = new TemporalWorker(_fixture.Server.Client, new TemporalWorkerOptions(Queue)
@@ -80,7 +95,8 @@ internal sealed class BackupHarness : IAsyncDisposable
             GracefulShutdownTimeout = TimeSpan.Zero,
             StickyQueueScheduleToStartTimeout = TimeSpan.FromSeconds(1),
         }.AddAllActivities(activities).AddAllActivities(new JobActivities(DataSource)).AddWorkflow<MailboxBackupWorkflow>().AddWorkflow<FolderBackupWorkflow>()
-          .AddAllActivities(drives).AddWorkflow<DriveBackupWorkflow>().AddWorkflow<DriveSyncWorkflow>());
+          .AddAllActivities(drives).AddWorkflow<DriveBackupWorkflow>().AddWorkflow<DriveSyncWorkflow>()
+          .AddAllActivities(restores).AddWorkflow<Vaulty.Workflows.Restore.RestoreWorkflow>());
         _stop = new CancellationTokenSource();
         _running = _worker.ExecuteAsync(_stop.Token);
     }
@@ -117,7 +133,7 @@ internal sealed class BackupHarness : IAsyncDisposable
             """, new { org = Org, customer = Guid.NewGuid(), tenant = Tenant, entra = Guid.NewGuid(), client = Guid.NewGuid(), policy = Guid.NewGuid() });
     }
 
-    public async Task<Guid> SeedMailboxAsync()
+    public async Task<Guid> SeedMailboxAsync(string mailboxId = MailboxSimulator.MailboxId)
     {
         var id = Guid.NewGuid();
         await using var owner = new NpgsqlConnection(_fixture.Database.Migrator);
@@ -125,7 +141,7 @@ internal sealed class BackupHarness : IAsyncDisposable
             """
             INSERT INTO vaulty.protected_objects (id, organization_id, tenant_id, kind, sub_kind, source_id, display_name, source_details)
             VALUES (@id, @org, @tenant, 'mailbox', 'user', @source, 'Mailbox', @details::jsonb)
-            """, new { id, org = Org, tenant = Tenant, source = $"{MailboxSimulator.UserId}|{id:N}", details = JsonSerializer.Serialize(new { mailbox_id = MailboxSimulator.MailboxId }) });
+            """, new { id, org = Org, tenant = Tenant, source = $"{MailboxSimulator.UserId}|{id:N}", details = JsonSerializer.Serialize(new { mailbox_id = mailboxId }) });
         return id;
     }
 
@@ -184,10 +200,44 @@ internal sealed class BackupHarness : IAsyncDisposable
         return entries;
     }
 
+    public Vaulty.Infrastructure.Access.UserAccess Access(Guid? user = null, params string[] permissions) =>
+        new(user ?? AdminUser, Org, true, (permissions.Length == 0 ? Vaulty.Core.Security.Permissions.All.Select(p => p.Key) : permissions)
+            .ToDictionary(p => p, _ => (HashSet<Guid>?)null));
+
+    public Guid AdminUser { get; } = Guid.NewGuid();
+
+    public Vaulty.Infrastructure.Restore.RestoreService RestoreService()
+    {
+        var keys = new TenantKeyProvider(Api, new StaticMasterKeySource(MasterKey), Storage, TimeProvider.System);
+        var browser = new Vaulty.Infrastructure.Browse.SnapshotBrowser(Api, keys, new Vaulty.Integration.Tests.Browse.StoreReaders(Store, Api, keys));
+        return new Vaulty.Infrastructure.Restore.RestoreService(Api, browser, TimeProvider.System);
+    }
+
+    /// <summary>Requests a restore or export as the web app does, starts the workflow on the test queue and returns its handle.</summary>
+    public async Task<(Guid RestoreId, WorkflowHandle<Vaulty.Workflows.Restore.RestoreWorkflow, Vaulty.Workflows.Restore.RestoreOutcome> Handle)> StartRestoreAsync(
+        Guid objectId, Guid snapshotId, Vaulty.Infrastructure.Restore.RestoreSelection selection, string mode = "restore_folder", Guid? target = null,
+        string conflict = "rename")
+    {
+        var created = await RestoreService().CreateAsync(Access(), stepUpFresh: true,
+            new Vaulty.Infrastructure.Restore.RestoreRequest(objectId, snapshotId, selection, mode, target, conflict));
+        var input = new Vaulty.Workflows.Restore.RestoreInput(created.JobId, Org, Tenant, created.RestoreId, created.IsExport);
+        var handle = await _fixture.Server.Client.StartWorkflowAsync((Vaulty.Workflows.Restore.RestoreWorkflow w) => w.RunAsync(input, false),
+            new WorkflowOptions($"restore-{created.RestoreId:N}", Queue) { ExecutionTimeout = TimeSpan.FromMinutes(10) });
+        return (created.RestoreId, handle);
+    }
+
+    public async Task<(Guid RestoreId, Vaulty.Workflows.Restore.RestoreOutcome Outcome)> RestoreAsync(Guid objectId, Guid snapshotId,
+        Vaulty.Infrastructure.Restore.RestoreSelection selection, string mode = "restore_folder", Guid? target = null, string conflict = "rename")
+    {
+        var (id, handle) = await StartRestoreAsync(objectId, snapshotId, selection, mode, target, conflict);
+        return (id, await handle.GetResultAsync());
+    }
+
     public async ValueTask DisposeAsync()
     {
         await KillWorkerAsync();
         await DataSource.DisposeAsync();
+        await Api.DisposeAsync();
     }
 }
 

@@ -106,6 +106,11 @@ public static class WorkerHost
                     .AddWorkflow<DiscoveryWorkflow>()
                     .AddWorkflow<TenantHealthWorkflow>();
             }
+            if (queue == TaskQueues.Restore)
+            {
+                worker.AddScopedActivities<Vaulty.Workflows.Restore.RestoreActivities>()
+                    .AddWorkflow<Vaulty.Workflows.Restore.RestoreWorkflow>();
+            }
             if (settings.Synthetic && queue == TaskQueues.Backup)
             {
                 worker.AddScopedActivities<SyntheticActivities>()
@@ -121,6 +126,9 @@ public static class WorkerHost
         builder.Services.AddSingleton<BackupStore>();
         builder.Services.AddSingleton<IBackupStorage, S3BackupStorage>();
         builder.Services.AddSingleton<TenantKeyProvider>();
+        builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.RestoreStore>();
+        builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.IExportStorage>(sp => new Vaulty.Infrastructure.Restore.S3ExportStorage(
+            sp.GetRequiredService<Vaulty.Infrastructure.Storage.StorageClientFactory>(), Vaulty.Infrastructure.Storage.StorageRole.Worker));
         builder.Services.AddSingleton<BackupStarter>();
         if (settings.Queues.Contains(TaskQueues.Backup))
         {

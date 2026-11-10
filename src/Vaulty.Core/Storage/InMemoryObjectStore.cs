@@ -114,3 +114,52 @@ public sealed class InMemoryObjectStore(TimeProvider? clock = null) : IObjectSto
     private static ObjectInfo Info(string key, StoredObject stored) =>
         new(key, stored.Data.Length, stored.ETag, stored.LockUntil, stored.LastModified);
 }
+
+/// <summary>Streaming uploads into the in-memory store; parts are kept until completion, as a provider would.</summary>
+public sealed class InMemoryObjectUploads(InMemoryObjectStore store, int partSize = 5 * 1024 * 1024) : IObjectUploads
+{
+    /// <summary>Parts uploaded so far by all uploads (tests check that large exports go up in many parts).</summary>
+    public int PartsUploaded { get; private set; }
+
+    public Task<IObjectUpload> BeginUploadAsync(string key, ObjectPutOptions options, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IObjectUpload>(new Upload(this, store, key, options, partSize));
+
+    private sealed class Upload : IObjectUpload
+    {
+        private readonly InMemoryObjectUploads _owner;
+        private readonly InMemoryObjectStore _store;
+        private readonly string _key;
+        private readonly ObjectPutOptions _options;
+        private readonly List<byte[]> _parts = [];
+        private readonly PartUploadStream _stream;
+
+        public Upload(InMemoryObjectUploads owner, InMemoryObjectStore store, string key, ObjectPutOptions options, int partSize)
+        {
+            (_owner, _store, _key, _options) = (owner, store, key, options);
+            _stream = new PartUploadStream(partSize, (_, part, _) =>
+            {
+                _parts.Add(part.ToArray());
+                _owner.PartsUploaded++;
+                return Task.CompletedTask;
+            });
+        }
+
+        public Stream Stream => _stream;
+        public byte[] Sha256 { get; private set; } = [];
+
+        public async Task<ObjectInfo> CompleteAsync(CancellationToken cancellationToken = default)
+        {
+            Sha256 = await _stream.FinishAsync(cancellationToken).ConfigureAwait(false);
+            var all = new byte[_parts.Sum(p => p.Length)];
+            var at = 0;
+            foreach (var part in _parts)
+            {
+                part.CopyTo(all, at);
+                at += part.Length;
+            }
+            return await _store.PutAsync(_key, new MemoryStream(all, writable: false), _options with { ExpectedSha256 = Sha256 }, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async ValueTask DisposeAsync() => await _stream.DisposeAsync().ConfigureAwait(false);
+    }
+}

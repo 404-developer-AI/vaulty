@@ -280,7 +280,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
     }
 
     /// <summary>Membership of an item version in the snapshot with sequence @sequence.</summary>
-    private const string Membership = "state = 'committed' AND first_sequence <= @sequence AND (deleted_sequence IS NULL OR deleted_sequence > @sequence)";
+    internal const string Membership = "state = 'committed' AND first_sequence <= @sequence AND (deleted_sequence IS NULL OR deleted_sequence > @sequence)";
 
     private async Task<(ObjectHeader Header, long Sequence)> ResolveAsync(UserAccess access, Guid objectId, Guid snapshotId, CancellationToken cancellationToken)
     {

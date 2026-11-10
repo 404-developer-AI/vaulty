@@ -161,3 +161,10 @@ public sealed class BrowseMigration : SqlMigration
 {
     protected override string ScriptName => "0009_browse";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261109000010_Restore")]
+public sealed class RestoreMigration : SqlMigration
+{
+    protected override string ScriptName => "0010_restore";
+}

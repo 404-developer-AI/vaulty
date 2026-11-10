@@ -106,7 +106,9 @@ public sealed record ItemMetadataDocument(
     [property: JsonPropertyName("is_read")] bool? IsRead,
     [property: JsonPropertyName("flag")] string? Flag,
     [property: JsonPropertyName("preview")] string? Preview,
-    [property: JsonPropertyName("folder")] string? FolderName = null);
+    [property: JsonPropertyName("folder")] string? FolderName = null,
+    [property: JsonPropertyName("start")] DateTimeOffset? Start = null,
+    [property: JsonPropertyName("end")] DateTimeOffset? End = null);
 
 public sealed class MailboxActivities(NpgsqlDataSource dataSource, GraphServices graph, BackupStore store, IBackupStorage storage,
     TenantKeyProvider keys, TimeProvider clock, ILogger<MailboxActivities> logger)
@@ -292,7 +294,8 @@ public sealed class MailboxActivities(NpgsqlDataSource dataSource, GraphServices
     {
         metadata.TryGetValue(item.Id, out var meta);
         var document = new ItemMetadataDocument(item.Type, item.Size, item.CreatedDateTime, item.LastModifiedDateTime, item.Categories ?? meta?.Categories.ToList() ?? [],
-            meta?.Subject, meta?.From, meta?.To ?? [], meta?.Received, meta?.HasAttachments ?? false, meta?.IsRead, meta?.Flag, meta?.BodyPreview);
+            meta?.Subject, meta?.From, meta?.To ?? [], meta?.Received, meta?.HasAttachments ?? false, meta?.IsRead, meta?.Flag, meta?.BodyPreview,
+            Start: meta?.Start, End: meta?.End);
         ItemContent? preview = null;
         string? previewType = null;
         if (meta?.Body is { Length: > 0 and <= MaxPreviewLength } body)

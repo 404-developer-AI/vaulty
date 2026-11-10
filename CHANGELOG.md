@@ -84,6 +84,19 @@ All notable changes to this project are documented in this file. The format foll
   frames or event handlers, links reduced to text, external images blocked) in a sandboxed iframe with its own
   Content Security Policy; images, PDF and text files under 20 MB are previewed as they are. Every preview is written to
   the audit log.
+- Restores: select items, a folder or a single file version in the snapshot browser and restore them to a restore folder
+  (`Vaulty Restore/<date time>/<original path>`, the default), to their original location, or to another mailbox or
+  OneDrive of the same tenant. Mail, calendar items and contacts go through the mailbox import API, so calendar items are
+  restored as they were and no invitation or update is ever sent; files go up in upload sessions with their original
+  times, and an existing file is never replaced unless that was chosen (the default keeps both, the restored copy named
+  "(restored date)"). Restores run in small batches that can be paused, resumed and cancelled; items restored so far stay
+  restored. Every restore keeps a report per item for one year.
+- Exports: a zip in store mode (messages as EML, events as ICS, contacts as VCF, files as they are, and a manifest with
+  every item's metadata and result) written straight to the export bucket in parts, without temporary files. The
+  download link is created after "Confirm it's you", works once, within 24 hours, only for the user who asked for the
+  export; the zip is removed after the download.
+- Restoring elsewhere and exporting need their own permissions and "Confirm it's you"; every request, link and download
+  is written to the audit log.
 
 ### Changed
 

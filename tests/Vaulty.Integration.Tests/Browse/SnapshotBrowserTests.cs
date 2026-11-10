@@ -136,6 +136,7 @@ internal sealed class BrowseSeed(PostgresDatabase db) : IAsyncDisposable
     }
 }
 
+[Collection(MeasurementsCollection.Name)]
 public sealed class SnapshotBrowserTests(PostgresDatabase db, ITestOutputHelper output) : IClassFixture<PostgresDatabase>
 {
     private const double Budget = 300;

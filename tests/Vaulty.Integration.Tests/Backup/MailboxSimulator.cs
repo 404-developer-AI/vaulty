@@ -62,6 +62,22 @@ internal sealed class MailboxSimulator : IDisposable
 
     public string Url => _server.Url!;
 
+    /// <summary>Folders created through the API (restore folders), with the mailbox they were created in.</summary>
+    public sealed record CreatedFolder(string MailboxId, string Id, string Name, string? ParentId, string Type);
+
+    public sealed record Import(string MailboxId, string FolderId, string Mode, byte[] Data, bool HadAuthorization);
+
+    public List<CreatedFolder> CreatedFolders { get; } = [];
+    public List<Import> Imports { get; } = [];
+
+    /// <summary>Every request as "METHOD path", to prove what a restore did not call (no invitations, no sendMail).</summary>
+    public List<string> RequestLog { get; } = [];
+
+    /// <summary>Item ids whose import fails.</summary>
+    public HashSet<string> FailingImports { get; } = new(StringComparer.Ordinal);
+
+    public const string RootFolderId = "msgfolderroot";
+
     public MailboxSimulator(int items, int seed = 1)
     {
         var random = new Random(seed);
@@ -112,14 +128,80 @@ internal sealed class MailboxSimulator : IDisposable
 
     private void Map()
     {
+        _server.LogEntriesChanged += (_, e) =>
+        {
+            lock (_gate)
+            {
+                foreach (var entry in e.NewItems?.OfType<WireMock.Logging.ILogEntry>() ?? []) RequestLog.Add($"{entry.RequestMessage?.Method} {entry.RequestMessage?.Path}");
+            }
+        };
+
+        _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/admin/exchange/mailboxes/[^/]+/createImportSession$")).UsingPost())
+            .RespondWith(Response.Create().WithCallback(request =>
+            {
+                var mailbox = Uri.UnescapeDataString(request.Path.Split('/')[5]);
+                return Json(new JsonObject
+                {
+                    ["importUrl"] = $"{Url}/api/gv1.0/Mailboxes('{Uri.EscapeDataString(mailbox)}')/importItem?authtoken=example-session-token",
+                    ["expirationDateTime"] = DateTimeOffset.UtcNow.AddHours(1).ToString("O"),
+                });
+            }));
+
+        _server.Given(Request.Create().WithPath(new RegexMatcher("^/api/gv1\\.0/Mailboxes\\('.+'\\)/importItem$")).UsingPost())
+            .RespondWith(Response.Create().WithCallback(request =>
+            {
+                var path = Uri.UnescapeDataString(request.Path);
+                var mailbox = path[(path.IndexOf("('", StringComparison.Ordinal) + 2)..path.IndexOf("')", StringComparison.Ordinal)];
+                var body = JsonNode.Parse(request.Body!)!;
+                var data = Convert.FromBase64String(body["Data"]!.GetValue<string>());
+                lock (_gate)
+                {
+                    var source = Items.Values.FirstOrDefault(i => i.Data.AsSpan().SequenceEqual(data));
+                    if (source is not null && FailingImports.Contains(source.Id))
+                    {
+                        return Json(new JsonObject { ["error"] = new JsonObject { ["code"] = "ErrorImportFailed", ["message"] = "The item could not be imported." } }, 400);
+                    }
+                    Imports.Add(new Import(mailbox, body["FolderId"]!.GetValue<string>(), body["Mode"]!.GetValue<string>(), data,
+                        request.Headers?.ContainsKey("Authorization") == true));
+                    return Json(new JsonObject { ["itemId"] = $"imported-{Imports.Count}", ["changeKey"] = "ck-imported" });
+                }
+            }));
+
+        _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/admin/exchange/mailboxes/[^/]+/folders(/[^/]+/childFolders)?$")).UsingPost())
+            .RespondWith(Response.Create().WithCallback(request =>
+            {
+                var parts = request.Path.Split('/');
+                var mailbox = Uri.UnescapeDataString(parts[5]);
+                var parent = parts.Length > 7 ? Uri.UnescapeDataString(parts[7]) : RootFolderId;
+                var body = JsonNode.Parse(request.Body!)!;
+                lock (_gate)
+                {
+                    var name = body["displayName"]!.GetValue<string>();
+                    if (CreatedFolders.Any(f => f.MailboxId == mailbox && f.ParentId == parent && f.Name == name))
+                    {
+                        return Json(new JsonObject { ["error"] = new JsonObject { ["code"] = "ErrorFolderExists", ["message"] = "A folder with that name exists." } }, 409);
+                    }
+                    var folder = new CreatedFolder(mailbox, $"created-{CreatedFolders.Count + 1}", name, parent, body["type"]!.GetValue<string>());
+                    CreatedFolders.Add(folder);
+                    return Json(new JsonObject
+                    {
+                        ["id"] = folder.Id, ["displayName"] = folder.Name, ["parentFolderId"] = folder.ParentId, ["type"] = folder.Type,
+                        ["childFolderCount"] = 0, ["totalItemCount"] = 0,
+                    }, 201);
+                }
+            }));
+
         _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/admin/exchange/mailboxes/[^/]+/folders$")).UsingGet())
-            .RespondWith(Response.Create().WithCallback(_ => Respond(() => new JsonObject
+            .RespondWith(Response.Create().WithCallback(request => Respond(() => new JsonObject
             {
                 ["value"] = new JsonArray(Folders.Select(f => (JsonNode)new JsonObject
                 {
-                    ["id"] = f.Id, ["displayName"] = f.Name, ["parentFolderId"] = "root", ["type"] = f.Type, ["wellKnownName"] = f.WellKnownName,
+                    ["id"] = f.Id, ["displayName"] = f.Name, ["parentFolderId"] = RootFolderId, ["type"] = f.Type, ["wellKnownName"] = f.WellKnownName,
                     ["totalItemCount"] = CountIn(f.Id), ["childFolderCount"] = 0,
-                }).ToArray()),
+                }).Concat(CreatedFolders.Where(c => c.MailboxId == Uri.UnescapeDataString(request.Path.Split('/')[5])).Select(c => (JsonNode)new JsonObject
+                {
+                    ["id"] = c.Id, ["displayName"] = c.Name, ["parentFolderId"] = c.ParentId, ["type"] = c.Type, ["totalItemCount"] = 0, ["childFolderCount"] = 0,
+                })).ToArray()),
             })));
 
         _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/admin/exchange/mailboxes/[^/]+/folders/[^/]+/items/delta$")).UsingGet())
@@ -213,6 +295,13 @@ internal sealed class MailboxSimulator : IDisposable
         else result["@odata.deltaLink"] = $"{basePath}?$deltatoken={upto}";
         return result;
     }
+
+    private static ResponseMessage Json(JsonObject body, int status = 200) => new()
+    {
+        StatusCode = status,
+        Headers = new Dictionary<string, WireMockList<string>> { ["Content-Type"] = new("application/json") },
+        BodyData = new BodyData { BodyAsString = body.ToJsonString(), DetectedBodyType = BodyType.String },
+    };
 
     private ResponseMessage Respond(Func<JsonObject> body)
     {

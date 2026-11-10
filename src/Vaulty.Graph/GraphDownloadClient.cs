@@ -5,13 +5,14 @@ using Vaulty.Graph.Http;
 namespace Vaulty.Graph;
 
 /// <summary>
-/// Downloads pre-authenticated URLs (@microsoft.graph.downloadUrl). It has its own HttpClient without the authentication
-/// handler, so no Graph token ever reaches the content host, and it only talks HTTPS to Microsoft content domains.
+/// Talks to pre-authenticated URLs: downloads (@microsoft.graph.downloadUrl), upload sessions and mailbox import sessions.
+/// It has its own HttpClient without the authentication handler, so no Graph token ever reaches these hosts, and it only
+/// talks HTTPS to Microsoft content domains.
 /// </summary>
 public sealed class GraphDownloadClient
 {
     /// <summary>Host suffixes of Microsoft 365 file content.</summary>
-    public static readonly IReadOnlyList<string> AllowedHostSuffixes = [".sharepoint.com", ".svc.ms"];
+    public static readonly IReadOnlyList<string> AllowedHostSuffixes = [".sharepoint.com", ".svc.ms", "outlook.office365.com"];
 
     private readonly HttpClient _http;
     private readonly IReadOnlyList<string> _allowed;
@@ -56,6 +57,19 @@ public sealed class GraphDownloadClient
             throw new GraphException(status, "downloadFailed", $"Download returned {(int)status}.", null);
         }
         return new OwningStream(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), response);
+    }
+
+    /// <summary>
+    /// Sends a request to a pre-authenticated URL (an upload session or import session) and returns the response, also when
+    /// it is not a success; the caller reads and disposes it. Throttling is handled like every Graph call.
+    /// </summary>
+    public async Task<HttpResponseMessage> SendAsync(GraphRequestContext context, HttpMethod method, Uri url, HttpContent? content,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+        if (!IsAllowed(url)) throw new GraphException(HttpStatusCode.BadRequest, "hostNotAllowed", $"Host {url.Host} is not allowed.", null);
+        using var request = new HttpRequestMessage(method, url) { Content = content }.WithContext(context);
+        return await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false);
     }
 
     private sealed class OwningStream(Stream inner, IDisposable owner) : Stream

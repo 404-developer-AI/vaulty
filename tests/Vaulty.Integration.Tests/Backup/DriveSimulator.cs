@@ -38,7 +38,10 @@ internal sealed class DriveSimulator : IDisposable
         public int MetadataVersion { get; set; } = 1;
         public int ChangedAt { get; set; }
         public bool Shared { get; init; }
-        public byte[] Data => Content(Id, Version, Size);
+        public byte[]? Uploaded { get; init; }
+        public string? Created { get; init; }
+        public string? Modified { get; init; }
+        public byte[] Data => Uploaded ?? Content(Id, Version, Size);
     }
 
     public Dictionary<string, Node> Nodes { get; } = new(StringComparer.Ordinal);
@@ -52,6 +55,54 @@ internal sealed class DriveSimulator : IDisposable
     public HashSet<string> CorruptHashes { get; } = new(StringComparer.Ordinal);
 
     public string Url => _server.Url!;
+
+    public sealed record Upload(string ParentId, string RequestedName, string StoredName, string ConflictBehavior, string? Created, string? Modified,
+        byte[] Data, int Parts, bool HadAuthorization);
+
+    public List<Upload> Uploads { get; } = [];
+
+    private sealed class Session
+    {
+        public required string ParentId { get; init; }
+        public required string Name { get; init; }
+        public required string Behavior { get; init; }
+        public string? Created { get; init; }
+        public string? Modified { get; init; }
+        public MemoryStream Data { get; } = new();
+        public int Parts { get; set; }
+        public bool HadAuthorization { get; set; }
+    }
+
+    private readonly Dictionary<string, Session> _sessions = new(StringComparer.Ordinal);
+
+    public IEnumerable<Node> ChildrenOf(string parentId) => Nodes.Values.Where(n => n.ParentId == parentId);
+
+    /// <summary>Stores an uploaded file as OneDrive would: with "rename", a taken name gets " 1", " 2" and so on.</summary>
+    private Node Store(string parentId, string name, string behavior, byte[] data, string? created, string? modified)
+    {
+        var existing = Nodes.Values.FirstOrDefault(n => n.ParentId == parentId && n.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null && behavior == "replace") Nodes.Remove(existing.Id);
+        else if (existing is not null)
+        {
+            var stem = System.IO.Path.GetFileNameWithoutExtension(name);
+            var extension = System.IO.Path.GetExtension(name);
+            for (var n = 1; Nodes.Values.Any(x => x.ParentId == parentId && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)); n++) name = $"{stem} {n}{extension}";
+        }
+        var node = new Node { Id = $"up-{++_next:D5}", Name = name, ParentId = parentId, Size = data.Length, ChangedAt = ++_clock, Uploaded = data, Created = created, Modified = modified };
+        Nodes[node.Id] = node;
+        return node;
+    }
+
+    private static (string Parent, string Name) ParentAndName(string path, string suffix)
+    {
+        // /v1.0/drives/{drive}/items/{parent}:/{name}{suffix}
+        var decoded = Uri.UnescapeDataString(path);
+        var start = decoded.IndexOf("/items/", StringComparison.Ordinal) + "/items/".Length;
+        var colon = decoded.IndexOf(":/", start, StringComparison.Ordinal);
+        var name = decoded[(colon + 2)..];
+        if (suffix.Length > 0) name = name[..^suffix.Length];
+        return (decoded[start..colon], name);
+    }
 
     public DriveSimulator(int files, int seed = 1)
     {
@@ -167,6 +218,87 @@ internal sealed class DriveSimulator : IDisposable
     {
         _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/drives/[^/]+/root/delta$")).UsingGet())
             .RespondWith(Response.Create().WithCallback(request => Respond(() => Delta(request))));
+
+        _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/drives/[^/]+/items/[^/]+/children$")).UsingPost())
+            .RespondWith(Response.Create().WithCallback(request =>
+            {
+                var parent = Uri.UnescapeDataString(request.Path.Split('/')[5]);
+                var name = JsonNode.Parse(request.Body!)!["name"]!.GetValue<string>();
+                lock (_gate)
+                {
+                    if (Nodes.Values.Any(n => n.ParentId == parent && n.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return Json200(new JsonObject { ["error"] = new JsonObject { ["code"] = "nameAlreadyExists", ["message"] = "exists" } }.ToJsonString(), 409);
+                    }
+                    var node = new Node { Id = $"fld-{++_next:D4}", Name = name, ParentId = parent, IsFolder = true, ChangedAt = ++_clock };
+                    Nodes[node.Id] = node;
+                    return Json200(Json(node).ToJsonString(), 201);
+                }
+            }));
+
+        _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/drives/[^/]+/items/[^/:]+:/.+:/createUploadSession$")).UsingPost())
+            .RespondWith(Response.Create().WithCallback(request =>
+            {
+                var (parent, _) = ParentAndName(request.Path, ":/createUploadSession");
+                var item = JsonNode.Parse(request.Body!)!["item"]!;
+                lock (_gate)
+                {
+                    var id = $"session-{_sessions.Count + 1}";
+                    _sessions[id] = new Session
+                    {
+                        ParentId = parent, Name = item["name"]!.GetValue<string>(), Behavior = item["@microsoft.graph.conflictBehavior"]?.GetValue<string>() ?? "fail",
+                        Created = item["fileSystemInfo"]?["createdDateTime"]?.GetValue<string>(), Modified = item["fileSystemInfo"]?["lastModifiedDateTime"]?.GetValue<string>(),
+                    };
+                    return Json200(new JsonObject { ["uploadUrl"] = $"{Url}/upload/{id}?tempauth=example", ["expirationDateTime"] = DateTimeOffset.UtcNow.AddHours(1).ToString("O") }.ToJsonString());
+                }
+            }));
+
+        _server.Given(Request.Create().WithPath(new RegexMatcher("^/upload/[^/]+$")).UsingPut())
+            .RespondWith(Response.Create().WithCallback(request =>
+            {
+                lock (_gate)
+                {
+                    var session = _sessions[request.Path.Split('/')[2]];
+                    session.HadAuthorization |= request.Headers?.ContainsKey("Authorization") == true;
+                    var range = request.Headers!["Content-Range"][0]; // bytes a-b/total
+                    var total = long.Parse(range[(range.IndexOf('/') + 1)..], System.Globalization.CultureInfo.InvariantCulture);
+                    var from = long.Parse(range["bytes ".Length..range.IndexOf('-')], System.Globalization.CultureInfo.InvariantCulture);
+                    if (from != session.Data.Length) return Json200("{\"error\":{\"code\":\"invalidRange\"}}", 416);
+                    session.Data.Write(request.BodyAsBytes ?? []);
+                    session.Parts++;
+                    if (session.Data.Length < total)
+                    {
+                        return Json200(new JsonObject { ["nextExpectedRanges"] = new JsonArray($"{session.Data.Length}-") }.ToJsonString(), 202);
+                    }
+                    var node = Store(session.ParentId, session.Name, session.Behavior, session.Data.ToArray(), session.Created, session.Modified);
+                    Uploads.Add(new Upload(session.ParentId, session.Name, node.Name, session.Behavior, session.Created, session.Modified, session.Data.ToArray(),
+                        session.Parts, session.HadAuthorization));
+                    return Json200(Json(node).ToJsonString(), 201);
+                }
+            }));
+
+        _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/drives/[^/]+/items/[^/:]+:/.+:/content$")).UsingPut())
+            .RespondWith(Response.Create().WithCallback(request =>
+            {
+                var (parent, name) = ParentAndName(request.Path, ":/content");
+                lock (_gate)
+                {
+                    var node = Store(parent, name, request.Query?.TryGetValue("@microsoft.graph.conflictBehavior", out var b) == true ? b[0] : "fail", [], null, null);
+                    Uploads.Add(new Upload(parent, name, node.Name, "rename", null, null, [], 1, false));
+                    return Json200(Json(node).ToJsonString(), 201);
+                }
+            }));
+
+        _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/drives/[^/]+/items/[^/:]+:/[^:]+$")).UsingGet())
+            .RespondWith(Response.Create().WithCallback(request =>
+            {
+                var (parent, name) = ParentAndName(request.Path, "");
+                lock (_gate)
+                {
+                    var node = Nodes.Values.FirstOrDefault(n => n.ParentId == parent && n.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                    return node is null ? new ResponseMessage { StatusCode = 404 } : Json200(Json(node).ToJsonString());
+                }
+            }));
 
         _server.Given(Request.Create().WithPath(new RegexMatcher("^/v1\\.0/drives/[^/]+/root$")).UsingGet())
             .RespondWith(Response.Create().WithCallback(_ =>
@@ -296,9 +428,9 @@ internal sealed class DriveSimulator : IDisposable
         lock (_gate) return Json200(body().ToJsonString());
     }
 
-    private static ResponseMessage Json200(string json) => new()
+    private static ResponseMessage Json200(string json, int status = 200) => new()
     {
-        StatusCode = 200,
+        StatusCode = status,
         Headers = new Dictionary<string, WireMockList<string>> { ["Content-Type"] = new("application/json") },
         BodyData = new BodyData { BodyAsString = json, DetectedBodyType = BodyType.String },
     };

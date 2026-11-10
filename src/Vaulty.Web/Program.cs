@@ -38,6 +38,9 @@ builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.IRepositoryReaderFact
     sp.GetRequiredService<Vaulty.Infrastructure.Backup.TenantKeyProvider>()));
 builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.SnapshotBrowser>();
 builder.Services.AddScoped<Vaulty.Web.DisplayTime>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.RestoreService>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.IExportStorage>(sp => new Vaulty.Infrastructure.Restore.S3ExportStorage(
+    sp.GetRequiredService<Vaulty.Infrastructure.Storage.StorageClientFactory>(), Vaulty.Infrastructure.Storage.StorageRole.Api));
 var temporal = new Lazy<Task<Temporalio.Client.ITemporalClient>>(async () => await Temporalio.Client.TemporalClient.ConnectAsync(
     new Temporalio.Client.TemporalClientConnectOptions(builder.Configuration["Vaulty:Temporal:Address"] ?? "127.0.0.1:7233")
     {
@@ -76,6 +79,7 @@ app.UseAntiforgery();
 app.MapStaticAssets();
 app.MapAccountEndpoints();
 Vaulty.Web.Browse.PreviewEndpoints.MapPreviewEndpoints(app);
+Vaulty.Web.Browse.ExportEndpoints.MapExportEndpoints(app);
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode(o => o.ContentSecurityFrameAncestorsPolicy = null);
 

@@ -144,7 +144,11 @@ public sealed class DriveBackupTests(TemporalFixture fixture, ITestOutputHelper 
         output.WriteLine($"4 versions of {file.Size / 1024 / 1024} MiB: {logical / 1024 / 1024} MiB logical, {stored / 1024.0 / 1024:F1} MiB stored, dedup ratio {ratio:F2}");
         Assert.True(ratio > 2.5, $"dedup ratio {ratio:F2}");
     }
+}
 
+[Collection(MeasurementsCollection.Name)]
+public sealed class LargeFileStreamingTests(ITestOutputHelper output)
+{
     /// <summary>
     /// A 2 GB file streamed from a download URL through the repository engine: the connection breaks once, the download
     /// resumes with Range from the last byte, the QuickXorHash matches, and the process stays well under 256 MB extra memory.

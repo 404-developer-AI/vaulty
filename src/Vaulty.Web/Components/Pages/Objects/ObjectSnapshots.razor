@@ -1,7 +1,9 @@
 @page "/objects/{ObjectId:guid}"
 @attribute [Authorize(Policy = "perm:" + Permissions.SnapshotsBrowse)]
 @using Vaulty.Infrastructure.Browse
+@using Vaulty.Infrastructure.Restore
 @inject SnapshotBrowser Browser
+@inject RestoreService Restores
 @inject CurrentAccess Current
 @inject DisplayTime Time
 
@@ -43,6 +45,25 @@ else
         </RowTemplate>
         <NoRecordsContent><span class="vy-muted">No snapshots yet. The first backup creates one.</span></NoRecordsContent>
     </MudTable>
+
+    @if (_restores.Count > 0)
+    {
+        <MudText Typo="Typo.h6" Class="mt-6 mb-2">Restores and exports</MudText>
+        <MudTable Items="_restores" Hover="true" Elevation="0" Outlined="true" Dense="true">
+            <HeaderContent>
+                <MudTh>Started</MudTh>
+                <MudTh>Type</MudTh>
+                <MudTh>Status</MudTh>
+                <MudTh></MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd>@Time.Absolute(context.CreatedAt)</MudTd>
+                <MudTd>@(context.Kind == "export" ? "Export" : context.TargetMode switch { "original" => "Restore to the original location", "other" => "Restore to another location", _ => "Restore to a restore folder" })</MudTd>
+                <MudTd>@(char.ToUpperInvariant(context.State[0]) + context.State[1..])</MudTd>
+                <MudTd><MudLink Href="@($"/restores/{context.Id}")">Report</MudLink></MudTd>
+            </RowTemplate>
+        </MudTable>
+    }
 }
 
 @code {
@@ -51,6 +72,7 @@ else
     private ObjectHeader? _object;
     private IReadOnlyList<SnapshotSummary> _snapshots = [];
     private List<BreadcrumbItem> _crumbs = [];
+    private IReadOnlyList<RestoreSummary> _restores = [];
 
     protected override async Task OnParametersSetAsync()
     {
@@ -59,6 +81,7 @@ else
         _object = await Browser.ObjectAsync(access, ObjectId);
         if (_object is null) return;
         _snapshots = await Browser.SnapshotsAsync(access, ObjectId);
+        _restores = await Restores.ListAsync(access, ObjectId);
         _crumbs =
         [
             new("Customers", "/customers"),

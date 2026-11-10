@@ -1,7 +1,15 @@
 @page "/objects/{ObjectId:guid}/snapshots/{SnapshotId:guid}"
 @attribute [Authorize(Policy = "perm:" + Permissions.SnapshotsBrowse)]
 @using Vaulty.Infrastructure.Browse
+@using Vaulty.Infrastructure.Restore
+@using Vaulty.Infrastructure.Tenants
+@using Vaulty.Workflows.Tenants
 @inject SnapshotBrowser Browser
+@inject RestoreService Restores
+@inject IWorkflowStarter Workflows
+@inject TenantService Tenants
+@inject TimeProvider Clock
+@inject ISnackbar Snackbar
 @inject CurrentAccess Current
 @inject DisplayTime Time
 @inject NavigationManager Navigation
@@ -40,9 +48,65 @@ else
             </MudPaper>
         </MudItem>
         <MudItem xs="12" md="@(_detail is null ? 9 : 5)">
-            <MudTable Items="_items" Hover="true" Elevation="0" Outlined="true" Dense="true" OnRowClick="@((TableRowClickEventArgs<ItemRow> e) => OpenAsync(e.Item!))" T="ItemRow">
+            @if (_restoring)
+            {
+                <MudPaper Elevation="0" Outlined="true" Class="pa-4 mb-3">
+                    <MudText Typo="Typo.h6">@(_mode == RestoreModes.Export ? "Export" : "Restore") @SelectionText</MudText>
+                    @if (_mode != RestoreModes.Export)
+                    {
+                        <MudRadioGroup T="string" @bind-Value="_mode">
+                            <MudRadio T="string" Value="@RestoreModes.RestoreFolder">To a restore folder (Vaulty Restore/@Time.Absolute(Clock.GetUtcNow()))</MudRadio>
+                            <MudRadio T="string" Value="@RestoreModes.Original">To the original location</MudRadio>
+                            @if (_targets.Count > 0 && _canRestoreElsewhere)
+                            {
+                                <MudRadio T="string" Value="@RestoreModes.Other">To another @(_object.Kind == "drive" ? "OneDrive" : "mailbox")</MudRadio>
+                            }
+                        </MudRadioGroup>
+                        @if (_mode == RestoreModes.Other)
+                        {
+                            <MudSelect T="Guid?" @bind-Value="_target" Label="Target" Dense="true" Class="mt-2">
+                                @foreach (var t in _targets)
+                                {
+                                    <MudSelectItem T="Guid?" Value="t.Id">@t.DisplayName</MudSelectItem>
+                                }
+                            </MudSelect>
+                        }
+                        @if (_object.Kind == "drive")
+                        {
+                            <MudSelect T="string" @bind-Value="_conflict" Label="When a file with the same name exists" Dense="true" Class="mt-2">
+                                <MudSelectItem T="string" Value="@("rename")">Keep both (the restored file gets "(restored date)" in its name)</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("skip")">Skip the file</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("overwrite")">Replace the existing file</MudSelectItem>
+                            </MudSelect>
+                        }
+                        else
+                        {
+                            <p class="vy-muted mt-2">Calendar items are restored without sending invitations or updates to attendees.</p>
+                        }
+                    }
+                    else
+                    {
+                        <p class="vy-muted">A zip with messages as EML, events as ICS, contacts as VCF and files as they are. You get a download link that works once, within 24 hours.</p>
+                    }
+                    <div class="d-flex gap-2 mt-3">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="StartRestoreAsync" Disabled="_busy">@(_mode == RestoreModes.Export ? "Start export" : "Start restore")</MudButton>
+                        <MudButton Variant="Variant.Text" OnClick="@(() => _restoring = false)">Cancel</MudButton>
+                    </div>
+                </MudPaper>
+            }
+            <MudTable Items="_items" Hover="true" Elevation="0" Outlined="true" Dense="true" OnRowClick="@((TableRowClickEventArgs<ItemRow> e) => OpenAsync(e.Item!))" T="ItemRow"
+                      MultiSelection="@(_canRestore || _canExport)" @bind-SelectedItems="_selected">
                 <ToolBarContent>
                     <span class="vy-muted">@_total.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) items in this folder</span>
+                    <MudSpacer />
+                    @if (_canRestore)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Restore" OnClick="@(() => OpenRestore(RestoreModes.RestoreFolder))">Restore</MudButton>
+                    }
+                    @if (_canExport)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Download" OnClick="@(() => OpenRestore(RestoreModes.Export))">Export</MudButton>
+                    }
                 </ToolBarContent>
                 <HeaderContent>
                     <MudTh>Name</MudTh>
@@ -90,7 +154,13 @@ else
                         <MudText Typo="Typo.subtitle2" Class="mt-3">Older versions</MudText>
                         @foreach (var version in _detail.Versions)
                         {
-                            <div class="vy-muted">Version @version.VersionId · @Time.Absolute(version.ModifiedAt) · @ObjectLabels.Size(version.Size)</div>
+                            <div class="vy-muted d-flex align-center">
+                                Version @version.VersionId · @Time.Absolute(version.ModifiedAt) · @ObjectLabels.Size(version.Size)
+                                @if (_canRestore)
+                                {
+                                    <MudButton Size="Size.Small" Variant="Variant.Text" Class="ml-2" OnClick="@(() => OpenRestore(RestoreModes.Original, version.Id))">Restore this version</MudButton>
+                                }
+                            </div>
                         }
                     }
                     @if (_detail.PreviewType is { } type)
@@ -124,6 +194,7 @@ else
     [Parameter] public Guid ObjectId { get; set; }
     [Parameter] public Guid SnapshotId { get; set; }
     [SupplyParameterFromQuery(Name = "item")] public Guid? ItemId { get; set; }
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
 
     private ObjectHeader? _object;
     private SnapshotSummary? _snapshot;
@@ -135,6 +206,56 @@ else
     private string? _next;
     private long _total;
     private ItemDetail? _detail;
+    private HashSet<ItemRow> _selected = [];
+    private bool _restoring;
+    private bool _busy;
+    private string _mode = RestoreModes.RestoreFolder;
+    private string _conflict = "rename";
+    private Guid? _target;
+    private Guid? _versionItem;
+    private List<ProtectedObjectRow> _targets = [];
+    private bool _canRestore;
+    private bool _canRestoreElsewhere;
+    private bool _canExport;
+
+    private string SelectionText => _versionItem is not null ? "this version"
+        : _selected.Count > 0 ? $"{_selected.Count} selected {(_selected.Count == 1 ? "item" : "items")}"
+        : $"the whole folder ({_total.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} items and everything below it)";
+
+    private void OpenRestore(string mode, Guid? versionItem = null)
+    {
+        (_mode, _versionItem, _restoring) = (mode, versionItem, true);
+    }
+
+    private async Task StartRestoreAsync()
+    {
+        if (_object is null || _folder is null) return;
+        _busy = true;
+        try
+        {
+            var access = await Current.GetAsync();
+            var selection = _versionItem is { } v ? new RestoreSelection([v], [])
+                : _selected.Count > 0 ? new RestoreSelection(_selected.Select(i => i.Id).ToList(), [])
+                : new RestoreSelection([], [_folder]);
+            var user = (await AuthenticationState).User;
+            var created = await Restores.CreateAsync(access, VaultyWebSetup.HasFreshStepUp(user, Clock),
+                new RestoreRequest(ObjectId, SnapshotId, selection, _mode, _mode == RestoreModes.Other ? _target : null, _conflict));
+            await Workflows.StartRestoreAsync(access.OrganizationId, created.TenantId, created.RestoreId, created.JobId, created.IsExport);
+            Navigation.NavigateTo($"/restores/{created.RestoreId}");
+        }
+        catch (StepUpRequiredException)
+        {
+            Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString(Navigation.ToBaseRelativePath(Navigation.Uri).Insert(0, "/"))}", forceLoad: true);
+        }
+        catch (Exception ex) when (ex is ArgumentException or Vaulty.Infrastructure.Access.AccessException)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
 
     private static readonly Dictionary<string, string> FieldLabels = new(StringComparer.Ordinal)
     {
@@ -155,6 +276,11 @@ else
         _object = await Browser.ObjectAsync(access, ObjectId);
         if (_object is null) return;
         _snapshots = await Browser.SnapshotsAsync(access, ObjectId);
+        _canRestore = access.Allows(Permissions.RestoreInPlace, _object.CustomerId);
+        _canRestoreElsewhere = access.Allows(Permissions.RestoreOtherLocation, _object.CustomerId);
+        _canExport = access.Allows(Permissions.ExportCreate, _object.CustomerId);
+        _targets = (await Tenants.ProtectedObjectsAsync(access.OrganizationId, _object.TenantId))
+            .Where(o => o.Kind == _object.Kind && o.Id != ObjectId && o.State == "active").ToList();
         _snapshot = _snapshots.FirstOrDefault(s => s.Id == SnapshotId);
         if (_snapshot is null) return;
         _crumbs =
@@ -205,6 +331,7 @@ else
         if (folder is null) return;
         _folder = folder;
         _items.Clear();
+        _selected = [];
         var page = await Browser.ItemsAsync(await Current.GetAsync(), ObjectId, SnapshotId, folder, null);
         _items.AddRange(page.Items);
         (_next, _total) = (page.NextCursor, page.Total);

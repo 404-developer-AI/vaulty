@@ -1,0 +1,189 @@
+@page "/restores/{RestoreId:guid}"
+@attribute [Authorize(Policy = "perm:" + Permissions.SnapshotsBrowse)]
+@implements IDisposable
+@using Vaulty.Infrastructure.Restore
+@using Vaulty.Workflows.Tenants
+@inject RestoreService Restores
+@inject IWorkflowStarter Workflows
+@inject CurrentAccess Current
+@inject DisplayTime Time
+@inject TimeProvider Clock
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+
+<PageTitle>@Title · Vaulty</PageTitle>
+
+@if (_report is null)
+{
+    <p class="vy-muted">This restore does not exist, its report has expired, or you have no access to it.</p>
+}
+else
+{
+    var r = _report.Restore;
+    var c = r.Counts;
+    <MudBreadcrumbs Items="_crumbs" Class="px-0 pt-0" />
+    <h1 class="vy-page-title">@Title</h1>
+    <p class="vy-page-lede">
+        @_report.Object.DisplayName · started @Time.Absolute(r.CreatedAt)@(r.FinishedAt is { } f ? $", finished {Time.Absolute(f)}" : "")
+    </p>
+
+    <MudPaper Elevation="0" Outlined="true" Class="pa-4 mb-4">
+        <div class="d-flex align-center gap-3 flex-wrap">
+            <span class="vy-status @StatusClass(r.State)">@StatusText(r.State)</span>
+            @if (c is not null)
+            {
+                <span>@N(c.Restored) @(r.Kind == "export" ? "exported" : "restored"), @N(c.Skipped) skipped, @N(c.Failed) failed@(c.Pending > 0 ? $", {N(c.Pending)} to go" : "") (of @N(c.Total))</span>
+            }
+            <MudSpacer />
+            @if (_canAct && r.FinishedAt is null && r.Kind == "restore")
+            {
+                @if (r.State == "paused")
+                {
+                    <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.PlayArrow" OnClick="@(() => SignalAsync("resume"))">Resume</MudButton>
+                }
+                else
+                {
+                    <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Pause" OnClick="@(() => SignalAsync("pause"))">Pause</MudButton>
+                }
+                <MudButton Variant="Variant.Text" Color="Color.Error" StartIcon="@Icons.Material.Outlined.Stop" OnClick="@(() => SignalAsync("cancel"))">Cancel restore</MudButton>
+            }
+        </div>
+        @if (_report.Export is { } export)
+        {
+            <MudDivider Class="my-3" />
+            @if (export.DownloadedAt is { } downloaded)
+            {
+                <p class="vy-muted">The export was downloaded @Time.Absolute(downloaded). Links work once; start a new export to download it again.</p>
+            }
+            else if (export.ExpiresAt <= Clock.GetUtcNow())
+            {
+                <p class="vy-muted">The export expired @Time.Absolute(export.ExpiresAt) without being downloaded.</p>
+            }
+            else if (_link is not null)
+            {
+                <p>Your download link (works once, until @Time.Absolute(export.ExpiresAt), only for you):</p>
+                <MudLink Href="@_link" Target="_self">Download the export (@Vaulty.Web.Browse.ObjectLabels.Size(export.Size))</MudLink>
+            }
+            else if (_mine)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CreateLinkAsync">Get the download link</MudButton>
+                <span class="vy-muted ml-2">@Vaulty.Web.Browse.ObjectLabels.Size(export.Size), available until @Time.Absolute(export.ExpiresAt).</span>
+            }
+            else
+            {
+                <p class="vy-muted">Only the user who asked for this export can download it.</p>
+            }
+        }
+    </MudPaper>
+
+    <MudTable Items="_report.Items" Dense="true" Hover="true" Elevation="0" Outlined="true">
+        <HeaderContent>
+            <MudTh>Item</MudTh>
+            <MudTh>Folder</MudTh>
+            <MudTh>Result</MudTh>
+            <MudTh>Detail</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>@Vaulty.Web.Browse.ObjectLabels.Item(context.Kind)</MudTd>
+            <MudTd>@context.RelativePath</MudTd>
+            <MudTd><span class="vy-status @ItemClass(context.State)">@ItemText(context.State, r.Kind)</span></MudTd>
+            <MudTd>@context.Detail</MudTd>
+        </RowTemplate>
+        <NoRecordsContent><span class="vy-muted">The items are being planned.</span></NoRecordsContent>
+    </MudTable>
+}
+
+@code {
+    [Parameter] public Guid RestoreId { get; set; }
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private RestoreReport? _report;
+    private List<BreadcrumbItem> _crumbs = [];
+    private bool _canAct;
+    private bool _mine;
+    private string? _link;
+    private Timer? _refresh;
+
+    private string Title => _report?.Restore.Kind == "export" ? "Export" : "Restore";
+
+    private static string N(long value) => value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string StatusClass(string state) => state switch
+    {
+        "succeeded" => "succeeded", "partial" => "partial", "failed" => "failed", "running" or "planning" => "running", _ => "neutral",
+    };
+
+    private static string StatusText(string state) => state switch
+    {
+        "planning" => "Planning", "running" => "Running", "paused" => "Paused", "succeeded" => "Succeeded", "partial" => "Partial",
+        "failed" => "Failed", "cancelled" => "Cancelled", _ => state,
+    };
+
+    private static string ItemClass(string state) => state switch { "restored" => "succeeded", "failed" => "failed", "pending" => "running", _ => "neutral" };
+
+    private static string ItemText(string state, string kind) => state switch
+    {
+        "restored" => kind == "export" ? "Exported" : "Restored", "failed" => "Failed", "skipped" => "Skipped", _ => "Waiting",
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await Time.LoadAsync();
+        await LoadAsync();
+        _refresh ??= new Timer(_ => InvokeAsync(async () =>
+        {
+            if (_report?.Restore.FinishedAt is not null) return;
+            await LoadAsync();
+            StateHasChanged();
+        }), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+    }
+
+    private async Task LoadAsync()
+    {
+        var access = await Current.GetAsync();
+        _report = await Restores.ReportAsync(access, RestoreId);
+        if (_report is null) return;
+        var o = _report.Object;
+        _canAct = access.Allows(Permissions.RestoreInPlace, o.CustomerId) || access.Allows(Permissions.RestoreOtherLocation, o.CustomerId);
+        _mine = _report.Export?.CreatedBy == access.UserId;
+        _crumbs =
+        [
+            new("Customers", "/customers"),
+            new(o.CustomerName, $"/customers/{o.CustomerId}"),
+            new(o.TenantName, $"/tenants/{o.TenantId}"),
+            new(o.DisplayName, $"/objects/{o.Id}"),
+            new(Title, null, disabled: true),
+        ];
+    }
+
+    private async Task SignalAsync(string signal)
+    {
+        await Workflows.SignalRestoreAsync(RestoreId, signal);
+        Snackbar.Add(signal switch
+        {
+            "pause" => "The restore pauses after the items it is working on.",
+            "resume" => "The restore continues.",
+            _ => "The restore stops after the items it is working on. Items restored so far stay restored.",
+        }, Severity.Info);
+    }
+
+    private async Task CreateLinkAsync()
+    {
+        try
+        {
+            var user = (await AuthenticationState).User;
+            var (exportId, token) = await Restores.CreateLinkAsync(await Current.GetAsync(), VaultyWebSetup.HasFreshStepUp(user, Clock), RestoreId);
+            _link = $"/exports/{exportId}/download?t={Uri.EscapeDataString(token)}";
+        }
+        catch (StepUpRequiredException)
+        {
+            Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/restores/{RestoreId}")}", forceLoad: true);
+        }
+        catch (Vaulty.Infrastructure.Access.AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    public void Dispose() => _refresh?.Dispose();
+}

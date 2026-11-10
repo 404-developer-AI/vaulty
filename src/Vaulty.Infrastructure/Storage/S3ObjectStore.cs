@@ -24,7 +24,7 @@ public sealed record S3StoreSettings(string ServiceUrl, string Region, string Bu
 /// retention in compliance mode and Content-MD5, and the returned ETag is compared with the MD5 of the bytes. The SDK's own
 /// retries are off: this class retries throttling responses itself and honours Retry-After exactly.
 /// </summary>
-public sealed class S3ObjectStore : IObjectStore, IDisposable
+public sealed class S3ObjectStore : IObjectStore, IObjectUploads, IDisposable
 {
     private readonly AmazonS3Client _client;
     private readonly S3StoreSettings _settings;
@@ -186,6 +186,84 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
             }
             return true;
         }, cancellationToken);
+
+    /// <summary>Part size of streaming uploads (S3 allows 10,000 parts: 16 MiB parts allow objects up to 160 GB).</summary>
+    public const int UploadPartSize = 16 * 1024 * 1024;
+
+    public async Task<IObjectUpload> BeginUploadAsync(string key, ObjectPutOptions options, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var request = new InitiateMultipartUploadRequest { BucketName = _settings.Bucket, Key = key };
+        if (options.LockUntil is { } lockUntil)
+        {
+            request.ObjectLockMode = ObjectLockMode.Compliance;
+            request.ObjectLockRetainUntilDate = lockUntil.UtcDateTime;
+        }
+        var initiated = await RetryAsync("put", key, () => _client.InitiateMultipartUploadAsync(request, cancellationToken), cancellationToken).ConfigureAwait(false);
+        return new MultipartUpload(this, key, initiated.UploadId, options);
+    }
+
+    private sealed class MultipartUpload : IObjectUpload
+    {
+        private readonly S3ObjectStore _store;
+        private readonly string _key;
+        private readonly string _uploadId;
+        private readonly ObjectPutOptions _options;
+        private readonly List<PartETag> _etags = [];
+        private readonly PartUploadStream _stream;
+        private bool _completed;
+
+        public MultipartUpload(S3ObjectStore store, string key, string uploadId, ObjectPutOptions options)
+        {
+            (_store, _key, _uploadId, _options) = (store, key, uploadId, options);
+            _stream = new PartUploadStream(UploadPartSize, UploadPartAsync);
+        }
+
+        public Stream Stream => _stream;
+        public byte[] Sha256 { get; private set; } = [];
+
+        private async Task UploadPartAsync(int number, ReadOnlyMemory<byte> part, CancellationToken cancellationToken)
+        {
+            var bytes = part.ToArray();
+            var md5 = MD5.HashData(bytes);
+            var response = await _store.RetryAsync("put", _key, () => _store._client.UploadPartAsync(new UploadPartRequest
+            {
+                BucketName = _store._settings.Bucket, Key = _key, UploadId = _uploadId, PartNumber = number,
+                InputStream = new MemoryStream(bytes, writable: false), MD5Digest = Convert.ToBase64String(md5), PartSize = bytes.Length,
+            }, cancellationToken), cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(response.ETag?.Trim('"'), Convert.ToHexStringLower(md5), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ObjectIntegrityException(_key, $"the ETag of part {number} does not match the MD5 of its bytes");
+            }
+            _etags.Add(new PartETag(number, response.ETag));
+        }
+
+        public async Task<ObjectInfo> CompleteAsync(CancellationToken cancellationToken = default)
+        {
+            Sha256 = await _stream.FinishAsync(cancellationToken).ConfigureAwait(false);
+            var response = await _store.RetryAsync("put", _key, () => _store._client.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+            {
+                BucketName = _store._settings.Bucket, Key = _key, UploadId = _uploadId, PartETags = _etags,
+            }, cancellationToken), cancellationToken).ConfigureAwait(false);
+            _completed = true;
+            return new ObjectInfo(_key, _stream.Length, response.ETag?.Trim('"'), _options.LockUntil, _store._clock.GetUtcNow());
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _stream.DisposeAsync().ConfigureAwait(false);
+            if (_completed) return;
+            try
+            {
+                await _store._client.AbortMultipartUploadAsync(new AbortMultipartUploadRequest { BucketName = _store._settings.Bucket, Key = _key, UploadId = _uploadId })
+                    .ConfigureAwait(false);
+            }
+            catch (AmazonServiceException)
+            {
+                // The bucket's lifecycle rule removes abandoned uploads as well.
+            }
+        }
+    }
 
     private async Task<T> RetryAsync<T>(string operation, string key, Func<Task<T>> action, CancellationToken cancellationToken)
     {

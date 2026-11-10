@@ -101,6 +101,12 @@ public interface IWorkflowStarter
 
     /// <summary>"Back up now": returns the job id, or null when a backup of the object is already running.</summary>
     Task<Guid?> StartBackupAsync(Guid organizationId, Guid tenantId, Guid objectId, string kind, Guid requestedBy, CancellationToken cancellationToken = default);
+
+    /// <summary>Starts a planned restore or export (its job and restore rows exist already).</summary>
+    Task StartRestoreAsync(Guid organizationId, Guid tenantId, Guid restoreId, Guid jobId, bool isExport, CancellationToken cancellationToken = default);
+
+    /// <summary>"pause", "resume" or "cancel" for a running restore; ignored when it already finished.</summary>
+    Task SignalRestoreAsync(Guid restoreId, string signal, CancellationToken cancellationToken = default);
 }
 
 public sealed class TemporalWorkflowStarter(Func<Task<ITemporalClient>> client, NpgsqlDataSource dataSource) : IWorkflowStarter
@@ -109,6 +115,37 @@ public sealed class TemporalWorkflowStarter(Func<Task<ITemporalClient>> client, 
         CancellationToken cancellationToken = default) =>
         await new Backup.BackupStarter(await client().ConfigureAwait(false), dataSource)
             .StartAsync(organizationId, tenantId, objectId, kind, requestedBy, cancellationToken).ConfigureAwait(false);
+
+    public static string RestoreWorkflowId(Guid restoreId) => $"restore-{restoreId:N}";
+
+    public async Task StartRestoreAsync(Guid organizationId, Guid tenantId, Guid restoreId, Guid jobId, bool isExport,
+        CancellationToken cancellationToken = default)
+    {
+        var temporal = await client().ConfigureAwait(false);
+        var input = new Restore.RestoreInput(jobId, organizationId, tenantId, restoreId, isExport);
+        await temporal.StartWorkflowAsync((Restore.RestoreWorkflow w) => w.RunAsync(input, false),
+            new WorkflowOptions(RestoreWorkflowId(restoreId), TaskQueues.Restore) { IdConflictPolicy = Temporalio.Api.Enums.V1.WorkflowIdConflictPolicy.UseExisting })
+            .ConfigureAwait(false);
+    }
+
+    public async Task SignalRestoreAsync(Guid restoreId, string signal, CancellationToken cancellationToken = default)
+    {
+        var handle = (await client().ConfigureAwait(false)).GetWorkflowHandle<Restore.RestoreWorkflow>(RestoreWorkflowId(restoreId));
+        try
+        {
+            switch (signal)
+            {
+                case "pause": await handle.SignalAsync(w => w.PauseAsync()).ConfigureAwait(false); break;
+                case "resume": await handle.SignalAsync(w => w.ResumeAsync()).ConfigureAwait(false); break;
+                case "cancel": await handle.SignalAsync(w => w.CancelAsync()).ConfigureAwait(false); break;
+                default: throw new ArgumentException("Unknown signal.", nameof(signal));
+            }
+        }
+        catch (Temporalio.Exceptions.RpcException ex) when (ex.Code == Temporalio.Exceptions.RpcException.StatusCode.NotFound)
+        {
+            // Finished already: nothing to pause or cancel.
+        }
+    }
 
     public async Task<Guid> StartDiscoveryAsync(Guid organizationId, Guid tenantId, Guid requestedBy, CancellationToken cancellationToken = default)
     {
