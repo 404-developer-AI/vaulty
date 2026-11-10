@@ -44,7 +44,12 @@ else
     <MudGrid Spacing="3">
         <MudItem xs="12" md="3">
             <MudPaper Elevation="0" Outlined="true" Class="pa-2 vy-tree">
-                <MudTreeView T="string" Items="_tree" SelectionMode="SelectionMode.SingleSelection" SelectedValue="_folder" SelectedValueChanged="SelectFolderAsync" Dense="true" />
+                @* MudBlazor renders nothing for Items without an ItemTemplate; the template is required. *@
+                <MudTreeView T="string" Items="_tree" SelectionMode="SelectionMode.SingleSelection" SelectedValue="_folder" SelectedValueChanged="SelectFolderAsync" Dense="true">
+                    <ItemTemplate>
+                        <MudTreeViewItem @bind-Expanded="@context.Expanded" Items="@context.Children" Value="@context.Value" Text="@context.Text" Icon="@context.Icon" />
+                    </ItemTemplate>
+                </MudTreeView>
             </MudPaper>
         </MudItem>
         <MudItem xs="12" md="@(_detail is null ? 9 : 5)">

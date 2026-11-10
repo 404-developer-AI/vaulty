@@ -119,6 +119,27 @@ public sealed class CliTests
         new(host, answers ?? Answers, Host, FakeHost.Release, "0.1.0", log ?? TextWriter.Null) { SignatureVerified = true };
 
     [Fact]
+    public void Every_tree_view_in_the_web_app_has_an_item_template()
+    {
+        // MudBlazor renders nothing for a tree view that gets Items without an ItemTemplate: the snapshot browser showed an
+        // empty folder tree for a mailbox of 16 folders, without any error.
+        var pages = Directory.GetFiles(Path.Combine(FakeHost.Repository, "src", "Vaulty.Web"), "*.razor", SearchOption.AllDirectories);
+        var trees = 0;
+        foreach (var page in pages)
+        {
+            var text = File.ReadAllText(page);
+            foreach (System.Text.RegularExpressions.Match tree in System.Text.RegularExpressions.Regex.Matches(text, @"<MudTreeView\b[^>]*?(/?)>"))
+            {
+                trees++;
+                Assert.True(tree.Groups[1].Value != "/" && text.IndexOf("<ItemTemplate>", tree.Index, StringComparison.Ordinal) is > 0 and var at
+                            && at < text.IndexOf("</MudTreeView>", tree.Index, StringComparison.Ordinal),
+                    $"{Path.GetFileName(page)}: a MudTreeView needs an ItemTemplate, or it renders no items");
+            }
+        }
+        Assert.True(trees > 0);
+    }
+
+    [Fact]
     public void The_shared_appsettings_files_name_no_database_user()
     {
         // Every service of a release reads the same bin/appsettings.json. A connection string there would make the workers

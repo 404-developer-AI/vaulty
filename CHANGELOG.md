@@ -199,6 +199,8 @@ All notable changes to this project are documented in this file. The format foll
   every job. The installer test fails when a service cannot sign in.
 - Empty storage keys are refused with a message by the storage page and the setup service, instead of ending the page;
   the connection test reports a stored key it cannot use.
+- The snapshot browser shows the folder tree again: the tree view had no item template, and MudBlazor renders no items
+  without one. A test requires an item template for every tree view of the web app.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.
