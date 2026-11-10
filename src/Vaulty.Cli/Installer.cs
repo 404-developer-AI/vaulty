@@ -215,7 +215,7 @@ public static class InstallSteps
     {
         if (c.Answers.DataDisk is not { } device)
         {
-            c.Shell.CreateDirectory(Paths.Data, RwxRx);
+            c.Shell.CreateDirectory(Paths.Data, Public);
         }
         else if (!(await c.Shell.RunAsync("findmnt", ["-n", Paths.Data], cancellationToken: ct).ConfigureAwait(false)).Succeeded)
         {
@@ -242,7 +242,7 @@ public static class InstallSteps
             {
                 await c.Shell.RunCheckedAsync("mkfs.ext4", ["-q", "-L", "vaulty-data", target], cancellationToken: ct).ConfigureAwait(false);
             }
-            c.Shell.CreateDirectory(Paths.Data, RwxRx);
+            c.Shell.CreateDirectory(Paths.Data, Public);
             c.Shell.WriteFile("/etc/fstab", Upsert(c, "/etc/fstab", Paths.Data, $"{target} {Paths.Data} ext4 defaults,noatime,nofail 0 2"), RwR);
             await c.Shell.RunCheckedAsync("mount", [Paths.Data], cancellationToken: ct).ConfigureAwait(false);
         }
@@ -283,8 +283,11 @@ public static class InstallSteps
         }
         if (!c.Shell.DirectoryExists(Paths.PgConf))
         {
+            // The data disk root stays traversable (0755, root); PostgreSQL's own tree is 0700 and owned by postgres.
+            await c.Shell.RunCheckedAsync("chmod", ["0755", Paths.Data], cancellationToken: ct).ConfigureAwait(false);
             c.Shell.CreateDirectory(Paths.Parent(Paths.PgData), Rwx);
             await c.Shell.RunCheckedAsync("chown", ["-R", "postgres:postgres", $"{Paths.Data}/postgresql"], cancellationToken: ct).ConfigureAwait(false);
+            await c.Shell.RunCheckedAsync("chmod", ["-R", "0700", $"{Paths.Data}/postgresql"], cancellationToken: ct).ConfigureAwait(false);
             await c.Shell.RunCheckedAsync("pg_createcluster", ["17", "main", "-d", Paths.PgData, "--", "--data-checksums", "--encoding=UTF8", "--locale=C.UTF-8"],
                 cancellationToken: ct).ConfigureAwait(false);
         }

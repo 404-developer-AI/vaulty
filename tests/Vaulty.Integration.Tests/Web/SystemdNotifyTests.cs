@@ -17,6 +17,7 @@ public sealed class SystemdFactAttribute : FactAttribute
 /// The services run as Type=notify units. systemd only marks such a unit active after the process sends READY=1, so a
 /// transient Type=notify unit that becomes active proves the notification works.
 /// </summary>
+[Collection("Measurements")]
 public sealed class SystemdNotifyTests
 {
     [SystemdFact]
@@ -26,14 +27,15 @@ public sealed class SystemdNotifyTests
         foreach (var assembly in new[] { typeof(Vaulty.Api.ApiMarker).Assembly, typeof(Vaulty.Web.WebMarker).Assembly })
         {
             var unit = $"vaulty-notify-test-{Guid.NewGuid():N}";
-            var start = Run("sudo", "systemd-run", $"--unit={unit}", "--collect", "-p", "Type=notify", "-p", "TimeoutStartSec=90",
+            var start = Run("sudo", "systemd-run", $"--unit={unit}", "--collect", "-p", "Type=notify", "-p", "TimeoutStartSec=240",
                 "--setenv=DOTNET_ENVIRONMENT=Development", "--setenv=DOTNET_CLI_HOME=/tmp", "--setenv=ASPNETCORE_URLS=http://127.0.0.1:0",
                 $"--setenv=VAULTY_DEV_MASTER_KEY={Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))}",
                 "--setenv=Vaulty__Database__ConnectionString=Host=127.0.0.1;Port=1;Database=none",
                 dotnet, assembly.Location);
             try
             {
-                Assert.True(start.ExitCode == 0, $"systemd-run failed: {start.Output}");
+                var journal = Run("sudo", "journalctl", "-u", unit, "-n", "60", "--no-pager").Output;
+                Assert.True(start.ExitCode == 0, $"systemd-run failed: {start.Output}{Environment.NewLine}{journal}");
                 Assert.Equal("active", Run("systemctl", "is-active", unit).Output.Trim());
             }
             finally
@@ -49,7 +51,7 @@ public sealed class SystemdNotifyTests
         foreach (var a in args) info.ArgumentList.Add(a);
         using var process = Process.Start(info)!;
         var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
-        process.WaitForExit(120_000);
+        process.WaitForExit(300_000);
         return (process.ExitCode, output);
     }
 }

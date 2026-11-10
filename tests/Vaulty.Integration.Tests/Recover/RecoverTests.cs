@@ -71,12 +71,15 @@ public sealed class RecoverTests(TemporalFixture fixture, ITestOutputHelper outp
         Assert.Contains(platform.Keys, k => k.EndsWith(".vcf", StringComparison.Ordinal));
 
         // Recovery: only the object store and the master key. No connection string anywhere.
-        var outDir = Path.Combine(Path.GetTempPath(), "vaulty-recover-" + Guid.NewGuid().ToString("N"));
+        // Everything of this test in one private directory: other tests count the files directly in the temp folder.
+        var work = Path.Combine(Path.GetTempPath(), "vaulty-recover-" + Guid.NewGuid().ToString("N"));
+        var outDir = Path.Combine(work, "out");
         try
         {
-            var keyFile = Path.Combine(Path.GetTempPath(), "vaulty-recover-key-" + Guid.NewGuid().ToString("N"));
+            var keyFile = Path.Combine(work, "master-key");
+            Directory.CreateDirectory(work);
             await File.WriteAllTextAsync(keyFile, Convert.ToBase64String(harness.MasterKey));
-            var storeCopy = Path.Combine(outDir + "-store");
+            var storeCopy = Path.Combine(work, "store");
             foreach (var key in harness.Store.Keys)
             {
                 var path = Path.Combine(storeCopy, key.Replace('/', Path.DirectorySeparatorChar));
@@ -104,8 +107,7 @@ public sealed class RecoverTests(TemporalFixture fixture, ITestOutputHelper outp
         }
         finally
         {
-            if (Directory.Exists(outDir)) Directory.Delete(outDir, recursive: true);
-            if (Directory.Exists(outDir + "-store")) Directory.Delete(outDir + "-store", recursive: true);
+            if (Directory.Exists(work)) Directory.Delete(work, recursive: true);
         }
     }
 
