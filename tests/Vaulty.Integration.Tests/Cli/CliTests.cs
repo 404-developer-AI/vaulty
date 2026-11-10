@@ -9,7 +9,7 @@ internal sealed class FakeHost : IHostShell
     public const string Release = "/opt/vaulty/releases/0.1.0";
     public const string NextRelease = "/opt/vaulty/releases/0.1.1";
     public static readonly string SetupToken = new('c', 40);
-    private static readonly string Repository = FindRepository();
+    internal static readonly string Repository = FindRepository();
 
     public Dictionary<string, string> Files { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> Links { get; } = new(StringComparer.Ordinal);
@@ -117,6 +117,23 @@ public sealed class CliTests
 
     private static InstallContext Context(FakeHost host, TextWriter? log = null, InstallAnswers? answers = null) =>
         new(host, answers ?? Answers, Host, FakeHost.Release, "0.1.0", log ?? TextWriter.Null) { SignatureVerified = true };
+
+    [Fact]
+    public void The_shared_appsettings_files_name_no_database_user()
+    {
+        // Every service of a release reads the same bin/appsettings.json. A connection string there would make the workers
+        // and the garbage collector sign in as another service's database role, which peer authentication refuses.
+        var files = Directory.GetFiles(Path.Combine(FakeHost.Repository, "src"), "appsettings*.json", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                        && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .ToList();
+        Assert.NotEmpty(files);
+        foreach (var file in files)
+        {
+            var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!;
+            Assert.True(root["Vaulty"]?["Database"] is null, $"{file} sets Vaulty:Database; each service chooses its own database role");
+        }
+    }
 
     [Fact]
     public void The_example_answers_file_parses_and_validates()

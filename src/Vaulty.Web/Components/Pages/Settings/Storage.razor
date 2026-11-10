@@ -175,8 +175,17 @@
         return false;
     }
 
+    // An empty key would reach the storage SDK, which throws instead of answering: every key is checked here first.
+    private bool Missing(params string?[] values)
+    {
+        if (values.All(v => !string.IsNullOrWhiteSpace(v))) return false;
+        Snackbar.Add("Enter every access key and secret key.", Severity.Warning);
+        return true;
+    }
+
     private async Task RunAssistantAsync()
     {
+        if (Missing(_adminKeyId, _adminSecret)) return;
         if (!await ConfirmedAsync()) return;
         _busy = true;
         using var adminSecret = new Secret("storage.admin", 0, System.Text.Encoding.UTF8.GetBytes(_adminSecret ?? ""));
@@ -199,6 +208,7 @@
 
     private async Task SaveManualAsync()
     {
+        if (Missing([.. Enum.GetValues<StorageRole>().SelectMany(r => new[] { _manualIds[r], _manualSecrets[r] })])) return;
         if (!await ConfirmedAsync()) return;
         _busy = true;
         var keys = Enum.GetValues<StorageRole>().ToDictionary(r => r,
@@ -223,6 +233,7 @@
 
     private async Task RotateAsync()
     {
+        if (Missing(_adminKeyId, _adminSecret)) return;
         if (!await ConfirmedAsync()) return;
         _busy = true;
         using var adminSecret = new Secret("storage.admin", 0, System.Text.Encoding.UTF8.GetBytes(_adminSecret ?? ""));
@@ -253,6 +264,11 @@
             var result = await new StorageConnectionTest(Clock).RunAsync(_settings, inspector);
             _settings = _settings with { LastTest = result };
             await Settings.SetAsync(StorageSettings.SettingKey, _settings, _actor);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Amazon.Runtime.AmazonClientException)
+        {
+            // A stored key that is empty or missing: show it instead of ending the page.
+            Snackbar.Add($"The connection test could not start: {ex.Message} Enter the keys again.", Severity.Error);
         }
         finally
         {

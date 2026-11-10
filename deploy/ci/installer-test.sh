@@ -74,6 +74,13 @@ for path in /metrics /healthz/ready; do
   [ "$code" = "404" ] || fail "${path} answers ${code} from outside the host"
 done
 
+step "every service signs in to PostgreSQL with its own role"
+sleep 5
+if sudo journalctl -u 'vaulty-worker@*' -u vaulty-gc -u vaulty-web -u vaulty-api --since "-15min" --no-pager | grep -q "authentication failed"; then
+  sudo journalctl -u 'vaulty-worker@*' -u vaulty-gc --since "-15min" --no-pager | grep "authentication failed" | head -3
+  fail "a service could not sign in to PostgreSQL"
+fi
+
 step "report present with mode 0600"
 report=$(sudo sh -c 'ls /root/vaulty-install-report-*.txt' | head -1)
 [ -n "$report" ] || fail "no installation report"

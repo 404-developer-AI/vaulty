@@ -37,6 +37,7 @@ public sealed partial class StorageSetupAssistant(ISecretStore secrets, Platform
         string actor, StorageEndpoints? endpoints = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(adminSecretKey);
+        RequireAdminKey(adminAccessKeyId, adminSecretKey);
         if (!WasabiRegions.Eu.ContainsKey(region)) throw new StorageSetupException($"Region {region} is not an EU region.");
         if (!PrefixPattern().IsMatch(bucketPrefix)) throw new StorageSetupException("Use 3 to 42 lower-case letters, digits and hyphens for the bucket prefix.");
         endpoints ??= StorageEndpoints.Wasabi(region);
@@ -126,6 +127,14 @@ public sealed partial class StorageSetupAssistant(ISecretStore secrets, Platform
     }
 
     /// <summary>The manual route: existing buckets and one key pair per identity, entered by the administrator.</summary>
+    private static void RequireAdminKey(string adminAccessKeyId, Secret adminSecretKey)
+    {
+        if (string.IsNullOrWhiteSpace(adminAccessKeyId) || adminSecretKey.Reveal().IsEmpty)
+        {
+            throw new StorageSetupException("Enter the access key and the secret key of the administrative identity.");
+        }
+    }
+
     public async Task SaveManualAsync(string region, string backupBucket, string exportBucket,
         IReadOnlyDictionary<StorageRole, (string AccessKeyId, Secret SecretKey)> keys, string actor, string? serviceUrl = null,
         CancellationToken cancellationToken = default)
@@ -133,6 +142,11 @@ public sealed partial class StorageSetupAssistant(ISecretStore secrets, Platform
         ArgumentNullException.ThrowIfNull(keys);
         if (!WasabiRegions.Eu.ContainsKey(region)) throw new StorageSetupException($"Region {region} is not an EU region.");
         if (keys.Count != 3) throw new StorageSetupException("Enter a key for each of the three identities.");
+        if (keys.Values.Any(k => string.IsNullOrWhiteSpace(k.AccessKeyId) || k.SecretKey.Reveal().IsEmpty))
+        {
+            throw new StorageSetupException("Enter the access key and the secret key of each of the three identities.");
+        }
+        if (string.IsNullOrWhiteSpace(backupBucket) || string.IsNullOrWhiteSpace(exportBucket)) throw new StorageSetupException("Enter both bucket names.");
         foreach (var (role, (_, secret)) in keys)
         {
             await secrets.SetAsync(StorageSettings.SecretName(role), secret.Reveal().ToArray(), actor, cancellationToken).ConfigureAwait(false);
@@ -150,6 +164,7 @@ public sealed partial class StorageSetupAssistant(ISecretStore secrets, Platform
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(adminSecretKey);
+        RequireAdminKey(adminAccessKeyId, adminSecretKey);
         var current = await settings.GetAsync<StorageSettings>(StorageSettings.SettingKey, cancellationToken).ConfigureAwait(false)
                       ?? throw new StorageSetupException("Storage is not configured.");
         var identity = current.Identities[role];

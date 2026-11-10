@@ -50,6 +50,24 @@ public sealed class StorageSetupTests(PostgresDatabase db) : IClassFixture<Postg
     }
 
     [PostgresFact]
+    public async Task Empty_keys_are_refused_with_a_message_and_nothing_is_stored()
+    {
+        await using var dataSource = VaultyDataSource.Create(db.Api);
+        var secrets = new PostgresSecretStore(dataSource, new SecretCipher(RandomNumberGenerator.GetBytes(32), "host-a"), TimeProvider.System, TimeSpan.Zero);
+        var settings = new PlatformSettings(dataSource);
+        var assistant = new StorageSetupAssistant(secrets, settings, new CapturingLogger());
+        using var empty = new Secret("storage.admin", 0, ReadOnlySpan<byte>.Empty);
+        using var filled = new Secret("storage.manual", 0, "EXAMPLESECRET"u8);
+
+        await Assert.ThrowsAsync<StorageSetupException>(() => assistant.RunAsync("eu-central-2", "vaulty-test", "EXAMPLEADMINKEY", empty, "test"));
+        await Assert.ThrowsAsync<StorageSetupException>(() => assistant.RunAsync("eu-central-2", "vaulty-test", " ", filled, "test"));
+        var keys = Enum.GetValues<StorageRole>().ToDictionary(r => r, r => ("EXAMPLEACCESSKEY", r == StorageRole.Gc ? empty : filled));
+        var refused = await Assert.ThrowsAsync<StorageSetupException>(() => assistant.SaveManualAsync("eu-central-2", "b", "e", keys, "test"));
+        Assert.Contains("secret key", refused.Message, StringComparison.Ordinal);
+        Assert.Null(await secrets.GetAsync(StorageSettings.SecretName(StorageRole.Worker)));
+    }
+
+    [PostgresFact]
     public async Task The_assistant_creates_buckets_and_identities_with_exactly_the_specified_policies()
     {
         MockProvider();

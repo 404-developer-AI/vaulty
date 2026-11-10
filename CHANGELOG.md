@@ -194,6 +194,11 @@ All notable changes to this project are documented in this file. The format foll
   from the certificate itself: Microsoft refused the key when the end date carried a fraction of a second. The
   onboarding script checks for the Microsoft Graph PowerShell SDK first and refuses to create a second app
   registration with the same name.
+- Workers and garbage collection sign in to PostgreSQL with their own roles again: the shared `appsettings.json` no
+  longer names a database user, which since the services run in `bin` made them all sign in as the API role and stopped
+  every job. The installer test fails when a service cannot sign in.
+- Empty storage keys are refused with a message by the storage page and the setup service, instead of ending the page;
+  the connection test reports a stored key it cannot use.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.
