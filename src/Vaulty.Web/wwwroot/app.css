@@ -137,3 +137,7 @@ h1:focus, h1:focus-visible { outline: none; }
 .mud-input-control { margin-bottom: 4px; }
 .mud-input-helper-text { font-size: 0.75rem; }
 .mud-nav-link { font-size: 0.9rem; padding-top: 9px !important; padding-bottom: 9px !important; border-radius: var(--vy-radius); margin: 1px 8px; }
+/* Status chips and actions keep to one line in a table; long names wrap instead. */
+.vy-status, .vy-nowrap { white-space: nowrap; }
+.mud-table .mud-button-root { white-space: nowrap; }
+.mud-table .mud-table-cell .mud-link { overflow-wrap: anywhere; }

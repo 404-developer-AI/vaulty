@@ -216,6 +216,7 @@ All notable changes to this project are documented in this file. The format foll
   key/value tables inside a panel stay flat.
 - Detail pages (customer, tenant, protected object, snapshot, restore) show a loading bar while they load, instead of
   saying for a moment that the item does not exist.
+- Status chips, table buttons and backup times stay on one line in tables; long names wrap instead.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

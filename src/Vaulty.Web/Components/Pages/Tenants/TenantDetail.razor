@@ -151,7 +151,7 @@ else
                         break;
                 }
             </MudTd>
-            <MudTd>@(context.LastBackupAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "")</MudTd>
+            <MudTd Class="vy-nowrap">@(context.LastBackupAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "")</MudTd>
             <MudTd>
                 @if (_canHold)
                 {
