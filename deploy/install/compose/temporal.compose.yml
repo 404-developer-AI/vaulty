@@ -75,9 +75,12 @@ services:
     container_name: vaulty-valkey
     network_mode: host
     restart: unless-stopped
+    # Runs as the image's valkey user from the start: its entrypoint would otherwise switch users, which needs
+    # capabilities this container does not have.
+    user: "999:999"
     read_only: true
     tmpfs:
-      - /data
+      - /data:uid=999,gid=999,mode=0700
     security_opt:
       - no-new-privileges:true
     cap_drop:

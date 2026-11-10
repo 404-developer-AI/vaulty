@@ -11,7 +11,7 @@ using Vaulty.Infrastructure.Web;
 // with API keys follows later. Shares the session cookie with the web app through the common key ring.
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddVaultyConfigFile();
-builder.Services.AddSystemd();
+builder.Services.AddVaultySystemd();
 builder.Host.UseSerilog((_, configuration) => configuration
     .MinimumLevel.Information()
     .Destructure.With<SecretDestructuringPolicy>()

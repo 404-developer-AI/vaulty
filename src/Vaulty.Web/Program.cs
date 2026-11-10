@@ -12,7 +12,7 @@ using Vaulty.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddVaultyConfigFile();
-builder.Services.AddSystemd();
+builder.Services.AddVaultySystemd();
 builder.Host.UseSerilog((context, configuration) => configuration
     .MinimumLevel.Information()
     .Destructure.With<SecretDestructuringPolicy>()
