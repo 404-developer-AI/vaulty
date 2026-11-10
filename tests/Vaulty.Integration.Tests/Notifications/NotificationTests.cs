@@ -293,7 +293,7 @@ public sealed class NotificationTests(PostgresDatabase db) : IClassFixture<Postg
         {
             Assert.True(WebhookSender.IsInternal(IPAddress.Parse(internalAddress)), internalAddress);
         }
-        Assert.False(WebhookSender.IsInternal(IPAddress.Parse("93.184.216.34")));
+        Assert.False(WebhookSender.IsInternal(IPAddress.Parse("203.0.113.10")));
 
         // A host name that resolves to loopback is refused when connecting, not only when the URL is checked.
         using var sender = new WebhookSender(TimeProvider.System);

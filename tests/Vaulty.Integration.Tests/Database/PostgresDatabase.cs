@@ -75,7 +75,8 @@ public sealed class PostgresDatabase : IAsyncLifetime
                 """);
         }
 
-        await Infrastructure.Database.DatabaseMigrator.MigrateAsync(Migrator);
+        // Migrations create many partitions; on a busy test machine they need more than the default 30 seconds.
+        await Infrastructure.Database.DatabaseMigrator.MigrateAsync(new NpgsqlConnectionStringBuilder(Migrator) { CommandTimeout = 600 }.ConnectionString);
     }
 
     public async Task DisposeAsync()

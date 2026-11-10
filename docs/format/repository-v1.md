@@ -118,6 +118,22 @@ content: size (8) | content hash (32) | chunk count (4) | chunk ids (32 each)
 
 The content hash is keyed BLAKE3 (`chunk-id` key) of the item's complete plaintext.
 
+The metadata JSON object may hold the reserved key `_vaulty` with what a restore needs beyond the metadata itself, so
+object storage alone is enough to rebuild an item (all fields optional):
+
+```json
+"_vaulty": {
+  "modified_at": "2026-11-10T08:00:00.0000000Z",
+  "limited_fidelity": true,
+  "preview": { "size": 1234, "hash": "<64 hex>", "type": "text/html", "chunks": ["<64 hex>", "..."] }
+}
+```
+
+`preview` references a separately stored rendition of the item (the body of a message), chunked and encrypted like any
+content; `limited_fidelity` marks content that is a MIME copy instead of the source's own export format. Readers ignore
+unknown fields inside `_vaulty` and remove the key before showing or exporting metadata. Adding it changed no byte of
+the binary layout; manifests without it stay valid.
+
 ## 7. Snapshot body
 
 ```
@@ -137,6 +153,11 @@ after the packs they reference); the snapshot root; finally `LATEST`. The snapsh
 that starts from object storage alone lists `indexes/` to rebuild the chunk index, lists `snapshots/{object}/` to find
 snapshots, and ignores packs that no index references (left by a crash before the index was written; removed by
 garbage collection once their lock expires).
+
+`vaulty-recover` (project `Vaulty.Recover`) is this reader: with read access to the bucket (or a local copy), the data
+key files under `keys/` and the host master key it unwraps the keys, rebuilds the index, picks the newest committed or
+partial snapshot of every protected object and writes each item exactly as an export through the platform does,
+authenticating every chunk and checking every content hash on the way.
 
 ## 9. Test vectors
 

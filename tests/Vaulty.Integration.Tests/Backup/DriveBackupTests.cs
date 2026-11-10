@@ -21,7 +21,7 @@ namespace Vaulty.Integration.Tests.Backup;
 
 public sealed class DriveBackupTests(TemporalFixture fixture, ITestOutputHelper output) : IClassFixture<TemporalFixture>
 {
-    private static Func<string, byte[]?> Source(DriveSimulator simulator) => id =>
+    internal static Func<string, byte[]?> Source(DriveSimulator simulator) => id =>
     {
         var at = id.IndexOf('@', StringComparison.Ordinal);
         if (at < 0) return simulator.Nodes.TryGetValue(id, out var node) && !node.IsFolder ? node.Data : null;

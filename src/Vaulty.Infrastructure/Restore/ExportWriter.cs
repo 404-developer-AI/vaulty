@@ -16,13 +16,18 @@ public sealed record ExportEntry(Guid ItemId, string SourceId, string Kind, stri
 /// </summary>
 public sealed class ExportWriter : IAsyncDisposable
 {
-    private readonly ZipArchive _zip;
+    private readonly IExportTarget _target;
     private readonly HashSet<string> _names = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<object> _manifest = [];
 
-    public ExportWriter(Stream output)
+    public ExportWriter(Stream output) : this(new ZipExportTarget(output))
     {
-        _zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true, Encoding.UTF8);
+    }
+
+    public ExportWriter(IExportTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        _target = target;
     }
 
     public int Entries { get; private set; }
@@ -53,14 +58,14 @@ public sealed class ExportWriter : IAsyncDisposable
                     (state, detail, path) = ("failed", "The file has no stored content.", null);
                     break;
                 }
-                await using (var entry = _zip.CreateEntry(path, CompressionLevel.NoCompression).Open()) await writeContent(entry).ConfigureAwait(false);
+                await using (var entry = _target.Create(path)) await writeContent(entry).ConfigureAwait(false);
                 break;
             }
             case "mail":
             {
                 var subject = Text(meta, "subject");
                 path = Unique(Join(item.RelativePath, $"{(string.IsNullOrWhiteSpace(subject) ? "(no subject)" : subject)} {Short(item.SourceId)}.eml"));
-                await using var entry = _zip.CreateEntry(path, CompressionLevel.NoCompression).Open();
+                await using var entry = _target.Create(path);
                 if (item.LimitedFidelity && item.Content is not null)
                 {
                     await writeContent(entry).ConfigureAwait(false); // the stored MIME, exactly as backed up
@@ -68,7 +73,7 @@ public sealed class ExportWriter : IAsyncDisposable
                 else
                 {
                     // Full-fidelity items are stored in Exchange's own export format; the EML is rebuilt from the stored headers and body.
-                    var message = Message(meta, await readPreview().ConfigureAwait(false), item.PreviewType);
+                    var message = Message(item, meta, await readPreview().ConfigureAwait(false), item.PreviewType);
                     await message.WriteToAsync(entry).ConfigureAwait(false);
                     detail = "Exported from the stored headers and body; attachments are restored with a restore, not in EML.";
                 }
@@ -78,7 +83,7 @@ public sealed class ExportWriter : IAsyncDisposable
             {
                 var subject = Text(meta, "subject");
                 path = Unique(Join(item.RelativePath, $"{(string.IsNullOrWhiteSpace(subject) ? "(no subject)" : subject)} {Short(item.SourceId)}.ics"));
-                await using var entry = _zip.CreateEntry(path, CompressionLevel.NoCompression).Open();
+                await using var entry = _target.Create(path);
                 var bytes = Encoding.UTF8.GetBytes(Calendar(item, meta, await readPreview().ConfigureAwait(false)));
                 await entry.WriteAsync(bytes).ConfigureAwait(false);
                 break;
@@ -87,7 +92,7 @@ public sealed class ExportWriter : IAsyncDisposable
             {
                 var name = Text(meta, "subject");
                 path = Unique(Join(item.RelativePath, $"{(string.IsNullOrWhiteSpace(name) ? "(no name)" : name)} {Short(item.SourceId)}.vcf"));
-                await using var entry = _zip.CreateEntry(path, CompressionLevel.NoCompression).Open();
+                await using var entry = _target.Create(path);
                 await entry.WriteAsync(Encoding.UTF8.GetBytes(Card(meta))).ConfigureAwait(false);
                 break;
             }
@@ -97,25 +102,21 @@ public sealed class ExportWriter : IAsyncDisposable
                 break;
         }
         if (path is not null) Entries++;
-        _manifest.Add(new { item_id = item.ItemId, source_id = item.SourceId, kind = item.Kind, path, state, detail, metadata = meta.Clone() });
+        _manifest.Add(new { item_id = item.ItemId, source_id = item.SourceId, kind = item.Kind, path, state, detail, metadata = Backup.RecoveryMetadata.Strip(meta) });
         return new ExportEntry(item.ItemId, item.SourceId, item.Kind, path, state, detail);
     }
 
     /// <summary>Writes manifest.json and the zip directory. The output stream stays open.</summary>
     public async Task FinishAsync()
     {
-        await using (var entry = _zip.CreateEntry("manifest.json", CompressionLevel.NoCompression).Open())
+        await using (var entry = _target.Create("manifest.json"))
         {
             await JsonSerializer.SerializeAsync(entry, _manifest, new JsonSerializerOptions { WriteIndented = true }).ConfigureAwait(false);
         }
-        _zip.Dispose();
+        await _target.CompleteAsync().ConfigureAwait(false);
     }
 
-    public ValueTask DisposeAsync()
-    {
-        _zip.Dispose();
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask DisposeAsync() => _target.DisposeAsync();
 
     /// <summary>One path segment that is safe on Windows, macOS and Linux.</summary>
     public static string SafeSegment(string? name)
@@ -165,9 +166,16 @@ public sealed class ExportWriter : IAsyncDisposable
     private static DateTimeOffset? Date(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.TryGetDateTimeOffset(out var d) ? d : null;
 
-    private static MimeMessage Message(JsonElement meta, string? body, string? bodyType)
+    /// <summary>
+    /// The EML of a full-fidelity message. Deterministic: the same item always gives the same bytes (an export through the
+    /// platform and a rebuild with the Recover CLI match), so the Message-Id is the original one or derived from the item.
+    /// </summary>
+    private static MimeMessage Message(PendingItem item, JsonElement meta, string? body, string? bodyType)
     {
         var message = new MimeMessage { Subject = Text(meta, "subject") ?? "" };
+        message.MessageId = Text(meta, "internet_message_id")?.Trim('<', '>')
+                            ?? $"{Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(item.SourceId)).AsSpan(0, 16))}@export.vaulty.invalid";
+        message.Date = item.ModifiedAt;
         if (Text(meta, "from") is { } from && MailboxAddress.TryParse(from, out var sender)) message.From.Add(sender);
         foreach (var to in List(meta, "to"))
         {
@@ -209,5 +217,88 @@ public sealed class ExportWriter : IAsyncDisposable
         foreach (var email in List(meta, "to")) text.Append(CultureInfo.InvariantCulture, $"EMAIL:{Escape(email)}\r\n");
         text.Append("END:VCARD\r\n");
         return text.ToString();
+    }
+}
+
+/// <summary>Where an export goes: one stream per relative path ("folder/name.eml"), written in order.</summary>
+public interface IExportTarget : IAsyncDisposable
+{
+    Stream Create(string path);
+
+    Task CompleteAsync();
+}
+
+/// <summary>A zip in store mode, streamed into the output (the export bucket upload); the output stays open.</summary>
+public sealed class ZipExportTarget(Stream output) : IExportTarget
+{
+    private readonly ZipArchive _zip = new(output, ZipArchiveMode.Create, leaveOpen: true, Encoding.UTF8);
+
+    public Stream Create(string path) => _zip.CreateEntry(path, CompressionLevel.NoCompression).Open();
+
+    public Task CompleteAsync()
+    {
+        _zip.Dispose();
+        return Task.CompletedTask;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _zip.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Plain files under a directory (the Recover CLI). Each file is written as "name.partial" and gets its real name only when
+/// the next item starts or the export completes, so an item whose content fails verification (and is discarded) never
+/// leaves a file that looks whole. Paths can never leave the directory.
+/// </summary>
+public sealed class DirectoryExportTarget : IExportTarget
+{
+    private readonly string _root;
+    private string? _current;
+
+    public DirectoryExportTarget(string root)
+    {
+        _root = Path.GetFullPath(root);
+        Directory.CreateDirectory(_root);
+    }
+
+    public Stream Create(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        Promote();
+        var full = Path.GetFullPath(Path.Combine(_root, path.Replace('/', Path.DirectorySeparatorChar)));
+        var relative = Path.GetRelativePath(_root, full);
+        if (relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) || Path.IsPathRooted(relative))
+        {
+            throw new InvalidDataException($"The path {path} leaves the output directory.");
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        _current = full;
+        return new FileStream(full + ".partial", FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+    }
+
+    /// <summary>Removes the file of the item that was being written (after a verification failure).</summary>
+    public void DiscardCurrent()
+    {
+        if (_current is null) return;
+        File.Delete(_current + ".partial");
+        _current = null;
+    }
+
+    public Task CompleteAsync()
+    {
+        Promote();
+        return Task.CompletedTask;
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private void Promote()
+    {
+        if (_current is null) return;
+        File.Move(_current + ".partial", _current);
+        _current = null;
     }
 }

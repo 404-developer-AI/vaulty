@@ -160,11 +160,16 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
         ArgumentNullException.ThrowIfNull(versions);
         if (versions.Count == 0) return;
         await using var session = await Session(target, cancellationToken).ConfigureAwait(false);
+        var stagedAt = clock.GetUtcNow();
         var rows = versions.Select(v => new
         {
             target.OrganizationId, target.TenantId, id = Guid.CreateVersion7(), target.ProtectedObjectId, target.SnapshotId,
-            v.SourceId, v.ParentSourceId, v.Kind, sealedMetadata = MetadataSealer.Seal(keys, target.ProtectedObjectId, v.SourceId, v.MetadataJson),
-            contentHash = v.Content?.ContentHash, size = v.Content?.Size ?? v.Size, v.ModifiedAt,
+            v.SourceId, v.ParentSourceId, v.Kind,
+            // Object storage alone must hold what a restore needs: the preview reference, limited fidelity and the source's own
+            // modification time (never the staging time, so a retried or resumed run seals exactly the same metadata).
+            sealedMetadata = MetadataSealer.Seal(keys, target.ProtectedObjectId, v.SourceId,
+                RecoveryMetadata.Embed(v.MetadataJson, v.Preview, v.Preview is null ? null : v.PreviewType, v.LimitedFidelity, v.ModifiedAt)),
+            contentHash = v.Content?.ContentHash, size = v.Content?.Size ?? v.Size, ModifiedAt = v.ModifiedAt ?? stagedAt,
             chunks = v.Content is null ? null : v.Content.Chunks.SelectMany(c => c.Value).ToArray(), v.ChangeKey, v.LimitedFidelity,
             searchText = Browse.SearchText.Normalize(v.SearchText), previewChunks = v.Preview is null ? null : v.Preview.Chunks.SelectMany(c => c.Value).ToArray(),
             previewHash = v.Preview?.ContentHash, previewSize = v.Preview?.Size, previewType = v.Preview is null ? null : v.PreviewType,

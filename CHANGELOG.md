@@ -131,10 +131,21 @@ All notable changes to this project are documented in this file. The format foll
   attention.
 - Metrics: OpenTelemetry metrics in the workers (exported when an OTLP endpoint is set) and `/metrics` in Prometheus
   format on the API, reachable from the host only, aggregated without customer, tenant or object names.
+- Recover CLI (`vaulty-recover`): rebuilds a tenant from object storage alone, without the database. With read access to
+  the backup bucket (or a local copy) and the master key's recovery copy it unwraps the data keys from their key files,
+  rebuilds the chunk index from the index files, takes the newest snapshot of every protected object (or a chosen one)
+  and writes every item exactly as an export through the platform does: messages as EML, events as ICS, contacts as VCF,
+  files as they are, a manifest per snapshot and a report per item. Every chunk is authenticated and every content hash
+  checked; an item that fails is reported and never written half.
 
 ### Changed
 
 - The repository engine reuses one pack buffer per writer and pooled chunk buffers, so streaming a 2 GB file adds less
   than 30 MB of memory. The stored format is unchanged.
+- Each item's sealed metadata now also holds the reference to its stored preview, its limited-fidelity flag and its
+  modification time (reserved key `_vaulty`, see `docs/format/repository-v1.md`), so object storage alone holds what a
+  restore needs. The binary format is unchanged.
+- Exported messages are deterministic: the original Message-Id (or one derived from the item) and the item's own date,
+  so the same snapshot always exports to the same bytes.
 - The verifier and garbage collector run in the worker host with `--role gc` under the gc database role and storage
   identity; the worker processes serve only the backup and restore queues.
