@@ -367,6 +367,28 @@ public sealed class RetentionTests(PostgresDatabase db, ITestOutputHelper output
     }
 
     [PostgresFact]
+    public async Task A_tenant_that_holds_a_backup_cannot_be_removed_at_once()
+    {
+        await using var history = new History(db, DateTimeOffset.UtcNow);
+        var random = new Random(21);
+        await history.SeedAsync(objects: 1, random);
+        var (objectId, retention) = history.Objects[0];
+        await history.BackupAsync(objectId, retention, 0, random);
+        await using var api = VaultyDataSource.Create(db.Api);
+        var deletion = new TenantDeletion(api, history.Clock);
+        var admin = new UserAccess(Guid.NewGuid(), history.Org, true, Permissions.All.ToDictionary(p => p.Key, _ => (HashSet<Guid>?)null));
+
+        Assert.True((await deletion.StateAsync(admin, history.Tenant)).HoldsBackups);
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => deletion.RemoveUnusedAsync(admin, true, history.Tenant));
+        Assert.Contains("holds backups", refused.Message, StringComparison.Ordinal);
+        // Also while a deletion is requested: the waiting period and the second administrator still apply.
+        await deletion.RequestAsync(admin, true, history.Tenant);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => deletion.RemoveUnusedAsync(admin, true, history.Tenant));
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        Assert.Equal("deletion_requested", await owner.ExecuteScalarAsync<string>("SELECT state FROM vaulty.tenants WHERE id = @t", new { t = history.Tenant }));
+    }
+
+    [PostgresFact]
     public async Task A_snapshot_with_far_fewer_items_than_the_previous_one_raises_a_drift_alert()
     {
         await using var history = new History(db, DateTimeOffset.UtcNow);

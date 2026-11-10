@@ -51,7 +51,22 @@ else
                 {
                     <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="CompleteRotationAsync" Disabled="_busy">Confirm the new certificate</MudButton>
                 }
+                <MudButton Class="ml-2" Variant="Variant.Text" OnClick="ToggleCorrection" Disabled="_busy">Correct tenant ID or application ID</MudButton>
             </div>
+            @if (_correcting)
+            {
+                <MudGrid Spacing="2" Class="mt-2">
+                    <MudItem xs="12" md="5">
+                        <MudTextField @bind-Value="_correctTenantId" Label="Tenant ID" Disabled="@(_deletion?.HoldsBackups == true)"
+                                      HelperText="@(_deletion?.HoldsBackups == true ? "Fixed: this tenant holds backups" : "Directory (tenant) ID from Entra")" />
+                    </MudItem>
+                    <MudItem xs="12" md="5"><MudTextField @bind-Value="_correctClientId" Label="Application ID" HelperText="Application ID on the overview of the app registration in Entra" /></MudItem>
+                    <MudItem xs="12" md="2" Class="d-flex align-center">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CorrectConnectionAsync" Disabled="_busy">Save</MudButton>
+                    </MudItem>
+                </MudGrid>
+                <p class="vy-muted mt-1">The certificate stays the same; the permission check runs again afterwards.</p>
+            }
         }
         @if (_report is not null)
         {
@@ -166,7 +181,16 @@ else
             {
                 <p>This tenant is on legal hold: no snapshot expires until the hold is released.</p>
             }
-            @if (_canDelete)
+            @if (_canDelete && !_deletion.HoldsBackups && _deletion.State != "deleted")
+            {
+                <MudAlert Severity="Severity.Info" Class="mt-2">
+                    This tenant holds no backups yet, so nothing needs protecting: you can remove it now, for example to connect it again
+                    with the right details. As soon as it holds a backup, deleting it takes a request, 30 days and a second administrator.
+                </MudAlert>
+                <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Error" OnClick="RemoveUnusedAsync"
+                           Disabled="@(_busy || _deletion.LegalHold)">Remove tenant now</MudButton>
+            }
+            else if (_canDelete)
             {
                 @switch (_deletion.State)
                 {
@@ -214,6 +238,9 @@ else
     private bool _canHold;
     private bool _canDelete;
     private TenantDeletionState? _deletion;
+    private bool _correcting;
+    private string? _correctTenantId;
+    private string? _correctClientId;
     private TenantStatusRow? _health;
     private IReadOnlySet<Guid> _held = new HashSet<Guid>();
     private int _frequencyHours = 6;
@@ -351,6 +378,46 @@ else
 
     private async Task RequestDeletionAsync() => await DeletionStepAsync(async (access, fresh) => await Deletion.RequestAsync(access, fresh, TenantId),
         "Deletion requested. Backups are stopped; a second administrator can confirm in 30 days.");
+
+    private async Task RemoveUnusedAsync()
+    {
+        var customerId = _tenant!.CustomerId;
+        await DeletionStepAsync(async (access, fresh) => await Deletion.RemoveUnusedAsync(access, fresh, TenantId), "The tenant is removed. You can connect it again.");
+        if ((await TenantService.ListAsync(_organizationId)).All(t => t.Id != TenantId)) Navigation.NavigateTo($"/customers/{customerId}");
+    }
+
+    private void ToggleCorrection()
+    {
+        _correcting = !_correcting;
+        _correctTenantId = _tenant?.EntraTenantId.ToString();
+        _correctClientId = _tenant?.ClientId?.ToString();
+    }
+
+    private async Task CorrectConnectionAsync()
+    {
+        if (!Guid.TryParse(_correctTenantId?.Trim(), out var entraTenantId) || !Guid.TryParse(_correctClientId?.Trim(), out var clientId))
+        {
+            Snackbar.Add("Enter the tenant ID and the application ID as they appear in Entra (a GUID such as 00000000-0000-0000-0000-000000000000).", Severity.Warning);
+            return;
+        }
+        if (!await ConfirmedAsync()) return;
+        _busy = true;
+        try
+        {
+            await TenantService.CorrectConnectionAsync(_organizationId, _userId, TenantId, entraTenantId, clientId);
+            _correcting = false;
+            Snackbar.Add("Connection details saved. Run the permission check.", Severity.Success);
+            await LoadAsync();
+        }
+        catch (TenantException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
 
     private async Task WithdrawDeletionAsync() => await DeletionStepAsync(async (access, _) => await Deletion.WithdrawAsync(access, TenantId),
         "The deletion request is withdrawn. Backups resume.");

@@ -318,6 +318,26 @@ public class OnboardingTests
     }
 
     [Fact]
+    public void The_certificate_validity_is_in_whole_seconds_and_the_script_takes_its_end_date_from_the_certificate()
+    {
+        // Microsoft refuses an app key whose end date is later than the certificate's, even by a fraction of a second.
+        var clock = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(new DateTimeOffset(2026, 11, 10, 20, 33, 26, 802, TimeSpan.Zero));
+        var material = TenantCertificate.Create("Contoso Ltd", clock);
+        using var certificate = TenantCertificate.Load(material.Pfx);
+        Assert.Equal(0, material.NotAfter.Ticks % TimeSpan.TicksPerSecond);
+        Assert.Equal(0, material.NotBefore.Ticks % TimeSpan.TicksPerSecond);
+        Assert.Equal(material.NotAfter.UtcDateTime, certificate.NotAfter.ToUniversalTime());
+
+        var script = OnboardingScript.PowerShell("Vaulty", material, includeRestore: false);
+        Assert.Contains("[Convert]::FromBase64String($CertificateBase64)).NotAfter", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("[DateTime]::Parse", script, StringComparison.Ordinal);
+        Assert.Contains("Get-Module -ListAvailable -Name Microsoft.Graph.Applications", script, StringComparison.Ordinal);
+        Assert.Contains("Get-MgApplication -Filter", script, StringComparison.Ordinal);
+        Assert.True(script.IndexOf("Get-MgApplication -Filter", StringComparison.Ordinal) < script.IndexOf("New-MgApplication", StringComparison.Ordinal),
+            "the duplicate check runs before the app is created");
+    }
+
+    [Fact]
     public async Task Roles_are_read_from_the_token()
     {
         var token = await new FakeTokens("Mail.Read", "Files.Read.All").GetTokenAsync(Guid.NewGuid());

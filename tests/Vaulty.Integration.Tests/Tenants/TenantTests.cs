@@ -76,6 +76,52 @@ public sealed class TenantTests(PostgresDatabase db) : IClassFixture<PostgresDat
     }
 
     [PostgresFact]
+    public async Task A_tenant_without_backups_is_removed_at_once_and_its_Microsoft_365_tenant_can_be_connected_again()
+    {
+        var (org, customer, admin, api, secrets) = await OrganizationAsync();
+        var tenants = Tenants(api, secrets);
+        var entra = Guid.NewGuid();
+        var first = await tenants.CompleteConnectAsync(org, admin, (await tenants.BeginConnectAsync(org, admin, customer, "Wrong")).Id, entra, Guid.NewGuid());
+        var deletion = new Vaulty.Infrastructure.Retention.TenantDeletion(api, TimeProvider.System);
+        var access = new UserAccess(admin, org, true, Vaulty.Core.Security.Permissions.All.ToDictionary(p => p.Key, _ => (HashSet<Guid>?)null));
+
+        Assert.False((await deletion.StateAsync(access, first)).HoldsBackups);
+        await Assert.ThrowsAsync<Vaulty.Infrastructure.Restore.StepUpRequiredException>(() => deletion.RemoveUnusedAsync(access, false, first));
+        var readOnly = new UserAccess(Guid.NewGuid(), org, true, new Dictionary<string, HashSet<Guid>?> { [Vaulty.Core.Security.Permissions.CustomersView] = null });
+        await Assert.ThrowsAsync<AccessException>(() => deletion.RemoveUnusedAsync(readOnly, true, first));
+        // Also after a deletion was requested: no 30-day wait for a tenant that protects nothing.
+        await deletion.RequestAsync(access, true, first);
+        await deletion.RemoveUnusedAsync(access, true, first);
+        Assert.DoesNotContain(await tenants.ListAsync(org, customer), t => t.Id == first);
+
+        // The same Microsoft 365 tenant connects again.
+        var second = await tenants.CompleteConnectAsync(org, admin, (await tenants.BeginConnectAsync(org, admin, customer, "Right")).Id, entra, Guid.NewGuid());
+        Assert.Equal(second, Assert.Single(await tenants.ListAsync(org, customer)).Id);
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        Assert.Equal(["tenant.connected", "tenant.deletion_requested", "tenant.removed_without_backups"], (await owner.QueryAsync<string>(
+            "SELECT action FROM vaulty.audit_events WHERE target = @target ORDER BY seq", new { target = $"tenant:{first}" })).ToList());
+    }
+
+    [PostgresFact]
+    public async Task The_tenant_id_and_application_id_of_a_tenant_without_backups_can_be_corrected()
+    {
+        var (org, customer, admin, api, secrets) = await OrganizationAsync();
+        var tenants = Tenants(api, secrets);
+        var tenantId = await tenants.CompleteConnectAsync(org, admin, (await tenants.BeginConnectAsync(org, admin, customer, "Contoso")).Id, Guid.NewGuid(), Guid.NewGuid());
+        var (entra, client) = (Guid.NewGuid(), Guid.NewGuid());
+        await tenants.CorrectConnectionAsync(org, admin, tenantId, entra, client);
+        var row = Assert.Single(await tenants.ListAsync(org, customer));
+        Assert.Equal((entra, (Guid?)client, "pending"), (row.EntraTenantId, row.ClientId, row.ConsentState));
+
+        // A tenant id that another tenant uses is refused.
+        var other = Guid.NewGuid();
+        await tenants.CompleteConnectAsync(org, admin, (await tenants.BeginConnectAsync(org, admin, customer, "Fabrikam")).Id, other, Guid.NewGuid());
+        var taken = await Assert.ThrowsAsync<TenantException>(() => tenants.CorrectConnectionAsync(org, admin, tenantId, other, client));
+        Assert.Contains("already connected", taken.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<TenantException>(() => tenants.CorrectConnectionAsync(org, admin, tenantId, Guid.Empty, client));
+    }
+
+    [PostgresFact]
     public async Task Connecting_stores_the_certificate_and_refuses_a_tenant_connected_elsewhere()
     {
         var (org, customer, admin, api, secrets) = await OrganizationAsync();

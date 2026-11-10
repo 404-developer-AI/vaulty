@@ -8,13 +8,17 @@ using Vaulty.Infrastructure.Restore;
 
 namespace Vaulty.Infrastructure.Retention;
 
-public sealed record TenantDeletionState(string State, DateTimeOffset? RequestedAt, Guid? RequestedBy, DateTimeOffset? ConfirmableFrom, bool LegalHold);
+/// <param name="HoldsBackups">The tenant has a snapshot or stored data; only then do the waiting period and the second administrator apply.</param>
+public sealed record TenantDeletionState(string State, DateTimeOffset? RequestedAt, Guid? RequestedBy, DateTimeOffset? ConfirmableFrom, bool LegalHold,
+    bool HoldsBackups);
 
 /// <summary>
 /// Deleting a tenant never happens on one click: one administrator requests it (backups stop at once), a reminder is raised
 /// every day for 30 days, and only then can a second administrator confirm. After confirmation retention ends for the
 /// tenant's snapshots and garbage collection removes the data as its Object Lock expires. Until confirmation the request
 /// can be withdrawn. A legal hold blocks the deletion.
+/// A tenant that never stored anything (no snapshot, no pack, no backup running) protects no data: it can be removed at
+/// once, by one administrator with a fresh step-up, so a wrongly connected tenant does not block its reconnection.
 /// </summary>
 public sealed class TenantDeletion(NpgsqlDataSource dataSource, TimeProvider clock)
 {
@@ -24,7 +28,49 @@ public sealed class TenantDeletion(NpgsqlDataSource dataSource, TimeProvider clo
     {
         ArgumentNullException.ThrowIfNull(access);
         var row = await TenantAsync(access, tenantId, null, cancellationToken).ConfigureAwait(false);
-        return new TenantDeletionState(row.State, Utc(row.RequestedAt), row.RequestedBy, Utc(row.RequestedAt)?.Add(WaitingPeriod), row.LegalHold);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        var holdsBackups = await session.Connection.ExecuteScalarAsync<bool>(new CommandDefinition(HoldsBackupsSql, new { tenantId }, session.Transaction,
+            cancellationToken: cancellationToken)).ConfigureAwait(false);
+        return new TenantDeletionState(row.State, Utc(row.RequestedAt), row.RequestedBy, Utc(row.RequestedAt)?.Add(WaitingPeriod), row.LegalHold, holdsBackups);
+    }
+
+    /// <summary>True when the tenant has a snapshot, a pack in storage or a backup job that is queued or running.</summary>
+    internal const string HoldsBackupsSql = """
+        SELECT EXISTS (SELECT 1 FROM vaulty.snapshots WHERE tenant_id = @tenantId)
+            OR EXISTS (SELECT 1 FROM vaulty.packs WHERE tenant_id = @tenantId)
+            OR EXISTS (SELECT 1 FROM vaulty.jobs WHERE tenant_id = @tenantId AND state IN ('queued', 'running'))
+        """;
+
+    /// <summary>
+    /// Removes a tenant that holds no backups at once. Refused as soon as the tenant has a snapshot, stored data or a running
+    /// backup: then only the request, the 30-day wait and a second administrator delete it.
+    /// </summary>
+    public async Task RemoveUnusedAsync(UserAccess access, bool stepUpFresh, Guid tenantId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        var row = await TenantAsync(access, tenantId, Permissions.TenantsDelete, cancellationToken).ConfigureAwait(false);
+        if (!stepUpFresh) throw new StepUpRequiredException();
+        if (row.LegalHold) throw new InvalidOperationException("The tenant is on legal hold. Release the hold before deleting it.");
+        if (row.State == "deleted") throw new InvalidOperationException("This tenant is deleted already.");
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        // One statement: the check for backups and the removal cannot be separated by a backup that starts in between.
+        var removed = await session.Connection.ExecuteAsync(new CommandDefinition(
+            $"""
+            UPDATE vaulty.tenants
+               SET state = 'deleted', deletion_requested_at = coalesce(deletion_requested_at, @now),
+                   deletion_requested_by = coalesce(deletion_requested_by, @user), deletion_confirmed_by = NULL
+             WHERE id = @tenantId AND state <> 'deleted' AND NOT legal_hold AND NOT ({HoldsBackupsSql})
+            """, new { tenantId, now = clock.GetUtcNow(), user = access.UserId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        if (removed == 0)
+        {
+            throw new InvalidOperationException("This tenant holds backups. Request its deletion; a second administrator can confirm it after 30 days.");
+        }
+        await session.Connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE vaulty.alerts SET resolved_at = @now, resolved_by = @user WHERE tenant_id = @tenantId AND kind = 'tenant.deletion_pending' AND resolved_at IS NULL",
+            new { tenantId, now = clock.GetUtcNow(), user = access.UserId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        await AuditLog.WriteAsync(session, $"user:{access.UserId}", "tenant.removed_without_backups", $"tenant:{tenantId}", new { previous_state = row.State },
+            cancellationToken).ConfigureAwait(false);
+        await session.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RequestAsync(UserAccess access, bool stepUpFresh, Guid tenantId, CancellationToken cancellationToken = default)

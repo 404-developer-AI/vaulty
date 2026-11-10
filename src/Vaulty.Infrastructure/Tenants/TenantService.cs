@@ -165,6 +165,46 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
         return tenantId;
     }
 
+    /// <summary>
+    /// Corrects the tenant id and application (client) id of a connected tenant, for example after a typing error or when the
+    /// app registration was created again. The tenant id can only change while the tenant holds no backups: afterwards a
+    /// different tenant id would mix two tenants' data. Consent is checked again afterwards.
+    /// </summary>
+    public async Task CorrectConnectionAsync(Guid organizationId, Guid actor, Guid tenantId, Guid entraTenantId, Guid clientId,
+        CancellationToken cancellationToken = default)
+    {
+        if (entraTenantId == Guid.Empty || clientId == Guid.Empty) throw new TenantException("Enter the tenant ID and the application ID.");
+        await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
+        var current = await session.Connection.QuerySingleOrDefaultAsync<(Guid EntraTenantId, Guid? ClientId, string State)?>(new CommandDefinition(
+            "SELECT entra_tenant_id, client_id, state FROM vaulty.tenants WHERE id = @tenantId FOR UPDATE", new { tenantId }, session.Transaction,
+            cancellationToken: cancellationToken)).ConfigureAwait(false)
+            ?? throw new TenantException("This tenant does not exist.");
+        if (current.State == "deleted") throw new TenantException("This tenant is deleted.");
+        if (current.EntraTenantId == entraTenantId && current.ClientId == clientId) return;
+        if (current.EntraTenantId != entraTenantId && await session.Connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+                Retention.TenantDeletion.HoldsBackupsSql, new { tenantId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false))
+        {
+            throw new TenantException("This tenant holds backups, so its tenant ID cannot change. Only the application ID can be corrected.");
+        }
+        try
+        {
+            await session.Connection.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE vaulty.tenants SET entra_tenant_id = @entraTenantId, client_id = @clientId, consent_state = 'pending', granted_permissions = '[]'
+                 WHERE id = @tenantId
+                """, new { tenantId, entraTenantId, clientId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            throw new TenantException("This Microsoft 365 tenant is already connected to Vaulty. Disconnect it there first.");
+        }
+        await AuditLog.WriteAsync(session, $"user:{actor}", "tenant.connection_corrected", $"tenant:{tenantId}",
+            new { entra_tenant_id = entraTenantId, client_id = clientId, previous_entra_tenant_id = current.EntraTenantId, previous_client_id = current.ClientId },
+            cancellationToken).ConfigureAwait(false);
+        await session.CommitAsync(cancellationToken).ConfigureAwait(false);
+        credentials.Invalidate(tenantId);
+    }
+
     /// <summary>Checks the app's permissions now and records the result; consent is "granted" once backup permissions work.</summary>
     public async Task<PermissionProbeReport> ProbeAsync(Guid organizationId, Guid actor, Guid tenantId, CancellationToken cancellationToken = default)
     {
@@ -246,7 +286,7 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
             $App = Get-MgApplication -Filter "appId eq '{{clientId}}'"
             $Keys = @($App.KeyCredentials | ForEach-Object { @{ Type = $_.Type; Usage = $_.Usage; Key = $_.Key; DisplayName = $_.DisplayName; EndDateTime = $_.EndDateTime } })
             $Keys += @{ Type = 'AsymmetricX509Cert'; Usage = 'Verify'; Key = [Convert]::FromBase64String('{{certificate.PublicCertificateBase64}}');
-                        EndDateTime = [DateTime]::Parse('{{certificate.NotAfter.UtcDateTime:O}}').ToUniversalTime(); DisplayName = 'Vaulty {{certificate.NotAfter:yyyy-MM-dd}}' }
+                        EndDateTime = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([Convert]::FromBase64String('{{certificate.PublicCertificateBase64}}')).NotAfter.ToUniversalTime(); DisplayName = 'Vaulty {{certificate.NotAfter:yyyy-MM-dd}}' }
             Update-MgApplication -ApplicationId $App.Id -KeyCredentials $Keys
             Write-Host 'Done. Return to Vaulty and confirm the rotation; then remove the old certificate from the app registration.'
             """;

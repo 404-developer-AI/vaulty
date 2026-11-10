@@ -182,3 +182,10 @@ public sealed class NotificationsMigration : SqlMigration
 {
     protected override string ScriptName => "0012_notifications";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261110000013_TenantReconnect")]
+public sealed class TenantReconnectMigration : SqlMigration
+{
+    protected override string ScriptName => "0013_tenant_reconnect";
+}

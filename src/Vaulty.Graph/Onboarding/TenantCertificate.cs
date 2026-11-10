@@ -27,12 +27,16 @@ public static class TenantCertificate
             RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, critical: true));
         request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.2")], critical: false));
-        var notBefore = now.AddMinutes(-10);
-        var notAfter = now + (validity ?? DefaultValidity);
+        // Whole seconds: a certificate stores its validity in seconds, and Microsoft refuses an app key whose end date is
+        // later than the certificate's, so the script, the database and the certificate must carry the same instant.
+        var notBefore = WholeSeconds(now.AddMinutes(-10));
+        var notAfter = WholeSeconds(now + (validity ?? DefaultValidity));
         using var certificate = request.CreateSelfSigned(notBefore, notAfter);
         return new TenantCertificateMaterial(certificate.Export(X509ContentType.Pkcs12), certificate.Export(X509ContentType.Cert),
             certificate.Thumbprint, notBefore, notAfter);
     }
+
+    private static DateTimeOffset WholeSeconds(DateTimeOffset value) => new(value.Ticks - value.Ticks % TimeSpan.TicksPerSecond, value.Offset);
 
     public static X509Certificate2 Load(ReadOnlySpan<byte> pfx) =>
         X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.EphemeralKeySet);
@@ -57,16 +61,24 @@ public static class OnboardingScript
         sb.AppendLine("# Run as a Global Administrator of the tenant. Nothing is sent to Vaulty; copy the two ids at the end into Vaulty.");
         sb.AppendLine("# Requires the Microsoft Graph PowerShell SDK: Install-Module Microsoft.Graph.Applications -Scope CurrentUser");
         sb.AppendLine("$ErrorActionPreference = 'Stop'");
+        sb.AppendLine("if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Applications)) {");
+        sb.AppendLine("    throw 'The Microsoft Graph PowerShell SDK is missing. Run: Install-Module Microsoft.Graph.Applications -Scope CurrentUser, then run this script again.'");
+        sb.AppendLine("}");
         sb.AppendLine();
         sb.AppendLine($"$AppName = '{appName.Replace("'", "''", StringComparison.Ordinal)}'");
         sb.AppendLine($"$CertificateBase64 = '{certificate.PublicCertificateBase64}'");
-        sb.AppendLine($"$CertificateNotAfter = [DateTime]::Parse('{certificate.NotAfter.UtcDateTime:O}').ToUniversalTime()");
+        sb.AppendLine("# The end date comes from the certificate itself: Microsoft refuses a key end date later than the certificate's own.");
+        sb.AppendLine("$CertificateNotAfter = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([Convert]::FromBase64String($CertificateBase64)).NotAfter.ToUniversalTime()");
         sb.AppendLine("$Permissions = @(");
         sb.AppendLine(string.Join(",\n", permissions));
         sb.AppendLine(")");
         sb.AppendLine();
         sb.AppendLine("Connect-MgGraph -Scopes 'Application.ReadWrite.All','AppRoleAssignment.ReadWrite.All' -NoWelcome");
         sb.AppendLine("$TenantId = (Get-MgContext).TenantId");
+        sb.AppendLine("# A second run must not create a second app registration.");
+        sb.AppendLine("if (Get-MgApplication -Filter \"displayName eq '$($AppName.Replace(\"'\", \"''\"))'\") {");
+        sb.AppendLine("    throw \"An app registration named '$AppName' already exists in this tenant. Remove it in Entra (App registrations), then run this script again.\"");
+        sb.AppendLine("}");
         sb.AppendLine($"$Graph = Get-MgServicePrincipal -Filter \"appId eq '{GraphAppId}'\"");
         sb.AppendLine("$Roles = foreach ($name in $Permissions) {");
         sb.AppendLine("    $role = $Graph.AppRoles | Where-Object { $_.Value -eq $name -and $_.AllowedMemberTypes -contains 'Application' }");

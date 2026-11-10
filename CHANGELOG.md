@@ -185,6 +185,15 @@ All notable changes to this project are documented in this file. The format foll
 - The customer list opens: a text array column is mapped by hand, as Npgsql reports it as `System.Array`.
 - The audit log shows the user's name instead of the user id (the id stays in the tooltip); the role picker no longer
   shows an empty id; page headings no longer get a focus ring after navigation.
+- A tenant that holds no backups (no snapshot, no stored data, no backup running) can be removed at once by one
+  administrator with a fresh confirmation, also while a deletion request waits; a tenant with backups still needs the
+  request, 30 days and a second administrator. Audited as `tenant.removed_without_backups`.
+- The tenant ID and application ID of a connected tenant can be corrected; the tenant ID only while it holds no backups.
+- A deleted tenant no longer blocks connecting the same Microsoft 365 tenant again (migration `0013`).
+- Tenant certificates are valid to the whole second, and the onboarding and rotation scripts read the key end date
+  from the certificate itself: Microsoft refused the key when the end date carried a fraction of a second. The
+  onboarding script checks for the Microsoft Graph PowerShell SDK first and refuses to create a second app
+  registration with the same name.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.
