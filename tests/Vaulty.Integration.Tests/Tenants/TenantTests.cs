@@ -236,6 +236,17 @@ public sealed class TenantTests(PostgresDatabase db) : IClassFixture<PostgresDat
         Assert.DoesNotContain(await tenants.ProtectedObjectsAsync(org, tenantId), o => o.State == "source_deleted");
     }
 
+    [Fact]
+    public void The_data_of_an_object_without_further_backups_goes_after_retention_and_never_before_its_lock_ends()
+    {
+        var newest = new DateTimeOffset(2026, 11, 11, 10, 0, 0, TimeSpan.Zero);
+        ProtectedObjectRow Row(DateTimeOffset? lockedUntil) => new(Guid.NewGuid(), "mailbox", "user", "m1", "Finance", "excluded", null, newest, "committed", "{}",
+            newest, lockedUntil);
+        Assert.Equal(newest.AddDays(90), Row(newest.AddDays(60)).DataRemovedFrom(90));
+        Assert.Equal(newest.AddDays(120), Row(newest.AddDays(120)).DataRemovedFrom(90));
+        Assert.Null((Row(null) with { NewestSnapshotAt = null }).DataRemovedFrom(90));
+    }
+
     [PostgresFact]
     public async Task Found_objects_wait_to_be_selected_and_excluding_needs_a_fresh_confirmation()
     {

@@ -17,8 +17,21 @@ public sealed record TenantRow(Guid Id, Guid CustomerId, string CustomerName, Gu
     Guid? ClientId, string ConsentState, DateTimeOffset? CertificateExpiresAt, DateTimeOffset? NextCertificateExpiresAt,
     DateTimeOffset? LastHealthCheckAt, string Health, string GrantedPermissions, int ProtectedObjects);
 
+/// <param name="NewestSnapshotAt">Start of the newest snapshot still kept; with retention it says when an excluded object's data goes.</param>
+/// <param name="LockedUntil">The latest Object Lock of the object's kept snapshots; nothing is removed before it.</param>
 public sealed record ProtectedObjectRow(Guid Id, string Kind, string? SubKind, string SourceId, string DisplayName, string State,
-    DateTimeOffset? SourceDeletedAt, DateTimeOffset? LastBackupAt, string? LastSnapshotState, string SourceDetails);
+    DateTimeOffset? SourceDeletedAt, DateTimeOffset? LastBackupAt, string? LastSnapshotState, string SourceDetails,
+    DateTimeOffset? NewestSnapshotAt = null, DateTimeOffset? LockedUntil = null)
+{
+    /// <summary>
+    /// For an object without further backups (excluded or source deleted): from when its stored data is removed. Every
+    /// snapshot expires with its retention, and garbage collection removes the data once its Object Lock has ended too.
+    /// </summary>
+    public DateTimeOffset? DataRemovedFrom(int retentionDays) =>
+        NewestSnapshotAt is { } newest ? Max(newest.AddDays(retentionDays), LockedUntil) : null;
+
+    private static DateTimeOffset Max(DateTimeOffset a, DateTimeOffset? b) => b is { } v && v > a ? v : a;
+}
 
 public sealed record PendingConnection(Guid Id, Guid CustomerId, string DisplayName, string CertificateThumbprint, DateTimeOffset CertificateExpiresAt,
     string Script, IReadOnlyList<string> ManualSteps, string CertificatePem);
@@ -352,14 +365,18 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
     {
         await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<(Guid Id, string Kind, string? SubKind, string SourceId, string DisplayName, string State,
-            DateTime? SourceDeletedAt, DateTime? LastBackupAt, string? LastSnapshotState, string SourceDetails)>(new CommandDefinition(
+            DateTime? SourceDeletedAt, DateTime? LastBackupAt, string? LastSnapshotState, string SourceDetails, DateTime? NewestSnapshotAt, DateTime? LockedUntil)>(
+            new CommandDefinition(
             """
-            SELECT o.id, o.kind, o.sub_kind, o.source_id, o.display_name, o.state, o.source_deleted_at, s.committed_at, s.state, o.source_details::text
+            SELECT o.id, o.kind, o.sub_kind, o.source_id, o.display_name, o.state, o.source_deleted_at, s.committed_at, s.state, o.source_details::text,
+                   k.newest, k.locked_until
               FROM vaulty.protected_objects o LEFT JOIN vaulty.snapshots s ON s.id = o.last_snapshot_id
+              LEFT JOIN LATERAL (SELECT max(started_at) AS newest, max(lock_until) AS locked_until FROM vaulty.snapshots
+                                  WHERE protected_object_id = o.id AND state IN ('committed', 'partial')) k ON true
              WHERE o.tenant_id = @tenantId ORDER BY o.kind, lower(o.display_name)
             """, new { tenantId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         return rows.Select(r => new ProtectedObjectRow(r.Id, r.Kind, r.SubKind, r.SourceId, r.DisplayName, r.State, Utc(r.SourceDeletedAt),
-            Utc(r.LastBackupAt), r.LastSnapshotState, r.SourceDetails)).ToList();
+            Utc(r.LastBackupAt), r.LastSnapshotState, r.SourceDetails, Utc(r.NewestSnapshotAt), Utc(r.LockedUntil))).ToList();
     }
 
     private static DateTimeOffset? Utc(DateTime? value) => value is { } v ? new DateTimeOffset(DateTime.SpecifyKind(v, DateTimeKind.Utc)) : null;

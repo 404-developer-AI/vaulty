@@ -413,6 +413,33 @@ public sealed class RetentionTests(PostgresDatabase db, ITestOutputHelper output
     }
 
     [PostgresFact]
+    public async Task An_excluded_object_loses_its_newest_snapshot_too_once_retention_and_the_lock_have_ended()
+    {
+        await using var history = new History(db, new DateTimeOffset(2025, 1, 1, 6, 0, 0, TimeSpan.Zero));
+        var random = new Random(17);
+        await history.SeedAsync(objects: 1, random);
+        var (objectId, retention) = history.Objects[0];
+        for (var round = 0; round < 3; round++)
+        {
+            await history.BackupAsync(objectId, retention, round, random);
+            history.Clock.Advance(TimeSpan.FromDays(1));
+        }
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        const string Kept = "SELECT count(*) FROM vaulty.snapshots WHERE protected_object_id = @o AND state IN ('committed', 'partial')";
+
+        // Long after retention, an object that is still backed up keeps its newest snapshot.
+        history.Clock.Advance(TimeSpan.FromDays(retention + 400));
+        await history.Collector(new GcOptions { MaxDeleteFraction = 1 }).RunAsync(history.Org, history.Tenant, dryRun: false);
+        Assert.Equal(1, await owner.ExecuteScalarAsync<int>(Kept, new { o = objectId }));
+
+        // Excluded on purpose: there is no next backup, so the newest snapshot ends with its retention as well.
+        await owner.ExecuteAsync("UPDATE vaulty.protected_objects SET state = 'excluded', next_run_at = NULL WHERE id = @o", new { o = objectId });
+        var gc = await history.Collector(new GcOptions { MaxDeleteFraction = 1 }).RunAsync(history.Org, history.Tenant, dryRun: false);
+        Assert.Equal(1, gc.SnapshotsExpired);
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>(Kept, new { o = objectId }));
+    }
+
+    [PostgresFact]
     public async Task Legal_hold_keeps_every_snapshot_beyond_retention()
     {
         await using var history = new History(db, new DateTimeOffset(2025, 1, 1, 6, 0, 0, TimeSpan.Zero));

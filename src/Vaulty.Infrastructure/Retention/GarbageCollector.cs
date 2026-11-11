@@ -191,8 +191,11 @@ public sealed class GarbageCollector(NpgsqlDataSource dataSource, IBackupStorage
             var newest = own.LastOrDefault();
             foreach (var s in own)
             {
+                // The newest snapshot outlives retention while backups are meant to continue, so stopped backups never lose
+                // the last copy. A deleted tenant, a vanished source and a deliberately excluded object have no next backup:
+                // there every snapshot ends with its retention.
                 var keep = hold || new DateTimeOffset(DateTime.SpecifyKind(s.StartedAt, DateTimeKind.Utc)) >= cutoff
-                           || (!tenantDeleted && o.State != "source_deleted" && s.Id == newest.Id);
+                           || (!tenantDeleted && o.State is not ("source_deleted" or "excluded") && s.Id == newest.Id);
                 if (keep) live.Add((s.Id, o.Id));
                 else expired.Add(s.Id);
             }

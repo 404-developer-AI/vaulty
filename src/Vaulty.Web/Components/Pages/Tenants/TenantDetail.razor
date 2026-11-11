@@ -113,8 +113,9 @@ else
 
     <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
         <MudText Typo="Typo.h6">What is backed up</MudText>
-        <p class="vy-muted mt-1">Choose which mailboxes and OneDrives Vaulty backs up. An excluded object gets no new backups; its snapshots are kept until
-            their retention ends. @SelectionSummary</p>
+        <p class="vy-muted mt-1">Choose which mailboxes and OneDrives Vaulty backs up. An excluded object gets no new backups; its snapshots, the newest
+            one too, end with their retention, and the data is removed once its Object Lock has ended. Selecting it again before then keeps everything.
+            @SelectionSummary</p>
         <MudSwitch T="bool" Value="@_protectNew" ValueChanged="SetProtectNewAsync" Color="Color.Primary" Disabled="@(!_canManagePolicy || _busy)"
                    Label="Back up newly found mailboxes and OneDrives automatically" />
         @if (_canManagePolicy)
@@ -171,6 +172,12 @@ else
                         break;
                     case "excluded":
                         <span class="vy-status neutral" title="Not selected for backup">Excluded</span>
+                        @if (context.DataRemovedFrom(_retentionDays) is { } removed)
+                        {
+                            <div class="vy-muted vy-nowrap" title="Every snapshot ends with its retention; the data goes once its Object Lock has ended. Select it again to keep backing it up.">
+                                Data removed from @Time.Absolute(removed)
+                            </div>
+                        }
                         break;
                     default:
                         @if (_health?.Objects.FirstOrDefault(o => o.Id == context.Id) is { } status)
