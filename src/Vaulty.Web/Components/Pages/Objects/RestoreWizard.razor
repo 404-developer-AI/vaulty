@@ -1,0 +1,221 @@
+@using Vaulty.Infrastructure.Browse
+@using Vaulty.Infrastructure.Restore
+@using Vaulty.Infrastructure.Tenants
+@inject DisplayTime Time
+@inject TimeProvider Clock
+@* Restore or export in four steps: what, from which snapshot, where to, confirm. Nothing is written until the last step;
+   the result opens on the restore page, where it can be followed item by item. *@
+<MudDialog Class="vy-wizard-dialog">
+    <TitleContent>@(_export ? "Export" : "Restore") @Selection.Summary</TitleContent>
+    <DialogContent>
+        <div style="width: min(720px, 86vw)">
+            <WizardSteps Steps="@StepNames" Active="_step" OnStep="@(i => _step = i)" Label="@(_export ? "Export steps" : "Restore steps")" />
+
+            @switch (_step)
+            {
+                case 0:
+                    <h3 class="vy-wizard-h">What</h3>
+                    <dl class="vy-summary">
+                        <dt>Protected object</dt><dd>@Object.DisplayName <span class="vy-muted">(@ObjectLabels.Kind(Object.Kind, Object.SubKind))</span></dd>
+                        <dt>Selection</dt>
+                        <dd>
+                            @Selection.Description
+                            @if (Selection.Titles.Count > 0)
+                            {
+                                <ul class="mt-1 mb-0 pl-5" style="font-weight: 400">
+                                    @foreach (var title in Selection.Titles.Take(8)) { <li>@title</li> }
+                                    @if (Selection.Titles.Count > 8) { <li class="vy-muted">and @(Selection.Titles.Count - 8) more</li> }
+                                </ul>
+                            }
+                        </dd>
+                    </dl>
+                    @if (CanRestore && CanExport)
+                    {
+                        <div class="vy-choice mt-4" role="radiogroup" aria-label="Restore or export">
+                            <label class="vy-choice-option @(!_export ? "selected" : "")">
+                                <input type="radio" name="kind" checked="@(!_export)" @onchange="@(() => _export = false)" />
+                                <span><span class="vy-choice-title">Restore to Microsoft 365</span><br /><span class="vy-choice-text">Put the items back in a mailbox or OneDrive.</span></span>
+                            </label>
+                            <label class="vy-choice-option @(_export ? "selected" : "")">
+                                <input type="radio" name="kind" checked="@_export" @onchange="@(() => _export = true)" />
+                                <span><span class="vy-choice-title">Export as a download</span><br /><span class="vy-choice-text">A zip with messages as EML, events as ICS, contacts as VCF and files as they are.</span></span>
+                            </label>
+                        </div>
+                    }
+                    break;
+
+                case 1:
+                    <h3 class="vy-wizard-h">From which snapshot</h3>
+                    <dl class="vy-summary">
+                        <dt>Snapshot</dt><dd>@Time.Absolute(Snapshot.StartedAt)</dd>
+                        <dt>Status</dt>
+                        <dd>
+                            @if (Snapshot.State == "partial")
+                            {
+                                <span class="vy-status partial">Partial: @Snapshot.Exceptions missing</span>
+                                <div class="vy-cell-sub mt-1">This snapshot misses @StatusText.Plural(Snapshot.Exceptions, "item") with a recorded reason. Everything you selected is in it.</div>
+                            }
+                            else
+                            {
+                                <span class="vy-status succeeded">Succeeded</span>
+                            }
+                        </dd>
+                        <dt>Verified</dt><dd>@(Snapshot.VerifiedAt is { } v ? $"{Time.Relative(v)}: re-read from storage and matched its hashes" : "Not yet; verification runs on schedule")</dd>
+                        <dt>Contents</dt><dd>@ObjectLabels.Counts(Snapshot.Counts)</dd>
+                    </dl>
+                    <p class="vy-muted mt-4 mb-0" style="font-size: 0.8125rem">The selection belongs to this snapshot. To use another point in time, cancel, choose it in the snapshot list at the top of the page and select the items there.</p>
+                    break;
+
+                case 2:
+                    @if (_export)
+                    {
+                        <h3 class="vy-wizard-h">Download</h3>
+                        <Notice Tone="info">
+                            Vaulty builds a zip with messages as EML, events as ICS, contacts as VCF and files as they are. When it is ready you get a download link
+                            that works once, only for you, within 24 hours. The link is never sent by e-mail.
+                        </Notice>
+                    }
+                    else
+                    {
+                        <h3 class="vy-wizard-h">Where to</h3>
+                        <div class="vy-choice" role="radiogroup" aria-label="Restore target">
+                            <label class="vy-choice-option @(_mode == RestoreModes.RestoreFolder ? "selected" : "")">
+                                <input type="radio" name="target" checked="@(_mode == RestoreModes.RestoreFolder)" @onchange="@(() => _mode = RestoreModes.RestoreFolder)" />
+                                <span><span class="vy-choice-title">To a restore folder (recommended)</span><br />
+                                    <span class="vy-choice-text">A new folder Vaulty Restore/@Time.Absolute(Clock.GetUtcNow()) in the same @Noun. Nothing that is there now changes.</span></span>
+                            </label>
+                            <label class="vy-choice-option @(_mode == RestoreModes.Original ? "selected" : "")">
+                                <input type="radio" name="target" checked="@(_mode == RestoreModes.Original)" @onchange="@(() => _mode = RestoreModes.Original)" />
+                                <span><span class="vy-choice-title">To the original location</span><br />
+                                    <span class="vy-choice-text">Back where the items were. @(IsDrive ? "Choose below what happens when a file with the same name exists." : "Existing items are not overwritten.")</span></span>
+                            </label>
+                            <label class="vy-choice-option @(_mode == RestoreModes.Other ? "selected" : "") @(OtherAvailable ? "" : "disabled")">
+                                <input type="radio" name="target" checked="@(_mode == RestoreModes.Other)" disabled="@(!OtherAvailable)" @onchange="@(() => _mode = RestoreModes.Other)" />
+                                <span><span class="vy-choice-title">To another @Noun</span><br />
+                                    <span class="vy-choice-text">@(OtherAvailable ? $"Into a restore folder of another {Noun} in the same tenant." : CanRestoreElsewhere ? $"No other {Noun} is backed up in this tenant." : "Your role does not allow restores to another location.")</span></span>
+                            </label>
+                        </div>
+                        @if (_mode == RestoreModes.Other)
+                        {
+                            <MudSelect T="Guid?" @bind-Value="_target" Label="@($"Target {Noun}")" Variant="Variant.Outlined" Class="mt-3" Required="true"
+                                       ToStringFunc="@(id => Targets.FirstOrDefault(t => t.Id == id)?.DisplayName ?? "")">
+                                @foreach (var t in Targets) { <MudSelectItem T="Guid?" Value="t.Id">@t.DisplayName</MudSelectItem> }
+                            </MudSelect>
+                        }
+                        @if (IsDrive)
+                        {
+                            <MudSelect T="string" @bind-Value="_conflict" Label="When a file with the same name exists" Variant="Variant.Outlined" Class="mt-3">
+                                <MudSelectItem T="string" Value="@("rename")">Keep both (the restored file gets "(restored date)" in its name)</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("skip")">Skip the file</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("overwrite")">Replace the existing file</MudSelectItem>
+                            </MudSelect>
+                            @if (_conflict == "overwrite")
+                            {
+                                <Notice Tone="warning" Class="mt-2">Replacing overwrites the current files in Microsoft 365, also when they are newer. OneDrive normally keeps the replaced content in the version history of the file.</Notice>
+                            }
+                        }
+                        else
+                        {
+                            <p class="vy-muted mt-3 mb-0" style="font-size: 0.8125rem">Calendar items are restored without sending invitations or updates to attendees.</p>
+                        }
+                    }
+                    break;
+
+                case 3:
+                    <h3 class="vy-wizard-h">Check and start</h3>
+                    <dl class="vy-summary">
+                        <dt>@(_export ? "Export" : "Restore")</dt><dd>@Selection.Description</dd>
+                        <dt>From</dt><dd>@Object.DisplayName, snapshot of @Time.Absolute(Snapshot.StartedAt)</dd>
+                        @if (_export)
+                        {
+                            <dt>Result</dt><dd>A zip download, link valid 24 hours, works once</dd>
+                        }
+                        else
+                        {
+                            <dt>To</dt><dd>@TargetText</dd>
+                            @if (IsDrive)
+                            {
+                                <dt>Existing files</dt><dd>@ConflictText</dd>
+                            }
+                            else
+                            {
+                                <dt>Invitations</dt><dd>None are sent</dd>
+                            }
+                        }
+                    </dl>
+                    @if (!StepUpFresh && (_export || _mode == RestoreModes.Other))
+                    {
+                        <Notice Tone="neutral" Class="mt-4">After Start, confirm it's you with your passkey or authenticator app; the @(_export ? "export" : "restore") then starts at once.</Notice>
+                    }
+                    break;
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <span style="flex: 1"></span>
+        @if (_step > 0)
+        {
+            <MudButton Variant="Variant.Outlined" OnClick="@(() => _step--)">Back</MudButton>
+        }
+        @if (_step < 3)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanContinue)" OnClick="@(() => _step++)">Next</MudButton>
+        }
+        else
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@(_export ? Icons.Material.Outlined.Download : Icons.Material.Outlined.Restore)"
+                       OnClick="Start">@(_export ? "Start export" : "Start restore")</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    /// <summary>What the user selected in the snapshot browser.</summary>
+    public sealed record WizardSelection(string Summary, string Description, IReadOnlyList<string> Titles, IReadOnlyList<Guid> Items, IReadOnlyList<string> Folders);
+
+    /// <summary>The choice the wizard ends with; the page creates and starts the restore.</summary>
+    public sealed record WizardResult(string Mode, Guid? Target, string Conflict);
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter, EditorRequired] public ObjectHeader Object { get; set; } = default!;
+    [Parameter, EditorRequired] public SnapshotSummary Snapshot { get; set; } = default!;
+    [Parameter, EditorRequired] public WizardSelection Selection { get; set; } = default!;
+    [Parameter] public IReadOnlyList<ProtectedObjectRow> Targets { get; set; } = [];
+    [Parameter] public bool StartWithExport { get; set; }
+    [Parameter] public bool CanRestore { get; set; }
+    [Parameter] public bool CanRestoreElsewhere { get; set; }
+    [Parameter] public bool CanExport { get; set; }
+    [Parameter] public bool StepUpFresh { get; set; }
+
+    private int _step;
+    private bool _export;
+    private string _mode = RestoreModes.RestoreFolder;
+    private Guid? _target;
+    private string _conflict = "rename";
+
+    protected override void OnInitialized() => _export = StartWithExport || !CanRestore;
+
+    private string[] StepNames => _export ? ["What", "Snapshot", "Download", "Confirm"] : ["What", "Snapshot", "Where to", "Confirm"];
+
+    private bool IsDrive => Object.Kind == "drive";
+    private string Noun => IsDrive ? "OneDrive" : "mailbox";
+    private bool OtherAvailable => CanRestoreElsewhere && Targets.Count > 0;
+    private bool CanContinue => _step != 2 || _export || _mode != RestoreModes.Other || _target is not null;
+
+    private string TargetText => _mode switch
+    {
+        RestoreModes.Original => "The original location",
+        RestoreModes.Other => $"A restore folder in {Targets.FirstOrDefault(t => t.Id == _target)?.DisplayName}",
+        _ => $"A restore folder Vaulty Restore/{Time.Absolute(Clock.GetUtcNow())} in {Object.DisplayName}",
+    };
+
+    private string ConflictText => _conflict switch
+    {
+        "skip" => "Skipped",
+        "overwrite" => "Replaced by the restored file",
+        _ => "Kept; the restored file gets \"(restored date)\" in its name",
+    };
+
+    private void Start() => Dialog.Close(DialogResult.Ok(new WizardResult(_export ? RestoreModes.Export : _mode, _mode == RestoreModes.Other ? _target : null, _conflict)));
+}

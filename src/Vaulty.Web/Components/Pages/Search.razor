@@ -2,60 +2,151 @@
 @attribute [Authorize(Policy = "perm:" + Permissions.SnapshotsBrowse)]
 @using Vaulty.Infrastructure.Browse
 @inject SnapshotBrowser Browser
+@inject QuickSearch Quick
 @inject CurrentAccess Current
 @inject DisplayTime Time
 @inject NavigationManager Navigation
+@inject ILogger<Search> Log
 
-<PageTitle>Search · Vaulty</PageTitle>
+<PageTitle>Search and restore · Vaulty</PageTitle>
 
-<h1 class="vy-page-title">Search</h1>
-<p class="vy-page-lede">Find messages and files by subject, sender, file name or path, in the latest backup of every protected object you can browse.</p>
+<PageHeader Title="Search and restore" Lede="Find a customer, a tenant, a mailbox or OneDrive, or a message or file in the latest backup. Open a result to browse its snapshot and restore it." />
 
-<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-    <form @onsubmit="SearchAsync" class="d-flex gap-2 align-center">
-        <MudTextField @bind-Value="Query" Label="Search" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Class="flex-grow-1" />
-        <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary">Search</MudButton>
+<Section>
+    <form @onsubmit="Submit" class="d-flex flex-wrap gap-2 align-center" role="search">
+        <div style="flex: 1 1 360px">
+            <MudTextField @bind-Value="_query" Label="Search" Placeholder="Subject, sender, file name, path, or a name" Immediate="true" Variant="Variant.Outlined"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" AutoFocus="true" Clearable="true" />
+        </div>
+        <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_searching || string.IsNullOrWhiteSpace(_query))">Search</MudButton>
     </form>
-</MudPaper>
+    <p class="vy-muted mt-2 mb-0" style="font-size: 0.8125rem">Search matches whole words and the beginning of words. To find an older version of an item, open its protected object and choose a point in time.</p>
+</Section>
 
-@if (_searched)
+@if (!_searched)
 {
-    <MudTable Items="_hits" Hover="true" Elevation="0" Outlined="true" Dense="true" T="SearchHit" OnRowClick="@((TableRowClickEventArgs<SearchHit> e) => OpenAsync(e.Item!))">
-        <HeaderContent>
-            <MudTh>Item</MudTh>
-            <MudTh>Protected object</MudTh>
-            <MudTh>Customer</MudTh>
-            <MudTh>Modified</MudTh>
-        </HeaderContent>
-        <RowTemplate>
-            <MudTd>
-                <div class="vy-item-title">@context.Title</div>
-                <div class="vy-muted vy-item-subtitle">@Vaulty.Web.Browse.ObjectLabels.Item(context.Kind)@(string.IsNullOrEmpty(context.Subtitle) ? "" : $" · {context.Subtitle}")</div>
-            </MudTd>
-            <MudTd>@context.ObjectName</MudTd>
-            <MudTd>@context.CustomerName · @context.TenantName</MudTd>
-            <MudTd>@Time.Absolute(context.ModifiedAt)</MudTd>
-        </RowTemplate>
-        <NoRecordsContent><span class="vy-muted">Nothing found. Search uses whole words and the beginning of words.</span></NoRecordsContent>
-    </MudTable>
+    <Section>
+        <EmptyState Title="Restore in three steps" Icon="@Icons.Material.Outlined.Restore">
+            <ChildContent>
+                Search for the message, the file or the mailbox. Open the result: the snapshot opens at that item.
+                Choose Restore, pick where it goes (a restore folder by default) and confirm.
+            </ChildContent>
+        </EmptyState>
+    </Section>
+}
+else
+{
+    @if (_searching)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" aria-label="Searching" />
+    }
+
+    @if (_places.Count > 0)
+    {
+        <Section Title="Customers, tenants and protected users" Flush="true">
+            <MudSimpleTable Dense="true" Elevation="0">
+                <thead><tr><th>Name</th><th>What</th><th>Status</th></tr></thead>
+                <tbody>
+                    @foreach (var p in _places.Take(20))
+                    {
+                        <tr>
+                            <td><a href="@p.Href" class="vy-cell-main">@p.Title</a></td>
+                            <td class="vy-muted">@p.Subtitle</td>
+                            <td>@if (p.Status is { } s) { <StatusChip Status="s" /> }</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </Section>
+    }
+
+    <Section Title="Messages and files" Flush="@(_hits.Count > 0)"
+             Description="@(_hits.Count == 0 ? null : $"{StatusText.Plural(_hits.Count, "result")}{(_hits.Count >= 50 ? ", the 50 newest; add words to narrow it down" : "")}. Select a result to open it in its snapshot.")">
+        @if (_itemsError is not null)
+        {
+            <Notice Tone="error" Title="Messages and files could not be searched" OnRetry="SearchAsync">@_itemsError</Notice>
+        }
+        else if (_hits.Count == 0 && !_searching)
+        {
+            <EmptyState Title="@($"No messages or files match \"{_searchedFor}\"")" Icon="@Icons.Material.Outlined.SearchOff" Compact="true">
+                Try fewer or shorter words, or the beginning of a word. An item that was deleted before the latest backup is in an older snapshot: open its mailbox or OneDrive and choose a point in time.
+            </EmptyState>
+        }
+        else
+        {
+            <MudTable Items="_hits" Hover="true" Elevation="0" Dense="true" T="SearchHit" OnRowClick="@((TableRowClickEventArgs<SearchHit> e) => OpenAsync(e.Item!))"
+                      RowClass="vy-row-click" Breakpoint="Breakpoint.None" HorizontalScrollbar="true">
+                <HeaderContent>
+                    <MudTh>Item</MudTh>
+                    <MudTh>Protected object</MudTh>
+                    <MudTh>Customer and tenant</MudTh>
+                    <MudTh><MudTableSortLabel T="SearchHit" SortBy="@(h => h.ModifiedAt)" InitialDirection="SortDirection.Descending">Modified</MudTableSortLabel></MudTh>
+                    <MudTh><span class="vy-sr-only">Actions</span></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd>
+                        <div class="vy-item-title">@context.Title</div>
+                        <div class="vy-muted vy-item-subtitle">@ObjectLabels.Item(context.Kind)@(string.IsNullOrEmpty(context.Subtitle) ? "" : $" · {context.Subtitle}")</div>
+                    </MudTd>
+                    <MudTd>@context.ObjectName</MudTd>
+                    <MudTd><div>@context.CustomerName</div><div class="vy-cell-sub">@context.TenantName</div></MudTd>
+                    <MudTd Class="vy-nowrap">@Time.Absolute(context.ModifiedAt)</MudTd>
+                    <MudTd Class="vy-actions-cell"><MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => OpenAsync(context))">Open</MudButton></MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    </Section>
 }
 
 @code {
     [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
 
+    private string? _query;
+    private string? _searchedFor;
     private IReadOnlyList<SearchHit> _hits = [];
+    private IReadOnlyList<SearchSuggestion> _places = [];
     private bool _searched;
+    private bool _searching;
+    private string? _itemsError;
 
     protected override async Task OnParametersSetAsync()
     {
         await Time.LoadAsync();
+        _query = Query;
         if (!string.IsNullOrWhiteSpace(Query)) await SearchAsync();
+    }
+
+    private void Submit()
+    {
+        if (string.IsNullOrWhiteSpace(_query)) return;
+        // The query goes into the address, so the result can be shared with a colleague and Back returns to it.
+        Navigation.NavigateTo($"/search?q={Uri.EscapeDataString(_query.Trim())}");
     }
 
     private async Task SearchAsync()
     {
-        _hits = await Browser.SearchAsync(await Current.GetAsync(), Query ?? "");
-        _searched = true;
+        var text = (_query ?? "").Trim();
+        if (text.Length == 0) return;
+        (_searching, _searched, _searchedFor, _itemsError) = (true, true, text, null);
+        try
+        {
+            _places = QuickSearch.Find(await Quick.DashboardAsync(), text).ToList();
+            try
+            {
+                _hits = await Browser.SearchAsync(await Current.GetAsync(), text);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Titles are sealed per tenant: without the tenant key or its storage the results cannot be shown.
+                Log.LogWarning(ex, "Item search failed");
+                _hits = [];
+                _itemsError = "Vaulty could not open the encryption key or the backup storage of a tenant. Check Storage under Settings, then try again.";
+            }
+        }
+        finally
+        {
+            _searching = false;
+        }
     }
 
     private async Task OpenAsync(SearchHit hit)

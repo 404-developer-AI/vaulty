@@ -1,11 +1,17 @@
 @page "/objects/{ObjectId:guid}"
 @attribute [Authorize(Policy = "perm:" + Permissions.SnapshotsBrowse)]
+@using Vaulty.Core.Domain
 @using Vaulty.Infrastructure.Browse
+@using Vaulty.Infrastructure.Reporting
 @using Vaulty.Infrastructure.Restore
+@using Vaulty.Workflows.Tenants
 @inject SnapshotBrowser Browser
 @inject RestoreService Restores
+@inject DashboardService Dashboards
+@inject IWorkflowStarter Workflows
 @inject CurrentAccess Current
 @inject DisplayTime Time
+@inject ISnackbar Snackbar
 
 <PageTitle>@(_object?.DisplayName ?? "Protected object") · Vaulty</PageTitle>
 
@@ -16,58 +22,145 @@
 }
 else if (_object is null)
 {
-    <p class="vy-muted">This protected object does not exist or you have no access to it.</p>
+    <PageHeader Title="Protected object not found" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb("Not found")])" />
+    <Section>
+        <EmptyState Title="This protected object does not exist or you have no access to it" Icon="@Icons.Material.Outlined.SearchOff">
+            <Actions><MudButton Variant="Variant.Outlined" Href="/search">Search and restore</MudButton></Actions>
+        </EmptyState>
+    </Section>
 }
 else
 {
-    <MudBreadcrumbs Items="_crumbs" Class="px-0 pt-0" />
-    <h1 class="vy-page-title">@_object.DisplayName</h1>
-    <p class="vy-page-lede">@ObjectLabels.Kind(_object.Kind, _object.SubKind) · @_object.CustomerName · @_object.TenantName</p>
+    var latest = _snapshots.FirstOrDefault();
+    <PageHeader Title="@_object.DisplayName" Crumbs="@_crumbs">
+        <Status>
+            @if (_status is { } s)
+            {
+                <StatusChip Status="s.Status" Reason="@s.Reason" Text="@(s.Status == ProtectionStatus.Partial ? $"Partial: {s.Missing} missing" : null)" />
+            }
+        </Status>
+        <LedeContent>@ObjectLabels.Kind(_object.Kind, _object.SubKind) · @_object.CustomerName · @_object.TenantName</LedeContent>
+        <Actions>
+            @if (_canRun && _object.State == "active")
+            {
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Backup" OnClick="BackUpNowAsync" Disabled="_busy">Back up now</MudButton>
+            }
+            @if (latest is not null)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Restore" Href="@($"/objects/{ObjectId}/snapshots/{latest.Id}")">Browse and restore</MudButton>
+            }
+        </Actions>
+    </PageHeader>
 
-    <MudTable Items="_snapshots" Hover="true" Elevation="0" Outlined="true" Dense="true">
-        <HeaderContent>
-            <MudTh>Snapshot</MudTh>
-            <MudTh>Status</MudTh>
-            <MudTh>Items</MudTh>
-            <MudTh>Verified</MudTh>
-            <MudTh></MudTh>
-        </HeaderContent>
-        <RowTemplate>
-            <MudTd>@Time.Absolute(context.StartedAt)</MudTd>
-            <MudTd>
-                @if (context.State == "partial")
-                {
-                    <span class="vy-status partial">Partial: @context.Exceptions missing</span>
-                }
-                else
-                {
-                    <span class="vy-status succeeded">Succeeded</span>
-                }
-            </MudTd>
-            <MudTd>@ObjectLabels.Counts(context.Counts)</MudTd>
-            <MudTd>@(context.VerifiedAt is { } v ? Time.Relative(v) : "Not yet")</MudTd>
-            <MudTd><MudLink Href="@($"/objects/{ObjectId}/snapshots/{context.Id}")">Browse</MudLink></MudTd>
-        </RowTemplate>
-        <NoRecordsContent><span class="vy-muted">No snapshots yet. The first backup creates one.</span></NoRecordsContent>
-    </MudTable>
+    @if (_object.Kind == "team")
+    {
+        <Notice Tone="info">Teams messages can be viewed and exported, not restored to Teams. Files of the team can be restored.</Notice>
+    }
+    @if (_status is { Status: ProtectionStatus.Failed } failed)
+    {
+        <Notice Tone="error" Title="@failed.Reason">@StatusText.NextStep(failed.Status, failed.Reason, "")</Notice>
+    }
+    else if (_object.State == "source_deleted")
+    {
+        <Notice Tone="neutral" Title="The source no longer exists in Microsoft 365">Vaulty keeps its snapshots until their retention ends; you can still browse, restore and export them.</Notice>
+    }
+
+    @if (latest is { State: "partial" } && _exceptions.Count > 0)
+    {
+        <Section Title="@($"Skipped in the latest snapshot: {StatusText.Plural(_exceptions.Count, "item")}")" Flush="true"
+                 Description="@($"Snapshot of {Time.Absolute(latest.StartedAt)} was stored, but these items are missing. Each has a reason; Vaulty retries them once a day.")">
+            <MudSimpleTable Dense="true" Elevation="0">
+                <thead><tr><th>Reason</th><th class="vy-num">Items</th><th>Detail</th><th>What to do</th></tr></thead>
+                <tbody>
+                    @foreach (var group in _exceptions.GroupBy(e => e.Code).OrderByDescending(g => g.Count()))
+                    {
+                        <tr>
+                            <td class="vy-nowrap"><span class="vy-status partial">@ObjectLabels.ExceptionReason(group.Key)</span></td>
+                            <td class="vy-num">@group.Count()</td>
+                            <td style="min-width: 260px">
+                                @{ var details = group.Select(e => e.Detail).Where(d => !string.IsNullOrEmpty(d)).Distinct().ToList(); }
+                                @foreach (var detail in details.Take(5))
+                                {
+                                    <div>@detail</div>
+                                }
+                                @if (details.Count == 0)
+                                {
+                                    <span class="vy-muted">No further detail recorded</span>
+                                }
+                            </td>
+                            <td style="min-width: 260px" class="vy-cell-sub">@ObjectLabels.ExceptionAdvice(group.Key)</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </Section>
+    }
+
+    <Section Title="Snapshots" Flush="@(_snapshots.Count > 0)" Description="Each backup makes a snapshot of the whole protected object at that moment. Open one to browse, restore or export its items.">
+        @if (_snapshots.Count == 0)
+        {
+            <EmptyState Title="No snapshots yet" Icon="@Icons.Material.Outlined.History" Compact="true">The first backup creates one.</EmptyState>
+        }
+        else
+        {
+            <MudSimpleTable Dense="true" Elevation="0">
+                <thead><tr><th>Snapshot</th><th>Status</th><th>Items</th><th>Verified</th><th><span class="vy-sr-only">Actions</span></th></tr></thead>
+                <tbody>
+                    @foreach (var snapshot in _snapshots.Take(_showAll ? int.MaxValue : 20))
+                    {
+                        <tr>
+                            <td class="vy-nowrap"><a href="@($"/objects/{ObjectId}/snapshots/{snapshot.Id}")" class="vy-cell-main">@Time.Absolute(snapshot.StartedAt)</a></td>
+                            <td>
+                                @if (snapshot.State == "partial")
+                                {
+                                    <span class="vy-status partial">Partial: @snapshot.Exceptions missing</span>
+                                }
+                                else
+                                {
+                                    <span class="vy-status succeeded">Succeeded</span>
+                                }
+                            </td>
+                            <td>@ObjectLabels.Counts(snapshot.Counts)</td>
+                            <td class="vy-nowrap">
+                                @if (snapshot.VerifiedAt is { } v)
+                                {
+                                    <span title="Re-read from storage and matched its hashes"><MudIcon Icon="@Icons.Material.Outlined.VerifiedUser" Style="font-size: 16px; vertical-align: -3px; color: var(--vy-primary)" /> @Time.Relative(v)</span>
+                                }
+                                else
+                                {
+                                    <span class="vy-muted">Not yet</span>
+                                }
+                            </td>
+                            <td class="vy-actions-cell"><MudButton Size="Size.Small" Variant="Variant.Text" Href="@($"/objects/{ObjectId}/snapshots/{snapshot.Id}")">Browse</MudButton></td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+            @if (_snapshots.Count > 20 && !_showAll)
+            {
+                <div class="pa-3"><MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _showAll = true)">Show all @_snapshots.Count snapshots</MudButton></div>
+            }
+        }
+    </Section>
 
     @if (_restores.Count > 0)
     {
-        <MudText Typo="Typo.h6" Class="mt-6 mb-2">Restores and exports</MudText>
-        <MudTable Items="_restores" Hover="true" Elevation="0" Outlined="true" Dense="true">
-            <HeaderContent>
-                <MudTh>Started</MudTh>
-                <MudTh>Type</MudTh>
-                <MudTh>Status</MudTh>
-                <MudTh></MudTh>
-            </HeaderContent>
-            <RowTemplate>
-                <MudTd>@Time.Absolute(context.CreatedAt)</MudTd>
-                <MudTd>@(context.Kind == "export" ? "Export" : context.TargetMode switch { "original" => "Restore to the original location", "other" => "Restore to another location", _ => "Restore to a restore folder" })</MudTd>
-                <MudTd>@(char.ToUpperInvariant(context.State[0]) + context.State[1..])</MudTd>
-                <MudTd><MudLink Href="@($"/restores/{context.Id}")">Report</MudLink></MudTd>
-            </RowTemplate>
-        </MudTable>
+        <Section Title="Restores and exports" Flush="true">
+            <MudSimpleTable Dense="true" Elevation="0">
+                <thead><tr><th>Started</th><th>Type</th><th>Status</th><th><span class="vy-sr-only">Actions</span></th></tr></thead>
+                <tbody>
+                    @foreach (var r in _restores)
+                    {
+                        <tr>
+                            <td class="vy-nowrap">@Time.Absolute(r.CreatedAt)</td>
+                            <td>@(r.Kind == "export" ? "Export" : r.TargetMode switch { "original" => "Restore to the original location", "other" => "Restore to another location", _ => "Restore to a restore folder" })</td>
+                            <td><Chip Tone="@StatusText.JobTone(r.State)" Text="@StatusText.JobLabel(r.State)" /></td>
+                            <td class="vy-actions-cell"><MudButton Size="Size.Small" Variant="Variant.Text" Href="@($"/restores/{r.Id}")">Report</MudButton></td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </Section>
     }
 }
 
@@ -75,10 +168,15 @@ else
     [Parameter] public Guid ObjectId { get; set; }
 
     private ObjectHeader? _object;
+    private ObjectStatusRow? _status;
     private IReadOnlyList<SnapshotSummary> _snapshots = [];
-    private List<BreadcrumbItem> _crumbs = [];
+    private IReadOnlyList<SnapshotException> _exceptions = [];
+    private List<Crumb> _crumbs = [];
     private IReadOnlyList<RestoreSummary> _restores = [];
-
+    private Vaulty.Infrastructure.Access.UserAccess? _access;
+    private bool _canRun;
+    private bool _busy;
+    private bool _showAll;
     private bool _loaded;
 
     protected override async Task OnParametersSetAsync()
@@ -96,17 +194,39 @@ else
     private async Task LoadPageAsync()
     {
         await Time.LoadAsync();
-        var access = await Current.GetAsync();
-        _object = await Browser.ObjectAsync(access, ObjectId);
+        _access = await Current.GetAsync();
+        _object = await Browser.ObjectAsync(_access, ObjectId);
         if (_object is null) return;
-        _snapshots = await Browser.SnapshotsAsync(access, ObjectId);
-        _restores = await Restores.ListAsync(access, ObjectId);
+        _canRun = _access.Allows(Permissions.BackupsRun, _object.CustomerId);
+        _snapshots = await Browser.SnapshotsAsync(_access, ObjectId);
+        _restores = await Restores.ListAsync(_access, ObjectId);
+        _status = (await Dashboards.LoadAsync(_access, _object.TenantId)).Tenants.SelectMany(t => t.Objects).FirstOrDefault(o => o.Id == ObjectId);
+        if (_snapshots.FirstOrDefault() is { State: "partial" } latest) _exceptions = await Browser.ExceptionsAsync(_access, ObjectId, latest.Id);
         _crumbs =
         [
             new("Customers", "/customers"),
             new(_object.CustomerName, $"/customers/{_object.CustomerId}"),
             new(_object.TenantName, $"/tenants/{_object.TenantId}"),
-            new(_object.DisplayName, null, disabled: true),
+            new(_object.DisplayName),
         ];
+    }
+
+    private async Task BackUpNowAsync()
+    {
+        if (_access is null || _object is null) return;
+        _busy = true;
+        try
+        {
+            var job = await Workflows.StartBackupAsync(_access.OrganizationId, _object.TenantId, ObjectId, _object.Kind, _access.UserId);
+            Snackbar.Add(job is null ? "A backup of this object is already running." : "Backup started. Follow it on the Jobs page.", Severity.Info);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Temporalio.Exceptions.TemporalException)
+        {
+            Snackbar.Add($"The backup could not start: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 }

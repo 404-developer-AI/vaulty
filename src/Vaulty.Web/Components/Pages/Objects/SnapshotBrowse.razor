@@ -13,6 +13,8 @@
 @inject CurrentAccess Current
 @inject DisplayTime Time
 @inject NavigationManager Navigation
+@inject IDialogService Dialogs
+@inject ILogger<SnapshotBrowse> Log
 
 <PageTitle>@(_object?.DisplayName ?? "Snapshot") · Vaulty</PageTitle>
 
@@ -23,106 +25,117 @@
 }
 else if (_object is null || _snapshot is null)
 {
-    <p class="vy-muted">This snapshot does not exist or you have no access to it.</p>
+    <PageHeader Title="Snapshot not found" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb("Not found")])" />
+    <Section>
+        <EmptyState Title="This snapshot does not exist or you have no access to it" Icon="@Icons.Material.Outlined.SearchOff">
+            <ChildContent>Snapshots end with their retention. Open the protected object to see the snapshots it has now.</ChildContent>
+            <Actions>
+                <MudButton Variant="Variant.Outlined" Href="@($"/objects/{ObjectId}")">Open the protected object</MudButton>
+                <MudButton Variant="Variant.Text" Href="/search">Search and restore</MudButton>
+            </Actions>
+        </EmptyState>
+    </Section>
 }
 else
 {
-    <MudBreadcrumbs Items="_crumbs" Class="px-0 pt-0" />
-    <div class="d-flex align-center gap-4 flex-wrap mb-4">
-        <div>
-            <h1 class="vy-page-title">@_object.DisplayName</h1>
-            <span class="vy-muted">Snapshot of @Time.Absolute(_snapshot.StartedAt) · @ObjectLabels.Counts(_snapshot.Counts)</span>
+    <PageHeader Title="@_object.DisplayName" Crumbs="@_crumbs">
+        <Status>
             @if (_snapshot.State == "partial")
             {
-                <span class="vy-status partial ml-2">Partial: @_snapshot.Exceptions missing</span>
+                <span class="vy-status partial">Partial: @_snapshot.Exceptions missing</span>
             }
-        </div>
-        <MudSpacer />
-        <MudSelect T="Guid" Value="SnapshotId" ValueChanged="GoToSnapshot" Label="Point in time" Dense="true" Style="min-width: 240px">
-            @foreach (var s in _snapshots)
-            {
-                <MudSelectItem Value="s.Id">@Time.Absolute(s.StartedAt)@(s.State == "partial" ? " (partial)" : "")</MudSelectItem>
-            }
-        </MudSelect>
-    </div>
+        </Status>
+        <LedeContent>Snapshot of @Time.Absolute(_snapshot.StartedAt) · @ObjectLabels.Counts(_snapshot.Counts)@(_snapshot.VerifiedAt is { } v ? $" · verified {Time.Relative(v)}" : "")</LedeContent>
+        <Actions>
+            <div style="min-width: 260px">
+                <MudSelect T="Guid" Value="SnapshotId" ValueChanged="GoToSnapshot" Label="Point in time" Variant="Variant.Outlined" Margin="Margin.Dense"
+                           ToStringFunc="@(id => _snapshots.FirstOrDefault(s => s.Id == id) is { } s ? Time.Absolute(s.StartedAt) : "")">
+                    @foreach (var s in _snapshots)
+                    {
+                        <MudSelectItem Value="s.Id">@Time.Absolute(s.StartedAt)@(s.State == "partial" ? " (partial)" : "")</MudSelectItem>
+                    }
+                </MudSelect>
+            </div>
+        </Actions>
+    </PageHeader>
 
-    <MudGrid Spacing="3">
-        <MudItem xs="12" md="3">
-            <MudPaper Elevation="0" Outlined="true" Class="pa-2 vy-tree">
-                @* MudBlazor renders nothing for Items without an ItemTemplate; the template is required. *@
-                <MudTreeView T="string" Items="_tree" SelectionMode="SelectionMode.SingleSelection" SelectedValue="_folder" SelectedValueChanged="SelectFolderAsync" Dense="true">
-                    <ItemTemplate>
-                        <MudTreeViewItem @bind-Expanded="@context.Expanded" Items="@context.Children" Value="@context.Value" Text="@context.Text" Icon="@context.Icon" />
-                    </ItemTemplate>
-                </MudTreeView>
-            </MudPaper>
-        </MudItem>
-        <MudItem xs="12" md="@(_detail is null ? 9 : 5)">
-            @if (_restoring)
+    @if (_object.Kind == "team")
+    {
+        <Notice Tone="info">Teams messages can be viewed and exported, not restored to Teams.</Notice>
+    }
+    @if (_resuming)
+    {
+        <Notice Tone="info" Title="Starting the restore you confirmed…" />
+    }
+    @if (_error is not null)
+    {
+        <Notice Tone="error" Title="This snapshot could not be read" OnRetry="ReloadAsync">@_error</Notice>
+    }
+    else
+    {
+    <div class="vy-browser @(_detail is null ? "" : "with-detail")">
+        <Section Title="Folders" Class="mb-0">
+            @if (_tree.Count == 0)
             {
-                <MudPaper Elevation="0" Outlined="true" Class="pa-4 mb-3">
-                    <MudText Typo="Typo.h6">@(_mode == RestoreModes.Export ? "Export" : "Restore") @SelectionText</MudText>
-                    @if (_mode != RestoreModes.Export)
-                    {
-                        <MudRadioGroup T="string" @bind-Value="_mode">
-                            <MudRadio T="string" Value="@RestoreModes.RestoreFolder">To a restore folder (Vaulty Restore/@Time.Absolute(Clock.GetUtcNow()))</MudRadio>
-                            <MudRadio T="string" Value="@RestoreModes.Original">To the original location</MudRadio>
-                            @if (_targets.Count > 0 && _canRestoreElsewhere)
-                            {
-                                <MudRadio T="string" Value="@RestoreModes.Other">To another @(_object.Kind == "drive" ? "OneDrive" : "mailbox")</MudRadio>
-                            }
-                        </MudRadioGroup>
-                        @if (_mode == RestoreModes.Other)
-                        {
-                            <MudSelect T="Guid?" @bind-Value="_target" Label="Target" Dense="true" Class="mt-2">
-                                @foreach (var t in _targets)
-                                {
-                                    <MudSelectItem T="Guid?" Value="t.Id">@t.DisplayName</MudSelectItem>
-                                }
-                            </MudSelect>
-                        }
-                        @if (_object.Kind == "drive")
-                        {
-                            <MudSelect T="string" @bind-Value="_conflict" Label="When a file with the same name exists" Dense="true" Class="mt-2">
-                                <MudSelectItem T="string" Value="@("rename")">Keep both (the restored file gets "(restored date)" in its name)</MudSelectItem>
-                                <MudSelectItem T="string" Value="@("skip")">Skip the file</MudSelectItem>
-                                <MudSelectItem T="string" Value="@("overwrite")">Replace the existing file</MudSelectItem>
-                            </MudSelect>
-                        }
-                        else
-                        {
-                            <p class="vy-muted mt-2">Calendar items are restored without sending invitations or updates to attendees.</p>
-                        }
-                    }
-                    else
-                    {
-                        <p class="vy-muted">A zip with messages as EML, events as ICS, contacts as VCF and files as they are. You get a download link that works once, within 24 hours.</p>
-                    }
-                    <div class="d-flex gap-2 mt-3">
-                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="StartRestoreAsync" Disabled="_busy">@(_mode == RestoreModes.Export ? "Start export" : "Start restore")</MudButton>
-                        <MudButton Variant="Variant.Text" OnClick="@(() => _restoring = false)">Cancel</MudButton>
-                    </div>
-                </MudPaper>
+                <EmptyState Title="No folders" Compact="true">This snapshot holds no folders.</EmptyState>
             }
-            <MudTable Items="_items" Hover="true" Elevation="0" Outlined="true" Dense="true" OnRowClick="@((TableRowClickEventArgs<ItemRow> e) => OpenAsync(e.Item!))" T="ItemRow"
-                      MultiSelection="@(_canRestore || _canExport)" @bind-SelectedItems="_selected">
-                <ToolBarContent>
-                    <span class="vy-muted">@_total.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) items in this folder</span>
-                    <MudSpacer />
+            else
+            {
+                <div class="vy-tree" style="padding: 0">
+                    @* MudBlazor renders nothing for Items without an ItemTemplate; the template is required. *@
+                    <MudTreeView T="string" Items="_tree" SelectionMode="SelectionMode.SingleSelection" SelectedValue="_folder" SelectedValueChanged="SelectFolderAsync" Dense="true"
+                                 Hover="true" Color="Color.Primary">
+                        <ItemTemplate>
+                            <MudTreeViewItem @bind-Expanded="@context.Expanded" Items="@context.Children" Value="@context.Value" Text="@context.Text" Icon="@context.Icon" />
+                        </ItemTemplate>
+                    </MudTreeView>
+                </div>
+            }
+        </Section>
+
+        <div style="min-width: 0">
+            @if (_selected.Count > 0)
+            {
+                <div class="vy-selection-bar" role="region" aria-label="Selection">
+                    <strong>@StatusText.Plural(_selected.Count, "item") selected</strong>
+                    <span style="flex: 1"></span>
                     @if (_canRestore)
                     {
-                        <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Restore" OnClick="@(() => OpenRestore(RestoreModes.RestoreFolder))">Restore</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Restore" OnClick="@(() => OpenWizardAsync(SelectedItems(), false))">Restore</MudButton>
                     }
                     @if (_canExport)
                     {
-                        <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Download" OnClick="@(() => OpenRestore(RestoreModes.Export))">Export</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Download" OnClick="@(() => OpenWizardAsync(SelectedItems(), true))">Export</MudButton>
                     }
+                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _selected = [])">Clear selection</MudButton>
+                </div>
+            }
+            <MudTable Items="_items" Hover="true" Elevation="0" Dense="true" OnRowClick="@((TableRowClickEventArgs<ItemRow> e) => OpenAsync(e.Item!))" T="ItemRow"
+                      MultiSelection="@(_canRestore || _canExport)" @bind-SelectedItems="_selected" Loading="_loadingItems" LoadingProgressColor="Color.Primary"
+                      RowClassFunc="@((row, _) => "vy-row-click" + (_detail?.Row.Id == row.Id ? " vy-row-selected" : ""))" Breakpoint="Breakpoint.None" HorizontalScrollbar="true">
+                <ToolBarContent>
+                    <div class="d-flex flex-wrap align-center gap-2" style="width: 100%">
+                        <span class="vy-cell-main">@(FolderName ?? "Folder")</span>
+                        <span class="vy-muted">@StatusText.Plural(_total, "item")</span>
+                        <span style="flex: 1"></span>
+                        @if (_selected.Count == 0 && _total > 0)
+                        {
+                            @if (_canRestore)
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Restore" OnClick="@(() => OpenWizardAsync(FolderSelection(), false))">Restore this folder</MudButton>
+                            }
+                            @if (_canExport)
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Download" OnClick="@(() => OpenWizardAsync(FolderSelection(), true))">Export this folder</MudButton>
+                            }
+                        }
+                    </div>
                 </ToolBarContent>
                 <HeaderContent>
                     <MudTh>Name</MudTh>
                     <MudTh>Type</MudTh>
                     <MudTh>Modified</MudTh>
-                    <MudTh>Size</MudTh>
+                    <MudTh Class="vy-num">Size</MudTh>
                 </HeaderContent>
                 <RowTemplate>
                     <MudTd>
@@ -133,24 +146,38 @@ else
                         }
                     </MudTd>
                     <MudTd>@ObjectLabels.Item(context.Kind)@(context.LimitedFidelity ? " (limited fidelity)" : "")</MudTd>
-                    <MudTd>@Time.Absolute(context.ModifiedAt)</MudTd>
-                    <MudTd>@ObjectLabels.Size(context.Size)</MudTd>
+                    <MudTd Class="vy-nowrap">@Time.Absolute(context.ModifiedAt)</MudTd>
+                    <MudTd Class="vy-num">@ObjectLabels.Size(context.Size)</MudTd>
                 </RowTemplate>
-                <NoRecordsContent><span class="vy-muted">This folder has no items in this snapshot.</span></NoRecordsContent>
+                <NoRecordsContent>
+                    <EmptyState Title="This folder is empty in this snapshot" Icon="@Icons.Material.Outlined.FolderOpen" Compact="true">
+                        Choose another folder, or another point in time at the top of the page.
+                    </EmptyState>
+                </NoRecordsContent>
             </MudTable>
             @if (_next is not null)
             {
-                <MudButton Class="mt-2" Variant="Variant.Text" OnClick="MoreAsync">Load more</MudButton>
+                <MudButton Class="mt-2" Variant="Variant.Text" OnClick="MoreAsync">Load more (@StatusText.Number(_items.Count) of @StatusText.Number(_total) shown)</MudButton>
             }
-        </MudItem>
+        </div>
+
         @if (_detail is not null)
         {
-            <MudItem xs="12" md="4">
-                <MudPaper Elevation="0" Outlined="true" Class="pa-4">
-                    <div class="d-flex align-center">
-                        <MudText Typo="Typo.h6" Class="vy-item-title">@_detail.Row.Title</MudText>
-                        <MudSpacer />
-                        <MudIconButton Icon="@Icons.Material.Outlined.Close" Size="Size.Small" OnClick="@(() => _detail = null)" aria-label="Close" />
+            <aside class="vy-detail" aria-label="Item details">
+                <Section Class="mb-0">
+                    <div class="d-flex align-start gap-2">
+                        <h2 class="vy-item-title mt-0 mb-2" style="font-size: 1rem; flex: 1">@_detail.Row.Title</h2>
+                        <MudIconButton Icon="@Icons.Material.Outlined.Close" Size="Size.Small" OnClick="@(() => _detail = null)" aria-label="Close the details" />
+                    </div>
+                    <div class="d-flex flex-wrap gap-2 mb-3">
+                        @if (_canRestore)
+                        {
+                            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Restore" OnClick="@(() => OpenWizardAsync(ItemSelection(_detail.Row), false))">Restore</MudButton>
+                        }
+                        @if (_canExport)
+                        {
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Download" OnClick="@(() => OpenWizardAsync(ItemSelection(_detail.Row), true))">Export</MudButton>
+                        }
                     </div>
                     <dl class="vy-fields">
                         @foreach (var field in VisibleFields(_detail))
@@ -161,21 +188,21 @@ else
                     </dl>
                     @if (_detail.Versions.Count > 0)
                     {
-                        <MudText Typo="Typo.subtitle2" Class="mt-3">Older versions</MudText>
+                        <h3 class="vy-wizard-h mt-4">Older versions</h3>
                         @foreach (var version in _detail.Versions)
                         {
-                            <div class="vy-muted d-flex align-center">
-                                Version @version.VersionId · @Time.Absolute(version.ModifiedAt) · @ObjectLabels.Size(version.Size)
+                            <div class="d-flex align-center gap-2 py-1" style="border-top: 1px solid var(--vy-border)">
+                                <span style="flex: 1">Version @version.VersionId · @Time.Absolute(version.ModifiedAt) · @ObjectLabels.Size(version.Size)</span>
                                 @if (_canRestore)
                                 {
-                                    <MudButton Size="Size.Small" Variant="Variant.Text" Class="ml-2" OnClick="@(() => OpenRestore(RestoreModes.Original, version.Id))">Restore this version</MudButton>
+                                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => OpenWizardAsync(VersionSelection(version), false))">Restore this version</MudButton>
                                 }
                             </div>
                         }
                     }
+                    <h3 class="vy-wizard-h mt-4">Preview</h3>
                     @if (_detail.PreviewType is { } type)
                     {
-                        <MudText Typo="Typo.subtitle2" Class="mt-3 mb-1">Preview</MudText>
                         @if (type.StartsWith("image/", StringComparison.Ordinal))
                         {
                             <img class="vy-preview-image" src="@PreviewUrl(_detail)" alt="@_detail.Row.Title" />
@@ -192,79 +219,136 @@ else
                     }
                     else
                     {
-                        <p class="vy-muted mt-3">No preview for this item type. Export or restore it to open it.</p>
+                        <p class="vy-muted mt-0">No preview for this item type. Export or restore it to open it.</p>
                     }
-                </MudPaper>
-            </MudItem>
+                </Section>
+            </aside>
         }
-    </MudGrid>
+    </div>
+    }
 }
 
 @code {
     [Parameter] public Guid ObjectId { get; set; }
     [Parameter] public Guid SnapshotId { get; set; }
     [SupplyParameterFromQuery(Name = "item")] public Guid? ItemId { get; set; }
+    // A restore that waited for "Confirm it's you" comes back with its choices and starts at once.
+    [SupplyParameterFromQuery(Name = "resume")] public string? ResumeMode { get; set; }
+    [SupplyParameterFromQuery(Name = "target")] public Guid? ResumeTarget { get; set; }
+    [SupplyParameterFromQuery(Name = "conflict")] public string? ResumeConflict { get; set; }
+    [SupplyParameterFromQuery(Name = "items")] public string? ResumeItems { get; set; }
+    [SupplyParameterFromQuery(Name = "folder")] public string? ResumeFolder { get; set; }
     [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
 
     private ObjectHeader? _object;
     private SnapshotSummary? _snapshot;
     private IReadOnlyList<SnapshotSummary> _snapshots = [];
     private List<TreeItemData<string>> _tree = [];
-    private List<BreadcrumbItem> _crumbs = [];
+    private IReadOnlyList<FolderNode> _folders = [];
+    private List<Crumb> _crumbs = [];
     private string? _folder;
     private readonly List<ItemRow> _items = [];
     private string? _next;
     private long _total;
     private ItemDetail? _detail;
     private HashSet<ItemRow> _selected = [];
-    private bool _restoring;
-    private bool _busy;
-    private string _mode = RestoreModes.RestoreFolder;
-    private string _conflict = "rename";
-    private Guid? _target;
-    private Guid? _versionItem;
+    private bool _loadingItems;
+    private bool _resuming;
+    private bool _resumed;
+    private string? _error;
     private List<ProtectedObjectRow> _targets = [];
     private bool _canRestore;
     private bool _canRestoreElsewhere;
     private bool _canExport;
 
-    private string SelectionText => _versionItem is not null ? "this version"
-        : _selected.Count > 0 ? $"{_selected.Count} selected {(_selected.Count == 1 ? "item" : "items")}"
-        : $"the whole folder ({_total.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} items and everything below it)";
+    private string? FolderName => _folder is null ? null : Find(_folders, _folder)?.Name;
 
-    private void OpenRestore(string mode, Guid? versionItem = null)
+    private static FolderNode? Find(IEnumerable<FolderNode> nodes, string id)
     {
-        (_mode, _versionItem, _restoring) = (mode, versionItem, true);
+        foreach (var n in nodes)
+        {
+            if (n.SourceId == id) return n;
+            if (Find(n.Children, id) is { } child) return child;
+        }
+        return null;
     }
 
-    private async Task StartRestoreAsync()
+    private RestoreWizard.WizardSelection SelectedItems()
     {
-        if (_object is null || _folder is null) return;
-        _busy = true;
+        var titles = _selected.Select(i => i.Title).ToList();
+        return new($"{StatusText.Plural(_selected.Count, "item")}", $"{StatusText.Plural(_selected.Count, "selected item")} from {FolderName}", titles,
+            _selected.Select(i => i.Id).ToList(), []);
+    }
+
+    private RestoreWizard.WizardSelection FolderSelection() =>
+        new($"the folder {FolderName}", $"The folder {FolderName}: {StatusText.Plural(_total, "item")} and everything below it", [], [], [_folder!]);
+
+    private static RestoreWizard.WizardSelection ItemSelection(ItemRow row) => new($"\"{row.Title}\"", row.Title, [], [row.Id], []);
+
+    private RestoreWizard.WizardSelection VersionSelection(ItemVersionRow version) =>
+        new($"version {version.VersionId}", $"Version {version.VersionId} of {_detail?.Row.Title}, {Time.Absolute(version.ModifiedAt)}", [], [version.Id], []);
+
+    private async Task OpenWizardAsync(RestoreWizard.WizardSelection selection, bool export)
+    {
+        if (_object is null || _snapshot is null) return;
+        var user = (await AuthenticationState).User;
+        var parameters = new DialogParameters<RestoreWizard>
+        {
+            { w => w.Object, _object },
+            { w => w.Snapshot, _snapshot },
+            { w => w.Selection, selection },
+            { w => w.Targets, _targets },
+            { w => w.StartWithExport, export },
+            { w => w.CanRestore, _canRestore },
+            { w => w.CanRestoreElsewhere, _canRestoreElsewhere },
+            { w => w.CanExport, _canExport },
+            { w => w.StepUpFresh, VaultyWebSetup.HasFreshStepUp(user, Clock) },
+        };
+        var dialog = await Dialogs.ShowAsync<RestoreWizard>(export ? "Export" : "Restore", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, CloseOnEscapeKey = true, BackdropClick = false });
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: RestoreWizard.WizardResult choice }) await StartAsync(choice, selection.Items, selection.Folders);
+    }
+
+    private async Task StartAsync(RestoreWizard.WizardResult choice, IReadOnlyList<Guid> items, IReadOnlyList<string> folders)
+    {
+        if (_object is null) return;
         try
         {
             var access = await Current.GetAsync();
-            var selection = _versionItem is { } v ? new RestoreSelection([v], [])
-                : _selected.Count > 0 ? new RestoreSelection(_selected.Select(i => i.Id).ToList(), [])
-                : new RestoreSelection([], [_folder]);
             var user = (await AuthenticationState).User;
             var created = await Restores.CreateAsync(access, VaultyWebSetup.HasFreshStepUp(user, Clock),
-                new RestoreRequest(ObjectId, SnapshotId, selection, _mode, _mode == RestoreModes.Other ? _target : null, _conflict));
+                new RestoreRequest(ObjectId, SnapshotId, new RestoreSelection(items.ToList(), folders.ToList()), choice.Mode, choice.Target, choice.Conflict));
             await Workflows.StartRestoreAsync(access.OrganizationId, created.TenantId, created.RestoreId, created.JobId, created.IsExport);
             Navigation.NavigateTo($"/restores/{created.RestoreId}");
         }
         catch (StepUpRequiredException)
         {
-            Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString(Navigation.ToBaseRelativePath(Navigation.Uri).Insert(0, "/"))}", forceLoad: true);
+            var query = $"resume={Uri.EscapeDataString(choice.Mode)}&conflict={Uri.EscapeDataString(choice.Conflict)}"
+                        + (choice.Target is { } t ? $"&target={t}" : "")
+                        + (items.Count > 0 ? $"&items={string.Join(',', items.Select(i => i.ToString("N")))}" : "")
+                        + (folders.Count > 0 ? $"&folder={Uri.EscapeDataString(folders[0])}" : "");
+            var back = $"/objects/{ObjectId}/snapshots/{SnapshotId}?{query}";
+            Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString(back)}", forceLoad: true);
         }
-        catch (Exception ex) when (ex is ArgumentException or Vaulty.Infrastructure.Access.AccessException)
+        catch (Exception ex) when (ex is ArgumentException or Vaulty.Infrastructure.Access.AccessException or InvalidOperationException)
         {
+            _resuming = false;
             Snackbar.Add(ex.Message, Severity.Warning);
         }
-        finally
-        {
-            _busy = false;
-        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || !RendererInfo.IsInteractive || ResumeMode is null || _resumed || _snapshot is null) return;
+        _resumed = true;
+        if (!VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return;
+        _resuming = true;
+        StateHasChanged();
+        var items = (ResumeItems ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(s => Guid.TryParse(s, out var g) ? g : Guid.Empty)
+            .Where(g => g != Guid.Empty).ToList();
+        var folders = string.IsNullOrEmpty(ResumeFolder) ? new List<string>() : [ResumeFolder];
+        await StartAsync(new RestoreWizard.WizardResult(ResumeMode, ResumeTarget, ResumeConflict ?? "rename"), items, folders);
     }
 
     private static readonly Dictionary<string, string> FieldLabels = new(StringComparer.Ordinal)
@@ -293,6 +377,12 @@ else
         }
     }
 
+    private async Task ReloadAsync()
+    {
+        _error = null;
+        await LoadPageAsync();
+    }
+
     private async Task LoadPageAsync()
     {
         await Time.LoadAsync();
@@ -313,23 +403,32 @@ else
             new(_object.CustomerName, $"/customers/{_object.CustomerId}"),
             new(_object.TenantName, $"/tenants/{_object.TenantId}"),
             new(_object.DisplayName, $"/objects/{ObjectId}"),
-            new(Time.Absolute(_snapshot.StartedAt), null, disabled: true),
+            new(Time.Absolute(_snapshot.StartedAt)),
         ];
-        var folders = await Browser.FoldersAsync(access, ObjectId, SnapshotId);
-        _tree = folders.Select(f => ToTree(f, expanded: true)).ToList();
-        _detail = null;
-        if (ItemId is { } item)
+        try
         {
-            _detail = await Browser.ItemAsync(access, ObjectId, SnapshotId, item);
-            if (_detail?.ParentSourceId is { } parent) await SelectFolderAsync(parent);
+            _folders = await Browser.FoldersAsync(access, ObjectId, SnapshotId);
+            _tree = _folders.Select(f => ToTree(f, expanded: true)).ToList();
+            _detail = null;
+            if (ItemId is { } item)
+            {
+                _detail = await Browser.ItemAsync(access, ObjectId, SnapshotId, item);
+                if (_detail?.ParentSourceId is { } parent) await SelectFolderAsync(parent);
+            }
+            else if (_folder is null || !Contains(_folders, _folder))
+            {
+                await SelectFolderAsync(DefaultFolder(_folders));
+            }
+            else
+            {
+                await SelectFolderAsync(_folder);
+            }
         }
-        else if (_folder is null || !Contains(folders, _folder))
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            await SelectFolderAsync(DefaultFolder(folders));
-        }
-        else
-        {
-            await SelectFolderAsync(_folder);
+            // The item metadata is sealed per tenant; without the tenant key or the storage it lives in, the page says so instead of ending.
+            Log.LogWarning(ex, "Snapshot {SnapshotId} of {ObjectId} could not be read", SnapshotId, ObjectId);
+            _error = "Vaulty could not open the tenant's encryption key or the backup storage, so the folders and items cannot be shown. Check Storage under Settings; if the connection test passes, try again.";
         }
     }
 
@@ -356,9 +455,17 @@ else
         _folder = folder;
         _items.Clear();
         _selected = [];
-        var page = await Browser.ItemsAsync(await Current.GetAsync(), ObjectId, SnapshotId, folder, null);
-        _items.AddRange(page.Items);
-        (_next, _total) = (page.NextCursor, page.Total);
+        _loadingItems = true;
+        try
+        {
+            var page = await Browser.ItemsAsync(await Current.GetAsync(), ObjectId, SnapshotId, folder, null);
+            _items.AddRange(page.Items);
+            (_next, _total) = (page.NextCursor, page.Total);
+        }
+        finally
+        {
+            _loadingItems = false;
+        }
     }
 
     private async Task MoreAsync()

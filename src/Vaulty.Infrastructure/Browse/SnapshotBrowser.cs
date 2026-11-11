@@ -19,6 +19,9 @@ public sealed record ObjectHeader(Guid Id, Guid TenantId, Guid CustomerId, strin
 public sealed record SnapshotSummary(Guid Id, long Sequence, string State, DateTimeOffset StartedAt, DateTimeOffset? CommittedAt,
     IReadOnlyDictionary<string, long> Counts, int Exceptions, DateTimeOffset? VerifiedAt);
 
+/// <summary>One item a partial snapshot misses: the reason code, its explanation and where it was.</summary>
+public sealed record SnapshotException(string Code, string? Detail, string? FolderId, string? SourceId);
+
 public sealed record FolderNode(string SourceId, string? ParentSourceId, string Name, IReadOnlyList<FolderNode> Children);
 
 public sealed record ItemRow(Guid Id, string SourceId, string Kind, long Size, DateTimeOffset ModifiedAt, string Title, string? Subtitle,
@@ -85,6 +88,41 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
             """, new { objectId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         return rows.Select(r => new SnapshotSummary(r.Id, r.Sequence, r.State, Utc(r.StartedAt), r.CommittedAt is { } c ? Utc(c) : null,
             JsonSerializer.Deserialize<Dictionary<string, long>>(r.Counts) ?? [], r.Exceptions, r.VerifiedAt is { } v ? Utc(v) : null)).ToList();
+    }
+
+    /// <summary>
+    /// The items a snapshot misses, each with its reason, as recorded when the snapshot was committed. The list carries
+    /// source ids and reasons only; names stay sealed with the item metadata.
+    /// </summary>
+    public async Task<IReadOnlyList<SnapshotException>> ExceptionsAsync(UserAccess access, Guid objectId, Guid snapshotId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        if (await ObjectAsync(access, objectId, cancellationToken).ConfigureAwait(false) is null) return [];
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        var json = await session.Connection.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "SELECT exceptions::text FROM vaulty.snapshots WHERE id = @snapshotId AND protected_object_id = @objectId",
+            new { snapshotId, objectId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        return ParseExceptions(json);
+    }
+
+    /// <summary>Reads the exception list of a snapshot; entries are written both as ErrorCode/Detail and as error_code/detail.</summary>
+    public static IReadOnlyList<SnapshotException> ParseExceptions(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array) return [];
+        var list = new List<SnapshotException>();
+        foreach (var e in doc.RootElement.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.Object) continue;
+            list.Add(new SnapshotException(Text(e, "ErrorCode", "error_code") ?? "unknown", Text(e, "Detail", "detail"), Text(e, "FolderId", "folder_id"),
+                Text(e, "SourceId", "source_id")));
+        }
+        return list;
+
+        static string? Text(JsonElement e, string pascal, string snake) =>
+            (e.TryGetProperty(pascal, out var v) || e.TryGetProperty(snake, out v)) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
     }
 
     /// <summary>The folder tree of a snapshot. The top level holds the containers the folders hang under (a mailbox root, a drive root).</summary>
