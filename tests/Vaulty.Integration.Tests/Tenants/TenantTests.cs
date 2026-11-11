@@ -236,6 +236,66 @@ public sealed class TenantTests(PostgresDatabase db) : IClassFixture<PostgresDat
         Assert.DoesNotContain(await tenants.ProtectedObjectsAsync(org, tenantId), o => o.State == "source_deleted");
     }
 
+    [PostgresFact]
+    public async Task Found_objects_wait_to_be_selected_and_excluding_needs_a_fresh_confirmation()
+    {
+        var (org, customer, admin, api, secrets) = await OrganizationAsync();
+        var tenants = Tenants(api, secrets);
+        var tenantId = await tenants.CompleteConnectAsync(org, admin, (await tenants.BeginConnectAsync(org, admin, customer, "Selection tenant")).Id,
+            Guid.NewGuid(), Guid.NewGuid());
+        var users = new List<string> { "u1", "u2", "u3", "room1" };
+        MockDirectory(() => users);
+        var graph = new GraphClient(GraphPipeline.Create(new ScriptedTokens(), new Graph.Http.GraphThrottle()), new Uri($"{_graph.Url}/v1.0/"));
+        var discovery = new TenantDiscovery(api, graph, TimeProvider.System);
+        var selection = new BackupSelection(api, TimeProvider.System);
+        var access = new UserAccess(admin, org, true, Vaulty.Core.Security.Permissions.All.ToDictionary(p => p.Key, _ => (HashSet<Guid>?)null));
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        const string Due = "SELECT count(*) FROM vaulty.due_protected_objects(now() + interval '1 day', 1000) WHERE tenant_id = @tenantId";
+        // The scheduler only plans for tenants whose consent is granted.
+        await owner.ExecuteAsync("UPDATE vaulty.tenants SET consent_state = 'granted' WHERE id = @tenantId", new { tenantId });
+
+        // By default nothing found is backed up until it is selected; nothing is due.
+        Assert.False(await selection.ProtectsNewObjectsAsync(access, tenantId));
+        var found = await discovery.ApplyAsync(org, tenantId, await discovery.FindAsync(tenantId));
+        Assert.Equal(6, found.NotSelected);
+        var objects = await tenants.ProtectedObjectsAsync(org, tenantId);
+        Assert.Equal(6, objects.Count(o => o.State == "excluded"));
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>(Due, new { tenantId }));
+
+        // Selecting the mailboxes makes them due at once; no confirmation is needed to add protection.
+        var mailboxes = objects.Where(o => o.Kind == "mailbox" && o.State == "excluded").Select(o => o.Id).ToList();
+        Assert.Equal(4, await selection.SetAsync(access, false, tenantId, mailboxes, include: true));
+        Assert.Equal(4, await owner.ExecuteScalarAsync<int>(Due, new { tenantId }));
+
+        // Excluding lowers protection: only with a fresh step-up, and audited.
+        await Assert.ThrowsAsync<Vaulty.Infrastructure.Restore.StepUpRequiredException>(() => selection.SetAsync(access, false, tenantId, mailboxes.Take(1).ToList(), false));
+        Assert.Equal(1, await selection.SetAsync(access, true, tenantId, mailboxes.Take(1).ToList(), include: false));
+        Assert.Equal(3, await owner.ExecuteScalarAsync<int>(Due, new { tenantId }));
+        var readOnly = new UserAccess(Guid.NewGuid(), org, true, new Dictionary<string, HashSet<Guid>?> { [Vaulty.Core.Security.Permissions.CustomersView] = null });
+        await Assert.ThrowsAsync<AccessException>(() => selection.SetAsync(readOnly, true, tenantId, mailboxes, true));
+        Assert.Equal(["backup.objects_selected", "backup.objects_excluded"], (await owner.QueryAsync<string>(
+            "SELECT action FROM vaulty.audit_events WHERE target = @target AND action LIKE 'backup.%' ORDER BY seq", new { target = $"tenant:{tenantId}" })).ToList());
+
+        // With "back up new ones automatically", a new colleague is protected at once; turning that off needs a step-up.
+        await selection.SetProtectNewObjectsAsync(access, false, tenantId, true);
+        users.Add("u4");
+        await discovery.ApplyAsync(org, tenantId, await discovery.FindAsync(tenantId));
+        Assert.All((await tenants.ProtectedObjectsAsync(org, tenantId)).Where(o => o.SourceId.Contains("u4", StringComparison.Ordinal)),
+            o => Assert.Equal("active", o.State));
+        await Assert.ThrowsAsync<Vaulty.Infrastructure.Restore.StepUpRequiredException>(() => selection.SetProtectNewObjectsAsync(access, false, tenantId, false));
+        await selection.SetProtectNewObjectsAsync(access, true, tenantId, false);
+
+        // An object that was backed up and comes back after it vanished stays selected, whatever the tenant's choice.
+        var u1Mailbox = (await tenants.ProtectedObjectsAsync(org, tenantId)).First(o => o.Kind == "mailbox" && o.State == "active");
+        await owner.ExecuteAsync("UPDATE vaulty.protected_objects SET last_snapshot_id = @s WHERE id = @id", new { s = Guid.NewGuid(), id = u1Mailbox.Id });
+        var vanished = users.Single(u => u1Mailbox.SourceId.Contains(u, StringComparison.Ordinal) || u1Mailbox.DisplayName.Contains(u, StringComparison.Ordinal));
+        users.Remove(vanished);
+        await discovery.ApplyAsync(org, tenantId, await discovery.FindAsync(tenantId));
+        users.Add(vanished);
+        await discovery.ApplyAsync(org, tenantId, await discovery.FindAsync(tenantId));
+        Assert.Equal("active", (await tenants.ProtectedObjectsAsync(org, tenantId)).Single(o => o.Id == u1Mailbox.Id).State);
+    }
+
     /// <summary>Users and per-user batch answers: u2 is a shared mailbox (no OneDrive), room1 a room, u1 has an archive.</summary>
     private void MockDirectory(Func<List<string>> users)
     {

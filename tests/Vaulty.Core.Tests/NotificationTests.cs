@@ -81,6 +81,19 @@ public class ProtectionStatusTests
     }
 
     [Fact]
+    public void An_excluded_object_is_neither_protected_nor_decides_its_tenant()
+    {
+        var (status, reason) = Of(state: "excluded");
+        Assert.Equal(ProtectionStatus.Excluded, status);
+        Assert.Equal("Excluded", Protection.Label(status));
+        Assert.NotEqual(Protection.CssClass(ProtectionStatus.Protected), Protection.CssClass(status));
+        Assert.Contains("retention", reason, StringComparison.Ordinal);
+        Assert.Equal(ProtectionStatus.Protected, Protection.Worst([ProtectionStatus.Protected, ProtectionStatus.Excluded]));
+        Assert.Equal(ProtectionStatus.Partial, Protection.Worst([ProtectionStatus.Excluded, ProtectionStatus.Partial]));
+        Assert.Equal(ProtectionStatus.Excluded, Protection.Worst([ProtectionStatus.Excluded, ProtectionStatus.Excluded]));
+    }
+
+    [Fact]
     public void An_object_waits_for_its_first_backup_only_for_a_while()
     {
         static (ProtectionStatus, string) Added(double hoursAgo, int frequency = 360) =>

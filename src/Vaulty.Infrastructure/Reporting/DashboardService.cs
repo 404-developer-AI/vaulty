@@ -117,16 +117,23 @@ public sealed class DashboardService(NpgsqlDataSource dataSource, TimeProvider c
         if (tenant.ConsentState == "lost") return (ProtectionStatus.Failed, "Vaulty lost access to this tenant.");
         if (tenant.VerificationAlert) return (ProtectionStatus.Failed, "Verification found a problem in stored data.");
         var worst = Protection.Worst(objects.Select(o => o.Status));
-        var count = objects.Count(o => o.Status == worst);
-        return worst switch
+        var selected = objects.Where(o => o.Status != ProtectionStatus.Excluded).ToList();
+        var count = selected.Count(o => o.Status == worst);
+        var excluded = objects.Count - selected.Count;
+        var (status, reason) = worst switch
         {
             ProtectionStatus.Failed => (worst, $"{count} protected object{(count == 1 ? " is" : "s are")} failed."),
             ProtectionStatus.Partial => (worst, $"{count} protected object{(count == 1 ? " has" : "s have")} a partial latest snapshot."),
             // Not all green yet, but nothing wrong either: say how far the first backups are.
-            ProtectionStatus.NotRunYet => (worst, $"{objects.Count - count} of {objects.Count} protected objects have a snapshot; " +
+            ProtectionStatus.NotRunYet when selected.Count == 0 => (worst, "No mailbox or OneDrive is selected for backup yet."),
+            ProtectionStatus.NotRunYet => (worst, $"{selected.Count - count} of {selected.Count} selected objects have a snapshot; " +
                                                   $"{count} {(count == 1 ? "waits" : "wait")} for {(count == 1 ? "its" : "their")} first backup."),
+            ProtectionStatus.Excluded => (worst, "No mailbox or OneDrive is selected for backup."),
             _ => (worst, ""),
         };
+        // Excluded objects never decide the status, but they are never hidden either.
+        if (excluded > 0 && worst != ProtectionStatus.Excluded) reason = $"{reason} {excluded} not selected for backup.".Trim();
+        return (status, reason);
     }
 
     private static IReadOnlyDictionary<ProtectionStatus, int> CountsOf(IEnumerable<ProtectionStatus> states) =>

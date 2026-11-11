@@ -12,12 +12,12 @@ public sealed record DiscoveredObject(string Kind, string SourceId, string Displ
     IReadOnlyDictionary<string, string?> Details);
 
 public sealed record DiscoveryResult(int Mailboxes, int SharedMailboxes, int ResourceMailboxes, int Drives, int NotProtectable, int SourceDeleted,
-    int Reappeared)
+    int Reappeared, int NotSelected = 0)
 {
     public Dictionary<string, long> Counts() => new()
     {
         ["mailboxes"] = Mailboxes, ["shared_mailboxes"] = SharedMailboxes, ["resource_mailboxes"] = ResourceMailboxes, ["drives"] = Drives,
-        ["not_protected"] = NotProtectable, ["source_deleted"] = SourceDeleted, ["reappeared"] = Reappeared,
+        ["not_protected"] = NotProtectable, ["source_deleted"] = SourceDeleted, ["reappeared"] = Reappeared, ["not_selected"] = NotSelected,
     };
 }
 
@@ -93,25 +93,35 @@ public sealed class TenantDiscovery(NpgsqlDataSource dataSource, GraphClient gra
         await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
         var now = clock.GetUtcNow();
         var reappeared = 0;
+        var notSelected = 0;
+        // New mailboxes and drives are backed up at once only when the tenant says so; otherwise they wait to be selected.
+        var protectNew = await session.Connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT protect_new_objects FROM vaulty.tenants WHERE id = @tenantId", new { tenantId }, session.Transaction,
+            cancellationToken: cancellationToken)).ConfigureAwait(false);
         foreach (var o in found)
         {
-            var state = o.Protectable ? "active" : "not_protected";
-            var previous = await session.Connection.ExecuteScalarAsync<string?>(new CommandDefinition(
+            var state = !o.Protectable ? "not_protected" : protectNew ? "active" : "excluded";
+            var (previous, current) = await session.Connection.QuerySingleAsync<(string? Previous, string Current)>(new CommandDefinition(
                 """
+                WITH before AS (SELECT p.state FROM vaulty.protected_objects p WHERE p.tenant_id = @tenantId AND p.kind = @Kind AND p.source_id = @SourceId)
                 INSERT INTO vaulty.protected_objects (id, organization_id, tenant_id, kind, sub_kind, source_id, display_name, state, source_details, next_run_at)
                 VALUES (@id, @organizationId, @tenantId, @Kind, @SubKind, @SourceId, @DisplayName, @state, @details::jsonb,
                         CASE WHEN @state = 'active' THEN now() END)
                 ON CONFLICT (tenant_id, kind, source_id) DO UPDATE SET
                     display_name = excluded.display_name, sub_kind = excluded.sub_kind, source_details = excluded.source_details,
-                    state = CASE WHEN vaulty.protected_objects.state IN ('source_deleted', 'not_protected') THEN excluded.state
+                    -- An object that comes back after it was backed up stays selected; otherwise it follows the tenant's choice.
+                    state = CASE WHEN vaulty.protected_objects.state = 'source_deleted' AND vaulty.protected_objects.last_snapshot_id IS NOT NULL
+                                      AND excluded.state <> 'not_protected' THEN 'active'
+                                 WHEN vaulty.protected_objects.state IN ('source_deleted', 'not_protected') THEN excluded.state
                                  ELSE vaulty.protected_objects.state END,
                     source_deleted_at = CASE WHEN vaulty.protected_objects.state = 'source_deleted' THEN NULL ELSE vaulty.protected_objects.source_deleted_at END,
                     next_run_at = coalesce(vaulty.protected_objects.next_run_at, excluded.next_run_at)
-                RETURNING (SELECT p.state FROM vaulty.protected_objects p WHERE p.tenant_id = @tenantId AND p.kind = @Kind AND p.source_id = @SourceId)
+                RETURNING (SELECT state FROM before) AS previous, vaulty.protected_objects.state AS current
                 """,
                 new { id = Guid.CreateVersion7(), organizationId, tenantId, o.Kind, o.SubKind, o.SourceId, o.DisplayName, state,
                     details = JsonSerializer.Serialize(o.Details) }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
             if (previous == "source_deleted") reappeared++;
+            if (current == "excluded" && previous is null or "not_protected") notSelected++;
         }
 
         var foundKeys = found.Select(o => o.Kind + "\u001f" + o.SourceId).ToArray();
@@ -130,7 +140,8 @@ public sealed class TenantDiscovery(NpgsqlDataSource dataSource, GraphClient gra
             found.Count(o => o.Kind == "drive"),
             found.Count(o => !o.Protectable),
             deleted,
-            reappeared);
+            reappeared,
+            notSelected);
     }
 
     private static string? String(JsonElement? body, string property) =>

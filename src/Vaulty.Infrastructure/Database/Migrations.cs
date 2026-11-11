@@ -196,3 +196,10 @@ public sealed class JobRunsMigration : SqlMigration
 {
     protected override string ScriptName => "0014_job_runs";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261111000015_BackupSelection")]
+public sealed class BackupSelectionMigration : SqlMigration
+{
+    protected override string ScriptName => "0015_backup_selection";
+}

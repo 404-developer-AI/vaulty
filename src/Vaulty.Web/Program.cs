@@ -41,6 +41,7 @@ builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.SnapshotBrowser>();
 builder.Services.AddScoped<Vaulty.Web.DisplayTime>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.RestoreService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Retention.TenantDeletion>();
+builder.Services.AddSingleton<BackupSelection>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Retention.LegalHold>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Reporting.DashboardService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Notifications.AlertService>();

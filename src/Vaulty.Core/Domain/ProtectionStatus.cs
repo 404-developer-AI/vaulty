@@ -9,10 +9,12 @@ public enum ProtectionStatus
 {
     Protected = 0,
     SourceDeleted = 1,
-    Paused = 2,
-    NotRunYet = 3,
-    Partial = 4,
-    Failed = 5,
+    /// <summary>Deliberately not backed up; never counts as protected and never decides a tenant's status.</summary>
+    Excluded = 2,
+    Paused = 3,
+    NotRunYet = 4,
+    Partial = 5,
+    Failed = 6,
 }
 
 public sealed record ProtectionInput(
@@ -33,6 +35,7 @@ public static class Protection
         ArgumentNullException.ThrowIfNull(input);
         if (input.ObjectState == "source_deleted") return (ProtectionStatus.SourceDeleted, "The source no longer exists in Microsoft 365; snapshots are kept.");
         if (input.ObjectState is "paused") return (ProtectionStatus.Paused, "Backups are paused.");
+        if (input.ObjectState is "excluded") return (ProtectionStatus.Excluded, "Not selected for backup; existing snapshots are kept until their retention ends.");
         if (input.ObjectState is "not_protected") return (ProtectionStatus.NotRunYet, "Not protected yet.");
         if (input.ConsentState == "lost") return (ProtectionStatus.Failed, "Vaulty lost access to the tenant; backups cannot run.");
         if (input.VerificationFailed) return (ProtectionStatus.Failed, "Verification found a problem in stored data.");
@@ -64,12 +67,19 @@ public static class Protection
         ArgumentNullException.ThrowIfNull(states);
         var worst = ProtectionStatus.Protected;
         var any = false;
+        var excluded = false;
         foreach (var s in states)
         {
+            // An excluded object is a choice, not a state of protection: it neither raises nor lowers its tenant.
+            if (s == ProtectionStatus.Excluded)
+            {
+                excluded = true;
+                continue;
+            }
             any = true;
             if (s > worst) worst = s;
         }
-        return any ? worst : ProtectionStatus.NotRunYet;
+        return any ? worst : excluded ? ProtectionStatus.Excluded : ProtectionStatus.NotRunYet;
     }
 
     /// <summary>The CSS class of the status chip: amber for partial, red only for failed, gray for the neutral states.</summary>
@@ -88,6 +98,7 @@ public static class Protection
         ProtectionStatus.Failed => "Failed",
         ProtectionStatus.SourceDeleted => "Source deleted",
         ProtectionStatus.Paused => "Paused",
+        ProtectionStatus.Excluded => "Excluded",
         _ => "Awaiting first backup",
     };
 

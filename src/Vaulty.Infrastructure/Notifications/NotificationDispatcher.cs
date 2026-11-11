@@ -354,7 +354,7 @@ public static class DigestMail
     public static string Counts(IReadOnlyDictionary<ProtectionStatus, int> totals)
     {
         ArgumentNullException.ThrowIfNull(totals);
-        var parts = new[] { ProtectionStatus.Protected, ProtectionStatus.Partial, ProtectionStatus.Failed, ProtectionStatus.NotRunYet, ProtectionStatus.Paused, ProtectionStatus.SourceDeleted }
+        var parts = new[] { ProtectionStatus.Protected, ProtectionStatus.Partial, ProtectionStatus.Failed, ProtectionStatus.NotRunYet, ProtectionStatus.Paused, ProtectionStatus.SourceDeleted, ProtectionStatus.Excluded }
             .Where(s => totals.GetValueOrDefault(s) > 0)
             .Select(s => $"{totals[s]} {Protection.Label(s).ToLowerInvariant()}");
         var joined = string.Join(", ", parts);

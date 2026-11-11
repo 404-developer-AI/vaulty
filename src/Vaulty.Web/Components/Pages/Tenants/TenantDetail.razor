@@ -9,6 +9,7 @@
 @using Vaulty.Workflows.Tenants
 @inject TenantService TenantService
 @inject TenantDeletion Deletion
+@inject BackupSelection Selection
 @inject LegalHold Holds
 @inject DashboardService Dashboards
 @inject DisplayTime Time
@@ -110,8 +111,26 @@ else
         </MudGrid>
     </MudPaper>
 
+    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+        <MudText Typo="Typo.h6">What is backed up</MudText>
+        <p class="vy-muted mt-1">Choose which mailboxes and OneDrives Vaulty backs up. An excluded object gets no new backups; its snapshots are kept until
+            their retention ends. @SelectionSummary</p>
+        <MudSwitch T="bool" Value="@_protectNew" ValueChanged="SetProtectNewAsync" Color="Color.Primary" Disabled="@(!_canManagePolicy || _busy)"
+                   Label="Back up newly found mailboxes and OneDrives automatically" />
+        @if (_canManagePolicy)
+        {
+            <div class="mt-2">
+                <MudButton Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable(), true))" Disabled="_busy">Back up all</MudButton>
+                <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable("mailbox"), true))" Disabled="_busy">Back up all mailboxes</MudButton>
+                <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable("drive"), true))" Disabled="_busy">Back up all OneDrives</MudButton>
+                <MudButton Class="ml-2" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => SetSelectionAsync(Selectable(), false))" Disabled="_busy">Exclude all</MudButton>
+            </div>
+        }
+    </MudPaper>
+
     <MudTable Items="_objects" Hover="true" Elevation="0" Outlined="true" Dense="true">
         <HeaderContent>
+            <MudTh>Back up</MudTh>
             <MudTh>Protected object</MudTh>
             <MudTh>Type</MudTh>
             <MudTh>Status</MudTh>
@@ -120,6 +139,13 @@ else
             <MudTh></MudTh>
         </HeaderContent>
         <RowTemplate>
+            <MudTd>
+                @if (context.State is "active" or "excluded" or "paused")
+                {
+                    <MudSwitch T="bool" Value="@(context.State != "excluded")" ValueChanged="@(v => SetSelectionAsync([context.Id], v))" Color="Color.Primary"
+                               Disabled="@(!_canManagePolicy || _busy)" aria-label="@($"Back up {context.DisplayName}")" />
+                }
+            </MudTd>
             <MudTd>
                 @if (_canBrowse)
                 {
@@ -142,6 +168,9 @@ else
                         break;
                     case "paused":
                         <span class="vy-status neutral">Paused</span>
+                        break;
+                    case "excluded":
+                        <span class="vy-status neutral" title="Not selected for backup">Excluded</span>
                         break;
                     default:
                         @if (_health?.Objects.FirstOrDefault(o => o.Id == context.Id) is { } status)
@@ -243,6 +272,7 @@ else
     private bool _canHold;
     private bool _canDelete;
     private TenantDeletionState? _deletion;
+    private bool _protectNew;
     private bool _correcting;
     private string? _correctTenantId;
     private string? _correctClientId;
@@ -315,6 +345,7 @@ else
         _canDelete = access.Allows(Permissions.TenantsDelete, tenant.CustomerId);
         _objects = await TenantService.ProtectedObjectsAsync(_organizationId, TenantId);
         _deletion = await Deletion.StateAsync(access, TenantId);
+        _protectNew = await Selection.ProtectsNewObjectsAsync(access, TenantId);
         await Time.LoadAsync();
         _health = (await Dashboards.LoadAsync(access, TenantId)).Tenants.FirstOrDefault(t => t.Id == TenantId);
         _held = await Holds.ObjectsOnHoldAsync(access, TenantId);
@@ -395,6 +426,57 @@ else
 
     private async Task RequestDeletionAsync() => await DeletionStepAsync(async (access, fresh) => await Deletion.RequestAsync(access, fresh, TenantId),
         "Deletion requested. Backups are stopped; a second administrator can confirm in 30 days.");
+
+    private string SelectionSummary
+    {
+        get
+        {
+            var selected = _objects.Count(o => o.State is "active" or "paused");
+            var excluded = _objects.Count(o => o.State == "excluded");
+            return $"{selected} selected, {excluded} excluded.";
+        }
+    }
+
+    private List<Guid> Selectable(string? kind = null) =>
+        _objects.Where(o => o.State is "active" or "excluded" or "paused" && (kind is null || o.Kind == kind)).Select(o => o.Id).ToList();
+
+    private async Task SetSelectionAsync(List<Guid> ids, bool include) => await SelectionStepAsync(async (access, fresh) =>
+    {
+        var changed = await Selection.SetAsync(access, fresh, TenantId, ids, include);
+        Snackbar.Add(changed == 0 ? "Nothing to change." : include ? $"{changed} selected for backup; their first backup starts shortly."
+            : $"{changed} excluded from backup; their snapshots are kept until retention ends.", changed == 0 ? Severity.Info : Severity.Success);
+    });
+
+    private async Task SetProtectNewAsync(bool protectNew) => await SelectionStepAsync(async (access, fresh) =>
+    {
+        await Selection.SetProtectNewObjectsAsync(access, fresh, TenantId, protectNew);
+        Snackbar.Add(protectNew ? "Newly found mailboxes and OneDrives are backed up at once." : "Newly found mailboxes and OneDrives wait to be selected.",
+            Severity.Success);
+    });
+
+    private async Task SelectionStepAsync(Func<Vaulty.Infrastructure.Access.UserAccess, bool, Task> step)
+    {
+        var user = (await AuthenticationState).User;
+        _busy = true;
+        try
+        {
+            await step(await Current.GetAsync(user), VaultyWebSetup.HasFreshStepUp(user, Clock));
+            await LoadAsync();
+        }
+        catch (Vaulty.Infrastructure.Restore.StepUpRequiredException)
+        {
+            // Lowering protection asks "Confirm it's you" first; the change is made again after confirming.
+            await ConfirmedAsync();
+        }
+        catch (Vaulty.Infrastructure.Access.AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
 
     private async Task RemoveUnusedAsync()
     {

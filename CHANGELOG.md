@@ -7,6 +7,11 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- Choose which mailboxes and OneDrives are backed up: a switch per protected object, "back up all" (all, mailboxes,
+  OneDrives) and "exclude all" on the tenant page, and per tenant whether newly found ones are backed up at once or wait
+  to be selected (the default; migration `0015`). An excluded object gets no new backups and keeps its snapshots until
+  their retention ends; excluding, or no longer backing up new ones automatically, needs a fresh confirmation and is
+  audited. Excluded objects show as "Excluded", never as protected, and do not decide a tenant's status.
 - Solution `Vaulty.slnx` with every service, connector, test and tool project; central build settings and package
   management; SDK pinned in `global.json`.
 - Business Source License 1.1, security policy, contribution guide and issue templates.

@@ -76,6 +76,7 @@ public sealed class PlatformMetrics(NpgsqlDataSource dataSource, DashboardServic
     {
         ProtectionStatus.NotRunYet => "not_run_yet",
         ProtectionStatus.SourceDeleted => "source_deleted",
+        ProtectionStatus.Excluded => "excluded",
         _ => status.ToString().ToLowerInvariant(),
     };
 
