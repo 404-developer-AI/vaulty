@@ -493,6 +493,25 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
     }
 
     /// <summary>Marks a snapshot that could not be committed as failed; its staged data is ignored and cleaned up later.</summary>
+    /// <summary>
+    /// A backup cancelled on purpose: its staged snapshot is closed as failed with the reason, so it never stays staged
+    /// (which would hold a place in the tenant's budget for good). A choice, not a fault: no alert is raised.
+    /// </summary>
+    public async Task CancelledAsync(BackupTarget target, CancellationToken cancellationToken = default)
+    {
+        await using var session = await Session(target, cancellationToken).ConfigureAwait(false);
+        var closed = await session.Connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE vaulty.snapshots SET state = 'failed', exceptions = @reason::jsonb WHERE id = @SnapshotId AND state = 'staged'",
+            new { target.SnapshotId, reason = JsonSerializer.Serialize(new[] { new { error_code = "cancelled", detail = "The backup was cancelled." } }) },
+            session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        if (closed > 0)
+        {
+            await Audit.AuditLog.WriteAsync(session, "system:backup", "backup.cancelled", $"object:{target.ProtectedObjectId}",
+                new { snapshot = target.SnapshotId }, cancellationToken).ConfigureAwait(false);
+        }
+        await session.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task FailAsync(BackupTarget target, string reason, CancellationToken cancellationToken = default)
     {
         await using var session = await Session(target, cancellationToken).ConfigureAwait(false);

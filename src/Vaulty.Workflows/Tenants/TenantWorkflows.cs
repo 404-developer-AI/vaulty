@@ -107,6 +107,9 @@ public interface IWorkflowStarter
 
     /// <summary>"pause", "resume" or "cancel" for a running restore; ignored when it already finished.</summary>
     Task SignalRestoreAsync(Guid restoreId, string signal, CancellationToken cancellationToken = default);
+
+    /// <summary>Requests cancellation of one workflow run (a backup or discovery); ignored when it already finished.</summary>
+    Task CancelAsync(string workflowId, string? runId, CancellationToken cancellationToken = default);
 }
 
 public sealed class TemporalWorkflowStarter(Func<Task<ITemporalClient>> client, NpgsqlDataSource dataSource) : IWorkflowStarter
@@ -126,6 +129,19 @@ public sealed class TemporalWorkflowStarter(Func<Task<ITemporalClient>> client, 
         await temporal.StartWorkflowAsync((Restore.RestoreWorkflow w) => w.RunAsync(input, false),
             new WorkflowOptions(RestoreWorkflowId(restoreId), TaskQueues.Restore) { IdConflictPolicy = Temporalio.Api.Enums.V1.WorkflowIdConflictPolicy.UseExisting })
             .ConfigureAwait(false);
+    }
+
+    public async Task CancelAsync(string workflowId, string? runId, CancellationToken cancellationToken = default)
+    {
+        var handle = (await client().ConfigureAwait(false)).GetWorkflowHandle(workflowId, runId);
+        try
+        {
+            await handle.CancelAsync(new() { Rpc = new() { CancellationToken = cancellationToken } }).ConfigureAwait(false);
+        }
+        catch (Temporalio.Exceptions.RpcException ex) when (ex.Code == Temporalio.Exceptions.RpcException.StatusCode.NotFound)
+        {
+            // Finished already: nothing to cancel.
+        }
     }
 
     public async Task SignalRestoreAsync(Guid restoreId, string signal, CancellationToken cancellationToken = default)

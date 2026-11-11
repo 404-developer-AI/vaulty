@@ -66,7 +66,13 @@ public sealed class MailboxBackupWorkflow
             return await Workflow.ExecuteActivityAsync((MailboxActivities a) => a.CommitAsync(new CommitInput(input, plan.Folders)),
                 ActivityPolicies.External(TimeSpan.FromHours(2)));
         }
-        catch (Exception ex) when (ex is not ContinueAsNewException && !TemporalException.IsCanceledException(ex))
+        catch (Exception ex) when (TemporalException.IsCanceledException(ex))
+        {
+            // Cancelled on purpose: close the staged snapshot so it does not stay staged for good.
+            await Workflow.ExecuteActivityAsync((MailboxActivities a) => a.CancelledAsync(input), ActivityPolicies.CleanUp());
+            throw;
+        }
+        catch (Exception ex) when (ex is not ContinueAsNewException)
         {
             await Workflow.ExecuteActivityAsync((MailboxActivities a) => a.FailAsync(input, ex.Message), ActivityPolicies.Database());
             throw;
@@ -147,6 +153,10 @@ public sealed class MailboxActivities(NpgsqlDataSource dataSource, GraphServices
         await StageVanishedFoldersAsync(target, folders, context.CancellationToken);
 
         var included = folders.Where(f => f.WellKnownName is null || !policy.ExcludedFolders.Contains(f.WellKnownName)).ToList();
+        if (await JobProgress.IsFirstBackupAsync(dataSource, input.OrganizationId, input.ProtectedObjectId, context.CancellationToken))
+        {
+            await JobProgress.SetExpectedAsync(dataSource, input.OrganizationId, input.JobId, included.Sum(f => (long)f.TotalItemCount), null, context.CancellationToken);
+        }
         return new MailboxPlan(mailboxId, userId, included.Select(f => new FolderPlan(f.Id, f.DisplayName ?? f.Id, f.ParentFolderId, f.Type, f.TotalItemCount)).ToList());
     }
 
@@ -332,6 +342,13 @@ public sealed class MailboxActivities(NpgsqlDataSource dataSource, GraphServices
     {
         ArgumentNullException.ThrowIfNull(input);
         return store.FailAsync(input.Target, reason);
+    }
+
+    [Activity]
+    public Task CancelledAsync(BackupInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        return store.CancelledAsync(input.Target);
     }
 
     private async Task<(string MailboxId, string UserId)> MailboxOfAsync(BackupInput input, CancellationToken ct)

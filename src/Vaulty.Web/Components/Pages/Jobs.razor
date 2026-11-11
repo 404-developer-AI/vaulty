@@ -1,9 +1,17 @@
 @page "/jobs"
 @attribute [Authorize(Policy = "perm:" + Permissions.JobsView)]
 @using Vaulty.Infrastructure.Notifications
+@using Vaulty.Infrastructure.Tenants
+@using Vaulty.Workflows.Tenants
+@implements IAsyncDisposable
 @inject JobsService JobsService
+@inject TenantService Tenants
+@inject IWorkflowStarter Workflows
 @inject CurrentAccess Current
 @inject DisplayTime Time
+@inject TimeProvider Clock
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
 
 <PageTitle>Jobs · Vaulty</PageTitle>
 
@@ -11,6 +19,17 @@
 <p class="vy-page-lede">Every discovery, backup, restore, export, verification and clean-up, newest first. Quote the request ID when you contact support.</p>
 
 <MudGrid Spacing="2" Class="mb-2">
+    <MudItem xs="12" sm="6" md="3">
+        <MudTextField T="string" @bind-Value="_search" Label="Search" Placeholder="Object, tenant or request ID" Clearable="true"
+                      OnBlur="@(() => LoadAsync(reset: true))" OnKeyUp="@(async e => { if (e.Key == "Enter") await LoadAsync(reset: true); })"
+                      OnClearButtonClick="@(() => LoadAsync(reset: true))" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" />
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudSelect T="Guid?" Label="Tenant" Value="_tenant" ValueChanged="@(async v => { _tenant = v; await LoadAsync(reset: true); })" Clearable="true"
+                   ToStringFunc="@(id => _tenants.FirstOrDefault(t => t.Id == id)?.DisplayName ?? "")">
+            @foreach (var t in _tenants) { <MudSelectItem T="Guid?" Value="@t.Id">@t.DisplayName</MudSelectItem> }
+        </MudSelect>
+    </MudItem>
     <MudItem xs="12" sm="4" md="3">
         <MudSelect T="string" Label="Status" Value="_state" ValueChanged="@(async v => { _state = v; await LoadAsync(reset: true); })" Clearable="true">
             @foreach (var s in States) { <MudSelectItem Value="@s">@StateText(s)</MudSelectItem> }
@@ -32,6 +51,7 @@
         <MudTh>Finished</MudTh>
         <MudTh>Result</MudTh>
         <MudTh>Request ID</MudTh>
+        <MudTh></MudTh>
     </HeaderContent>
     <RowTemplate>
         <MudTd>@KindText(context.Kind)</MudTd>
@@ -39,15 +59,32 @@
         <MudTd>@(context.ObjectName ?? context.TenantName ?? "")</MudTd>
         <MudTd>@Time.Relative(context.StartedAt ?? context.CreatedAt)</MudTd>
         <MudTd>@Time.Relative(context.FinishedAt)</MudTd>
-        <MudTd>
-            @if (context.ItemsSoFar is { } soFar)
+        <MudTd Style="min-width: 260px">
+            @if (context.State == "running" && context.Kind == "backup")
             {
-                <span class="vy-muted">@soFar.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) items stored so far</span>
+                var progress = context.Progress(Clock.GetUtcNow());
+                @if (progress is { } p)
+                {
+                    <MudProgressLinear Value="@(p.Fraction * 100)" Color="Color.Primary" Rounded="true" Size="Size.Medium" Class="mb-1" />
+                    <span class="vy-muted">@ProgressText(context, p.Fraction, p.Remaining)</span>
+                }
+                else
+                {
+                    @* An incremental run learns its changes as it goes: there is no total to measure against, so no guess. *@
+                    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Rounded="true" Size="Size.Small" Class="mb-1" />
+                    <span class="vy-muted">@ItemsText(context.ItemsSoFar ?? 0) items stored so far</span>
+                }
             }
             @Counts(context.ResultCounts)
             @if (!string.IsNullOrEmpty(context.Error)) { <div class="vy-muted">@context.Error</div> }
         </MudTd>
         <MudTd><code class="vy-request-id" title="@context.WorkflowId">@context.Id</code></MudTd>
+        <MudTd>
+            @if (context.Kind is "backup" or "discovery" && context.State is "queued" or "running")
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" Disabled="_busy" OnClick="@(() => CancelAsync(context))">Cancel</MudButton>
+            }
+        </MudTd>
     </RowTemplate>
     <NoRecordsContent><span class="vy-muted">No jobs yet.</span></NoRecordsContent>
 </MudTable>
@@ -60,21 +97,103 @@
     private static readonly string[] States = ["queued", "running", "succeeded", "partial", "failed", "cancelled"];
     private static readonly string[] Kinds = ["discovery", "backup", "restore", "export", "verification", "garbage_collection"];
     private List<JobRow> _jobs = [];
+    private IReadOnlyList<TenantRow> _tenants = [];
     private string? _state;
     private string? _kind;
+    private string? _search;
+    private Guid? _tenant;
+    private bool _busy;
+    private PeriodicTimer? _refresh;
+    private Task? _refreshing;
 
     protected override async Task OnInitializedAsync()
     {
         await Time.LoadAsync();
+        var access = await Current.GetAsync();
+        _tenants = (await Tenants.ListAsync(access.OrganizationId)).Where(t => access.Allows(Permissions.CustomersView, t.CustomerId))
+            .OrderBy(t => t.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
         await LoadAsync(reset: true);
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // While the page is open, running jobs move: the first page is refreshed every 15 seconds.
+        if (!firstRender || !RendererInfo.IsInteractive) return;
+        _refresh = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        _refreshing = RefreshAsync(_refresh);
+    }
+
+    private async Task RefreshAsync(PeriodicTimer timer)
+    {
+        while (await timer.WaitForNextTickAsync())
+        {
+            if (_jobs.Count > JobsService.PageSize || !_jobs.Any(j => j.State is "running" or "queued")) continue;
+            await InvokeAsync(async () =>
+            {
+                await LoadAsync(reset: true);
+                StateHasChanged();
+            });
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _refresh?.Dispose();
+        if (_refreshing is not null) await _refreshing;
     }
 
     private async Task LoadAsync(bool reset)
     {
         var before = reset || _jobs.Count == 0 ? (DateTimeOffset?)null : _jobs[^1].CreatedAt;
-        var page = await JobsService.ListAsync(await Current.GetAsync(), _state, _kind, before);
+        var page = await JobsService.ListAsync(await Current.GetAsync(), _state, _kind, before, _search, _tenant);
         _jobs = reset ? page.ToList() : [.. _jobs, .. page];
     }
+
+    private async Task CancelAsync(JobRow job)
+    {
+        var confirmed = await Dialogs.ShowMessageBoxAsync("Cancel this job?",
+            $"The {KindText(job.Kind).ToLowerInvariant()} of {job.ObjectName ?? job.TenantName} stops. Nothing already stored is lost, and its next planned run starts as usual.",
+            yesText: "Cancel the job", cancelText: "Keep it running");
+        if (confirmed != true) return;
+        _busy = true;
+        try
+        {
+            if (await JobsService.CancelAsync(await Current.GetAsync(), job.Id) is { } run) await Workflows.CancelAsync(run.WorkflowId, run.RunId);
+            Snackbar.Add("Cancellation requested. The job ends after its current step.", Severity.Info);
+            await LoadAsync(reset: true);
+        }
+        catch (Exception ex) when (ex is Vaulty.Infrastructure.Access.AccessException or InvalidOperationException)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string ItemsText(long count) => count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string ProgressText(JobRow job, double fraction, TimeSpan? remaining)
+    {
+        var done = job.ExpectedBytes is > 0
+            ? $"{Bytes(job.BytesSoFar ?? 0)} of {Bytes(job.ExpectedBytes.Value)}"
+            : $"{ItemsText(job.ItemsSoFar ?? 0)} of {ItemsText(job.ExpectedItems ?? 0)} items";
+        var left = remaining is { } r ? $", about {Duration(r)} left" : ", estimating the time left";
+        return $"{(int)(fraction * 100)}% · {done}{left}";
+    }
+
+    private static string Duration(TimeSpan span) => span.TotalMinutes < 1 ? "less than a minute"
+        : span.TotalHours < 1 ? $"{(int)Math.Ceiling(span.TotalMinutes)} min"
+        : span.TotalDays < 1 ? $"{(int)span.TotalHours} h {span.Minutes} min"
+        : $"{(int)span.TotalDays} d {span.Hours} h";
+
+    private static string Bytes(long bytes) => bytes switch
+    {
+        >= 1L << 30 => $"{bytes / (double)(1L << 30):0.0} GB",
+        >= 1L << 20 => $"{bytes / (double)(1L << 20):0.0} MB",
+        _ => $"{bytes / 1024.0:0} KB",
+    };
 
     private static string StateClass(string state) => state switch
     {

@@ -36,7 +36,13 @@ public sealed class DriveBackupWorkflow
                 new ChildWorkflowOptions { Id = $"{Workflow.Info.WorkflowId}/{input.SnapshotId:N}/sync" });
             return await Workflow.ExecuteActivityAsync((DriveActivities a) => a.CommitAsync(input, plan.RootId), ActivityPolicies.External(TimeSpan.FromHours(2)));
         }
-        catch (Exception ex) when (ex is not ContinueAsNewException && !TemporalException.IsCanceledException(ex))
+        catch (Exception ex) when (TemporalException.IsCanceledException(ex))
+        {
+            // Cancelled on purpose: close the staged snapshot so it does not stay staged for good.
+            await Workflow.ExecuteActivityAsync((DriveActivities a) => a.CancelledAsync(input), ActivityPolicies.CleanUp());
+            throw;
+        }
+        catch (Exception ex) when (ex is not ContinueAsNewException)
         {
             await Workflow.ExecuteActivityAsync((DriveActivities a) => a.FailAsync(input, ex.Message), ActivityPolicies.Database());
             throw;
@@ -94,6 +100,11 @@ public sealed class DriveActivities(NpgsqlDataSource dataSource, GraphServices g
         var driveId = await Dapper.SqlMapper.ExecuteScalarAsync<string>(session.Connection, new Dapper.CommandDefinition(
             "SELECT source_id FROM vaulty.protected_objects WHERE id = @id", new { id = input.ProtectedObjectId }, session.Transaction, cancellationToken: ct));
         var root = await Drive.RootAsync(new GraphRequestContext(input.TenantId, Workload: "drive"), driveId!, ct);
+        // The root's size is the total of every file below it: the work of a first backup.
+        if (root.Size > 0 && await JobProgress.IsFirstBackupAsync(dataSource, input.OrganizationId, input.ProtectedObjectId, ct))
+        {
+            await JobProgress.SetExpectedAsync(dataSource, input.OrganizationId, input.JobId, null, root.Size, ct);
+        }
         return new DrivePlan(driveId!, root.Id);
     }
 
@@ -258,6 +269,13 @@ public sealed class DriveActivities(NpgsqlDataSource dataSource, GraphServices g
     {
         ArgumentNullException.ThrowIfNull(input);
         return store.FailAsync(input.Target, reason);
+    }
+
+    [Activity("DriveCancelled")]
+    public Task CancelledAsync(BackupInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        return store.CancelledAsync(input.Target);
     }
 
     /// <summary>

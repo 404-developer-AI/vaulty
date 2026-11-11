@@ -245,6 +245,64 @@ public sealed class NotificationTests(PostgresDatabase db) : IClassFixture<Postg
             new { snapshot, org = seed.Org });
     }
 
+    [Fact]
+    public void A_running_backup_shows_its_progress_and_an_estimate_from_its_own_pace()
+    {
+        var started = new DateTimeOffset(2026, 11, 11, 10, 0, 0, TimeSpan.Zero);
+        JobRow Job(long? items, long? expectedItems, long? bytes = null, long? expectedBytes = null, string state = "running") =>
+            new(Guid.NewGuid(), "backup", state, null, null, null, "Finance", "backup-x", started, started, null, "{}", null, items, bytes, expectedItems, expectedBytes);
+
+        // A quarter done after 30 minutes: about 90 minutes left at this pace.
+        var quarter = Job(250, 1000).Progress(started.AddMinutes(30))!.Value;
+        Assert.Equal(0.25, quarter.Fraction, 3);
+        Assert.Equal(TimeSpan.FromMinutes(90), quarter.Remaining);
+        // Drives count bytes, not files.
+        Assert.Equal(0.5, Job(3, 1000, bytes: 500, expectedBytes: 1000).Progress(started.AddMinutes(10))!.Value.Fraction, 3);
+        // Too early or too little to estimate; never 100% before the commit; no size known means no bar.
+        Assert.Null(Job(250, 1000).Progress(started.AddMinutes(1))!.Value.Remaining);
+        Assert.Null(Job(5, 1000).Progress(started.AddMinutes(30))!.Value.Remaining);
+        Assert.Equal(0.99, Job(1200, 1000).Progress(started.AddMinutes(30))!.Value.Fraction, 3);
+        Assert.Null(Job(250, null).Progress(started.AddMinutes(30)));
+        Assert.Null(Job(250, 1000, state: "succeeded").Progress(started.AddMinutes(30)));
+    }
+
+    [PostgresFact]
+    public async Task Jobs_can_be_searched_and_a_backup_job_can_be_cancelled_by_whoever_may_run_backups()
+    {
+        var seed = new NotificationSeed();
+        await seed.SeedAsync(db, DateTimeOffset.UtcNow.AddDays(1));
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        var (queued, running, done) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        await owner.ExecuteAsync(
+            """
+            INSERT INTO vaulty.jobs (id, organization_id, kind, tenant_id, protected_object_id, state) VALUES (@queued, @org, 'backup', @tenant, @o, 'queued');
+            INSERT INTO vaulty.jobs (id, organization_id, kind, tenant_id, protected_object_id, state, started_at, workflow_id, workflow_run_id)
+                VALUES (@running, @org, 'backup', @tenant, @o, 'running', now(), 'backup-search', 'run-1');
+            INSERT INTO vaulty.jobs (id, organization_id, kind, tenant_id, protected_object_id, state, finished_at) VALUES (@done, @org, 'backup', @tenant, @o, 'succeeded', now());
+            """, new { queued, running, done, org = seed.Org, tenant = seed.Tenant, o = seed.Object });
+        await using var api = VaultyDataSource.Create(db.Api);
+        var jobs = new JobsService(api);
+        var viewer = new UserAccess(seed.User, seed.Org, true, new Dictionary<string, HashSet<Guid>?> { [Permissions.JobsView] = null });
+        var operatorAccess = new UserAccess(seed.User, seed.Org, true,
+            new Dictionary<string, HashSet<Guid>?> { [Permissions.JobsView] = null, [Permissions.BackupsRun] = null });
+
+        // Search matches the object or tenant name, case-insensitively; a wildcard in the term is taken literally.
+        Assert.Equal(3, (await jobs.ListAsync(viewer, null, null, null, "fINANCE")).Count(j => j.Id == queued || j.Id == running || j.Id == done));
+        Assert.DoesNotContain(await jobs.ListAsync(viewer, null, null, null, "Finance%xyz"), j => j.Id == queued);
+        Assert.Equal(3, (await jobs.ListAsync(viewer, null, null, null, null, seed.Tenant)).Count);
+
+        await Assert.ThrowsAsync<AccessException>(() => jobs.CancelAsync(viewer, queued));
+        // Not started yet: cancelled at once. Running: the workflow run to cancel is returned. Finished: refused.
+        Assert.Null(await jobs.CancelAsync(operatorAccess, queued));
+        Assert.Equal("cancelled", await owner.ExecuteScalarAsync<string>("SELECT state FROM vaulty.jobs WHERE id = @queued", new { queued }));
+        Assert.Equal(("backup-search", (string?)"run-1"), await jobs.CancelAsync(operatorAccess, running));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => jobs.CancelAsync(operatorAccess, done));
+        Assert.Equal(2, await owner.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.audit_events WHERE organization_id = @org AND action = 'job.cancel_requested'",
+            new { org = seed.Org }));
+        await owner.ExecuteAsync("UPDATE vaulty.jobs SET state = 'cancelled' WHERE id = @running; UPDATE vaulty.protected_objects SET state = 'paused' WHERE organization_id = @org",
+            new { running, org = seed.Org });
+    }
+
     [PostgresFact]
     public async Task Webhook_deliveries_are_signed_verifiable_by_a_receiver_and_retried()
     {

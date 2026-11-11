@@ -146,39 +146,100 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
 }
 
 public sealed record JobRow(Guid Id, string Kind, string State, Guid? TenantId, string? TenantName, Guid? ObjectId, string? ObjectName, string? WorkflowId,
-    DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt, string ResultCounts, string? Error, long? ItemsSoFar = null);
+    DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt, string ResultCounts, string? Error, long? ItemsSoFar = null,
+    long? BytesSoFar = null, long? ExpectedItems = null, long? ExpectedBytes = null)
+{
+    /// <summary>
+    /// How far a running backup is, and an estimate of the time left, from its own pace so far: that pace already reflects
+    /// the bandwidth, the load of the host and the other backups running at the same time. Null when the size of the work is
+    /// not known (an incremental run learns its changes as it goes) or when too little has happened to estimate.
+    /// The fraction stays below one until the job has committed.
+    /// </summary>
+    public (double Fraction, TimeSpan? Remaining)? Progress(DateTimeOffset now)
+    {
+        if (State != "running" || StartedAt is not { } started) return null;
+        double? fraction = ExpectedBytes is > 0 && BytesSoFar is { } bytes ? (double)bytes / ExpectedBytes.Value
+            : ExpectedItems is > 0 && ItemsSoFar is { } items ? (double)items / ExpectedItems.Value
+            : null;
+        if (fraction is not { } f) return null;
+        f = Math.Clamp(f, 0, 0.99);
+        var elapsed = now - started;
+        TimeSpan? remaining = f >= 0.02 && elapsed >= TimeSpan.FromMinutes(2) ? TimeSpan.FromTicks((long)(elapsed.Ticks * (1 - f) / f)) : null;
+        return (f, remaining);
+    }
+}
 
 /// <summary>The jobs page: the job mirror, newest first, limited to the user's customers.</summary>
 public sealed class JobsService(NpgsqlDataSource dataSource)
 {
     public const int PageSize = 100;
 
-    public async Task<IReadOnlyList<JobRow>> ListAsync(UserAccess access, string? state, string? kind, DateTimeOffset? before, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<JobRow>> ListAsync(UserAccess access, string? state, string? kind, DateTimeOffset? before, string? search = null,
+        Guid? tenantId = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
         if (!access.Allows(Permissions.JobsView)) throw new AccessException("You cannot view jobs.");
         await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<(Guid Id, string Kind, string State, Guid? TenantId, string? TenantName, Guid? CustomerId, Guid? ObjectId,
             string? ObjectName, string? WorkflowId, DateTime CreatedAt, DateTime? StartedAt, DateTime? FinishedAt, string ResultCounts, string? Error,
-            long? ItemsSoFar)>(new CommandDefinition(
+            long? ItemsSoFar, long? BytesSoFar, long? ExpectedItems, long? ExpectedBytes)>(new CommandDefinition(
             """
             SELECT j.id, j.kind, j.state, j.tenant_id, t.display_name, t.customer_id, j.protected_object_id, o.display_name, j.workflow_id,
                    j.created_at, j.started_at, j.finished_at, j.result_counts::text, j.error,
                    -- A running backup has no counts yet; the items it has stored so far show that it moves.
-                   CASE WHEN j.state = 'running' AND j.kind = 'backup' THEN
-                       (SELECT count(*) FROM vaulty.items i JOIN vaulty.snapshots s ON s.id = i.first_snapshot_id
-                         WHERE i.tenant_id = j.tenant_id AND i.protected_object_id = j.protected_object_id AND i.state = 'staged'
-                           AND s.state = 'staged' AND i.kind <> 'folder')
-                   END AS items_so_far
+                   p.items AS items_so_far, p.bytes AS bytes_so_far,
+                   (j.progress->>'expected_items')::bigint AS expected_items, (j.progress->>'expected_bytes')::bigint AS expected_bytes
               FROM vaulty.jobs j LEFT JOIN vaulty.tenants t ON t.id = j.tenant_id LEFT JOIN vaulty.protected_objects o ON o.id = j.protected_object_id
+              LEFT JOIN LATERAL (SELECT count(*) AS items, coalesce(sum(i.size), 0)::bigint AS bytes
+                                   FROM vaulty.items i JOIN vaulty.snapshots s ON s.id = i.first_snapshot_id
+                                  WHERE j.state = 'running' AND j.kind = 'backup' AND i.tenant_id = j.tenant_id
+                                    AND i.protected_object_id = j.protected_object_id AND i.state = 'staged' AND s.state = 'staged'
+                                    AND i.kind NOT IN ('folder', 'file_version')) p ON j.state = 'running' AND j.kind = 'backup'
              WHERE (@state::text IS NULL OR j.state = @state) AND (@kind::text IS NULL OR j.kind = @kind) AND (@before::timestamptz IS NULL OR j.created_at < @before)
+               AND (@tenantId::uuid IS NULL OR j.tenant_id = @tenantId)
+               AND (@pattern::text IS NULL OR o.display_name ILIKE @pattern OR t.display_name ILIKE @pattern OR j.id::text ILIKE @pattern)
              ORDER BY j.created_at DESC LIMIT @limit
-            """, new { state, kind, before, limit = PageSize * 2 }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            """, new { state, kind, before, tenantId, pattern = Pattern(search), limit = PageSize * 2 }, session.Transaction,
+            cancellationToken: cancellationToken)).ConfigureAwait(false);
         return rows.Where(r => r.CustomerId is { } c ? access.Allows(Permissions.JobsView, c) : access.Allows(Permissions.JobsView, null))
             .Take(PageSize)
             .Select(r => new JobRow(r.Id, r.Kind, r.State, r.TenantId, r.TenantName, r.ObjectId, r.ObjectName, r.WorkflowId, Utc(r.CreatedAt)!.Value, Utc(r.StartedAt),
-                Utc(r.FinishedAt), r.ResultCounts, r.Error, r.ItemsSoFar)).ToList();
+                Utc(r.FinishedAt), r.ResultCounts, r.Error, r.ItemsSoFar, r.BytesSoFar, r.ExpectedItems, r.ExpectedBytes)).ToList();
     }
+
+    /// <summary>
+    /// Requests cancellation of a backup or discovery job, by anyone who may run backups for its customer; audited. A job that
+    /// has not started is cancelled here; for a running one the caller cancels its workflow run (returned), and the job
+    /// mirror records the end. Restores have their own cancel on the restore page.
+    /// </summary>
+    public async Task<(string WorkflowId, string? RunId)?> CancelAsync(UserAccess access, Guid jobId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        var job = await session.Connection.QuerySingleOrDefaultAsync<(string Kind, string State, Guid? CustomerId, string? WorkflowId, string? RunId)?>(
+            new CommandDefinition(
+                """
+                SELECT j.kind, j.state, t.customer_id, j.workflow_id, j.workflow_run_id
+                  FROM vaulty.jobs j LEFT JOIN vaulty.tenants t ON t.id = j.tenant_id WHERE j.id = @jobId
+                """, new { jobId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        if (job is not { } j || !access.Allows(Permissions.BackupsRun, j.CustomerId)) throw new AccessException("You cannot cancel this job.");
+        if (j.Kind is not ("backup" or "discovery")) throw new InvalidOperationException("Only backups and discoveries are cancelled here.");
+        if (j.State is not ("queued" or "running")) throw new InvalidOperationException("This job has finished already.");
+        await AuditLog.WriteAsync(session, $"user:{access.UserId}", "job.cancel_requested", $"job:{jobId}", new { kind = j.Kind }, cancellationToken)
+            .ConfigureAwait(false);
+        if (j.WorkflowId is null)
+        {
+            await session.Connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE vaulty.jobs SET state = 'cancelled', finished_at = now(), error = 'Cancelled before it started.' WHERE id = @jobId AND state = 'queued'",
+                new { jobId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        }
+        await session.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return j.WorkflowId is { } workflowId ? (workflowId, j.RunId) : null;
+    }
+
+    /// <summary>A search term as a LIKE pattern that matches it anywhere; its own wildcards are taken literally.</summary>
+    private static string? Pattern(string? search) => string.IsNullOrWhiteSpace(search) ? null
+        : "%" + search.Trim().Replace("\\", "\\\\", StringComparison.Ordinal).Replace("%", "\\%", StringComparison.Ordinal).Replace("_", "\\_", StringComparison.Ordinal) + "%";
 
     private static DateTimeOffset? Utc(DateTime? value) => value is { } v ? new DateTimeOffset(DateTime.SpecifyKind(v, DateTimeKind.Utc)) : null;
 }

@@ -43,6 +43,14 @@ public static class ActivityPolicies
         },
     };
 
+    /// <summary>Clean-up after the workflow was cancelled: runs although the workflow's own cancellation is requested.</summary>
+    public static ActivityOptions CleanUp()
+    {
+        var options = Database();
+        options.CancellationToken = CancellationToken.None;
+        return options;
+    }
+
     /// <summary>For short database-only activities.</summary>
     public static ActivityOptions Database() => new()
     {

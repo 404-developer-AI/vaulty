@@ -7,6 +7,14 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- Search and filter: on the tenant page by name or e-mail address, type and status, and the selection buttons act on
+  the objects shown; on the jobs page by object, tenant or request ID, and by tenant, next to status and type.
+- Running backups and discoveries can be cancelled from the jobs page, by anyone who may run backups; audited. A
+  cancelled backup closes its snapshot (it never stays staged), raises no alert, and the next planned run starts as
+  usual; a job that had not started yet is cancelled at once.
+- A running first backup shows a progress bar with the share done and an estimate of the time left, from its own pace
+  so far (which already reflects bandwidth, host load and other running backups); mailboxes count items, OneDrives
+  bytes. An incremental run shows the items stored so far. The jobs page refreshes running jobs every 15 seconds.
 - Choose which mailboxes and OneDrives are backed up: a switch per protected object, "back up all" (all, mailboxes,
   OneDrives) and "exclude all" on the tenant page, and per tenant whether newly found ones are backed up at once or wait
   to be selected (the default; migration `0015`). An excluded object gets no new backups; all its snapshots, the newest too,

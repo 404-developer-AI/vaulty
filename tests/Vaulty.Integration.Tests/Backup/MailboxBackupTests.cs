@@ -243,6 +243,33 @@ internal sealed class BackupHarness : IAsyncDisposable
 
 public sealed class MailboxBackupTests(TemporalFixture fixture, ITestOutputHelper output) : IClassFixture<TemporalFixture>
 {
+    [TemporalFact]
+    public async Task A_cancelled_backup_closes_its_snapshot_and_its_job_says_cancelled()
+    {
+        using var simulator = new MailboxSimulator(items: 400, seed: 21);
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var mailbox = await harness.SeedMailboxAsync();
+        harness.StartWorker();
+        // Cancelled as soon as it runs; whatever step it is in, the snapshot must not stay staged.
+        var cancelled = await Assert.ThrowsAnyAsync<Exception>(() => harness.BackupAsync(mailbox, async handle => await handle.CancelAsync()));
+        Assert.True(Temporalio.Exceptions.TemporalException.IsCanceledException(cancelled) || cancelled is Temporalio.Exceptions.WorkflowFailedException,
+            cancelled.GetType().Name);
+        await using var owner = new NpgsqlConnection(fixture.Database.Migrator);
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.snapshots WHERE protected_object_id = @mailbox AND state = 'staged'", new { mailbox }));
+        var snapshot = await owner.QuerySingleAsync<(string State, string Exceptions)>(
+            "SELECT state, exceptions::text FROM vaulty.snapshots WHERE protected_object_id = @mailbox", new { mailbox });
+        Assert.Equal("failed", snapshot.State);
+        Assert.Contains("cancelled", snapshot.Exceptions, StringComparison.Ordinal);
+        Assert.Equal("cancelled", await owner.ExecuteScalarAsync<string>("SELECT state FROM vaulty.jobs WHERE protected_object_id = @mailbox", new { mailbox }));
+        // A choice, not a fault: no critical alert.
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.alerts WHERE protected_object_id = @mailbox AND kind = 'backup.failed'", new { mailbox }));
+
+        // The next run backs the mailbox up normally.
+        var (next, _) = await harness.BackupAsync(mailbox);
+        Assert.False(next.IsPartial);
+    }
+
     [Fact]
     public async Task A_step_without_progress_of_its_own_heartbeats_until_it_ends()
     {
@@ -283,6 +310,11 @@ public sealed class MailboxBackupTests(TemporalFixture fixture, ITestOutputHelpe
         Assert.All(jobs, j => Assert.Equal("succeeded", j.State));
         Assert.Equal(jobs[0].WorkflowId, jobs[1].WorkflowId);
         Assert.NotEqual(jobs[0].RunId, jobs[1].RunId);
+        // Only the first backup knows its size beforehand, for the progress bar; an incremental run does not guess.
+        var expected = (await owner.QueryAsync<long?>(
+            "SELECT (progress->>'expected_items')::bigint FROM vaulty.jobs WHERE protected_object_id = @mailbox ORDER BY created_at", new { mailbox })).ToList();
+        Assert.True(expected[0] > 0, "the first backup records how many items it expects");
+        Assert.Null(expected[1]);
     }
 
     [TemporalFact]

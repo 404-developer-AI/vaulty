@@ -118,18 +118,37 @@ else
             @SelectionSummary</p>
         <MudSwitch T="bool" Value="@_protectNew" ValueChanged="SetProtectNewAsync" Color="Color.Primary" Disabled="@(!_canManagePolicy || _busy)"
                    Label="Back up newly found mailboxes and OneDrives automatically" />
-        @if (_canManagePolicy)
-        {
-            <div class="mt-2">
-                <MudButton Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable(), true))" Disabled="_busy">Back up all</MudButton>
-                <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable("mailbox"), true))" Disabled="_busy">Back up all mailboxes</MudButton>
-                <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable("drive"), true))" Disabled="_busy">Back up all OneDrives</MudButton>
-                <MudButton Class="ml-2" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => SetSelectionAsync(Selectable(), false))" Disabled="_busy">Exclude all</MudButton>
-            </div>
-        }
     </MudPaper>
 
-    <MudTable Items="_objects" Hover="true" Elevation="0" Outlined="true" Dense="true">
+    <MudGrid Spacing="2" Class="mb-2">
+        <MudItem xs="12" sm="6" md="4">
+            <MudTextField T="string" @bind-Value="_filterText" Immediate="true" DebounceInterval="250" Label="Search" Placeholder="Name or e-mail address"
+                          Clearable="true" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" />
+        </MudItem>
+        <MudItem xs="12" sm="3" md="2">
+            <MudSelect T="string" @bind-Value="_filterType" Label="Type" Clearable="true">
+                @foreach (var type in TypeFilters) { <MudSelectItem Value="@type">@type</MudSelectItem> }
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="3" md="2">
+            <MudSelect T="string" @bind-Value="_filterStatus" Label="Status" Clearable="true">
+                @foreach (var status in StatusFilters) { <MudSelectItem Value="@status">@status</MudSelectItem> }
+            </MudSelect>
+        </MudItem>
+        @if (_canManagePolicy)
+        {
+            <MudItem xs="12" md="4" Class="d-flex align-center">
+                @* The buttons act on the objects shown: filter first, then select or exclude them in one go. *@
+                <MudButton Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable(), true))" Disabled="@(_busy || Selectable().Count == 0)">
+                    Back up @Selectable().Count shown
+                </MudButton>
+                <MudButton Class="ml-2" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => SetSelectionAsync(Selectable(), false))"
+                           Disabled="@(_busy || Selectable().Count == 0)">Exclude @Selectable().Count shown</MudButton>
+            </MudItem>
+        }
+    </MudGrid>
+
+    <MudTable Items="Filtered" Hover="true" Elevation="0" Outlined="true" Dense="true">
         <HeaderContent>
             <MudTh>Back up</MudTh>
             <MudTh>Protected object</MudTh>
@@ -444,8 +463,29 @@ else
         }
     }
 
-    private List<Guid> Selectable(string? kind = null) =>
-        _objects.Where(o => o.State is "active" or "excluded" or "paused" && (kind is null || o.Kind == kind)).Select(o => o.Id).ToList();
+    private List<Guid> Selectable() => Filtered.Where(o => o.State is "active" or "excluded" or "paused").Select(o => o.Id).ToList();
+
+    private static readonly string[] TypeFilters = ["Mailbox", "Shared mailbox", "Resource mailbox", "Archive mailbox", "OneDrive"];
+    private static readonly string[] StatusFilters = ["Protected", "Partial", "Failed", "Awaiting first backup", "Excluded", "Source deleted", "Not protected yet", "Paused"];
+    private string? _filterText;
+    private string? _filterType;
+    private string? _filterStatus;
+
+    private IEnumerable<ProtectedObjectRow> Filtered => _objects.Where(o =>
+        (string.IsNullOrWhiteSpace(_filterText) || o.DisplayName.Contains(_filterText.Trim(), StringComparison.OrdinalIgnoreCase)
+            || o.SourceId.Contains(_filterText.Trim(), StringComparison.OrdinalIgnoreCase))
+        && (_filterType is null || KindLabel(o) == _filterType)
+        && (_filterStatus is null || StatusLabel(o) == _filterStatus));
+
+    /// <summary>The status the table shows for an object, as text, so the status filter matches what is on screen.</summary>
+    private string StatusLabel(ProtectedObjectRow o) => o.State switch
+    {
+        "source_deleted" => "Source deleted",
+        "not_protected" => "Not protected yet",
+        "paused" => "Paused",
+        "excluded" => "Excluded",
+        _ => _health?.Objects.FirstOrDefault(h => h.Id == o.Id) is { } status ? Protection.Label(status.Status) : "Awaiting first backup",
+    };
 
     private async Task SetSelectionAsync(List<Guid> ids, bool include) => await SelectionStepAsync(async (access, fresh) =>
     {
