@@ -1,0 +1,56 @@
+@using Vaulty.Infrastructure.Tenants
+@inject CustomerService CustomerService
+@* Adds a customer: a short code (used in lists and reports) and the name. Tags are optional. *@
+<MudDialog>
+    <TitleContent>Add a customer</TitleContent>
+    <DialogContent>
+        <MudForm @ref="_form" @bind-IsValid="_valid" Style="min-width: min(480px, 80vw)">
+            <MudTextField @bind-Value="_code" Label="Customer code" Required="true" RequiredError="Enter a customer code." MaxLength="20" Variant="Variant.Outlined"
+                          HelperText="Short and unique, for example ACME" AutoFocus="true" Class="mb-3" />
+            <MudTextField @bind-Value="_name" Label="Customer name" Required="true" RequiredError="Enter the customer name." MaxLength="200" Variant="Variant.Outlined" Class="mb-3" />
+            <MudTextField @bind-Value="_tags" Label="Tags (optional)" Variant="Variant.Outlined" HelperText="Separate tags with commas, for example contract-gold" />
+        </MudForm>
+        @if (_error is not null)
+        {
+            <Notice Tone="error">@_error</Notice>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy)" OnClick="SaveAsync">Add customer</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public Guid OrganizationId { get; set; }
+    [Parameter] public Guid UserId { get; set; }
+
+    private MudForm? _form;
+    private bool _valid;
+    private bool _busy;
+    private string? _code;
+    private string? _name;
+    private string? _tags;
+    private string? _error;
+
+    private async Task SaveAsync()
+    {
+        if (_form is not null) await _form.ValidateAsync();
+        if (!_valid) return;
+        _busy = true;
+        try
+        {
+            var id = await CustomerService.CreateAsync(OrganizationId, UserId, _code?.Trim() ?? "", _name?.Trim() ?? "", (_tags ?? "").Split(','));
+            Dialog.Close(DialogResult.Ok(id));
+        }
+        catch (TenantException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

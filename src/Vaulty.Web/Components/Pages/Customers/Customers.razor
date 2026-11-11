@@ -1,87 +1,151 @@
 @page "/customers"
 @attribute [Authorize(Policy = "perm:" + Permissions.CustomersView)]
+@using Vaulty.Core.Domain
+@using Vaulty.Infrastructure.Reporting
 @using Vaulty.Infrastructure.Tenants
 @inject CustomerService CustomerService
+@inject DashboardService Dashboards
 @inject CurrentAccess Current
-@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+@inject NavigationManager Navigation
 
 <PageTitle>Customers · Vaulty</PageTitle>
 
-<h1 class="vy-page-title">Customers</h1>
-<p class="vy-page-lede">Each customer has one or more Microsoft 365 tenants. Open a customer to connect a tenant.</p>
+<PageHeader Title="Customers" Lede="Each customer has one or more Microsoft 365 tenants. Open a customer to connect a tenant or send its protection report.">
+    <Actions>
+        @if (_canManage)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Add" OnClick="AddAsync">Add a customer</MudButton>
+        }
+    </Actions>
+</PageHeader>
 
-@if (_canManage)
-{
-    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-        <MudText Typo="Typo.h6">Add a customer</MudText>
-        <MudGrid Spacing="2">
-            <MudItem xs="12" md="2"><MudTextField @bind-Value="_code" Label="Customer code" /></MudItem>
-            <MudItem xs="12" md="5"><MudTextField @bind-Value="_name" Label="Customer name" /></MudItem>
-            <MudItem xs="12" md="3"><MudTextField @bind-Value="_tags" Label="Tags" HelperText="Separated by commas" /></MudItem>
-            <MudItem xs="12" md="2" Class="d-flex align-center"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="AddAsync">Add customer</MudButton></MudItem>
-        </MudGrid>
-    </MudPaper>
-}
-
-<MudTable Items="_customers" Hover="true" Elevation="0" Outlined="true" Dense="true">
+<DataTable T="Row" Items="_rows" Loading="_loading" Error="@_error" OnRetry="LoadAsync" Noun="customers" SearchPlaceholder="Search code, name or tag"
+           SearchFilter="@((r, q) => DataTable<Row>.Matches(q, r.Customer.Code, r.Customer.Name, string.Join(' ', r.Customer.Tags)))"
+           Filter="@(r => _status is null || r.Status == _status)" FiltersActive="@(_status is not null)" OnClearFilters="@(() => _status = null)"
+           OnRowClick="@(r => Navigation.NavigateTo($"/customers/{r.Customer.Id}"))">
+    <Filters>
+        <div class="vy-table-filter">
+            <MudSelect T="ProtectionStatus?" @bind-Value="_status" Label="Status" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense"
+                       ToStringFunc="@(s => s is { } v ? Protection.Label(v) : "")">
+                @foreach (var s in StatusFilters)
+                {
+                    <MudSelectItem T="ProtectionStatus?" Value="@s">@Protection.Label(s)</MudSelectItem>
+                }
+            </MudSelect>
+        </div>
+    </Filters>
     <HeaderContent>
-        <MudTh>Code</MudTh>
-        <MudTh>Customer</MudTh>
+        <MudTh><MudTableSortLabel T="Row" SortBy="@(r => Rank(r.Status))" InitialDirection="SortDirection.Descending">Status</MudTableSortLabel></MudTh>
+        <MudTh><MudTableSortLabel T="Row" SortBy="@(r => r.Customer.Name)">Customer</MudTableSortLabel></MudTh>
         <MudTh>Tags</MudTh>
-        <MudTh>Tenants</MudTh>
+        <MudTh><MudTableSortLabel T="Row" SortBy="@(r => r.Customer.Tenants)">Tenants</MudTableSortLabel></MudTh>
+        <MudTh>Protected objects</MudTh>
+        <MudTh><span class="vy-sr-only">Actions</span></MudTh>
     </HeaderContent>
     <RowTemplate>
-        <MudTd>@context.Code</MudTd>
-        <MudTd><MudLink Href="@($"/customers/{context.Id}")">@context.Name</MudLink></MudTd>
+        <MudTd><StatusChip Status="context.Status" /></MudTd>
         <MudTd>
-            @foreach (var tag in context.Tags)
+            <a href="@($"/customers/{context.Customer.Id}")" class="vy-cell-main" @onclick:stopPropagation="true">@context.Customer.Name</a>
+            <div class="vy-cell-sub">@context.Customer.Code</div>
+        </MudTd>
+        <MudTd>
+            @foreach (var tag in context.Customer.Tags)
             {
                 <MudChip T="string" Size="Size.Small">@tag</MudChip>
             }
         </MudTd>
-        <MudTd>@context.Tenants</MudTd>
+        <MudTd>@context.Customer.Tenants</MudTd>
+        <MudTd><span class="vy-muted">@context.Counts</span></MudTd>
+        <MudTd Class="vy-actions-cell">
+            <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Description" Href="@($"/customers/{context.Customer.Id}/report")"
+                       @onclick:stopPropagation="true">Report</MudButton>
+        </MudTd>
     </RowTemplate>
-</MudTable>
+    <EmptyContent>
+        <EmptyState Title="No customers yet" Icon="@Icons.Material.Outlined.Business">
+            <ChildContent>Add your first customer, then connect its Microsoft 365 tenant.</ChildContent>
+            <Actions>
+                @if (_canManage)
+                {
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Add" OnClick="AddAsync">Add a customer</MudButton>
+                }
+            </Actions>
+        </EmptyState>
+    </EmptyContent>
+</DataTable>
 
 @code {
-    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+    public sealed record Row(CustomerRow Customer, ProtectionStatus Status, string Counts);
 
-    private IReadOnlyList<CustomerRow> _customers = [];
+    private static readonly ProtectionStatus[] StatusFilters =
+        [ProtectionStatus.Failed, ProtectionStatus.Partial, ProtectionStatus.NotRunYet, ProtectionStatus.Protected];
+
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+    [SupplyParameterFromQuery(Name = "add")] public int? Add { get; set; }
+
+    private List<Row> _rows = [];
     private bool _canManage;
-    private string? _code;
-    private string? _name;
-    private string? _tags;
+    private bool _loading = true;
+    private string? _error;
+    private ProtectionStatus? _status;
     private Guid _organizationId;
     private Guid _userId;
+
+    private static int Rank(ProtectionStatus status) => status switch
+    {
+        ProtectionStatus.Failed => 6, ProtectionStatus.Partial => 5, ProtectionStatus.NotRunYet => 4, ProtectionStatus.Paused => 3,
+        ProtectionStatus.Protected => 2, ProtectionStatus.SourceDeleted => 1, _ => 0,
+    };
 
     protected override async Task OnInitializedAsync()
     {
         var user = (await AuthenticationState).User;
         _organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
         _userId = VaultyWebSetup.UserId(user) ?? Guid.Empty;
-        var access = await Current.GetAsync(user);
-        _canManage = access.Allows(Permissions.CustomersManage);
-        _customers = await Visible(access);
+        await LoadAsync();
     }
 
-    private async Task<IReadOnlyList<CustomerRow>> Visible(Vaulty.Infrastructure.Access.UserAccess access)
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        var all = await CustomerService.ListAsync(_organizationId);
-        var scope = access.Customers(Permissions.CustomersView);
-        return scope is null ? all : all.Where(c => scope.Contains(c.Id)).ToList();
+        // The dashboard's "Add a customer" opens the dialog straight away.
+        if (firstRender && RendererInfo.IsInteractive && Add == 1 && _canManage) await AddAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var access = await Current.GetAsync((await AuthenticationState).User);
+            _canManage = access.Allows(Permissions.CustomersManage);
+            var scope = access.Customers(Permissions.CustomersView);
+            var all = await CustomerService.ListAsync(_organizationId);
+            var dashboard = await Dashboards.LoadAsync(access);
+            _rows = all.Where(c => scope is null || scope.Contains(c.Id)).Select(c =>
+            {
+                var status = dashboard.Customers.FirstOrDefault(d => d.Id == c.Id);
+                return new Row(c, status?.Status ?? ProtectionStatus.NotRunYet,
+                    status is null || status.Counts.Count == 0 ? "None yet" : Vaulty.Infrastructure.Notifications.DigestMail.Counts(status.Counts));
+            }).OrderByDescending(r => Rank(r.Status)).ThenBy(r => r.Customer.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            _error = null;
+        }
+        catch (Exception ex) when (ex is Npgsql.NpgsqlException or TimeoutException)
+        {
+            _error = "Vaulty could not read the customers from its database. Try again in a moment.";
+        }
+        finally
+        {
+            _loading = false;
+        }
     }
 
     private async Task AddAsync()
     {
-        try
-        {
-            await CustomerService.CreateAsync(_organizationId, _userId, _code ?? "", _name ?? "", (_tags ?? "").Split(','));
-            _code = _name = _tags = null;
-            _customers = await Visible(await Current.GetAsync((await AuthenticationState).User));
-        }
-        catch (TenantException ex)
-        {
-            Snackbar.Add(ex.Message, Severity.Warning);
-        }
+        var dialog = await Dialogs.ShowAsync<AddCustomerDialog>("Add a customer",
+            new DialogParameters<AddCustomerDialog> { { d => d.OrganizationId, _organizationId }, { d => d.UserId, _userId } },
+            new DialogOptions { MaxWidth = MaxWidth.Small, CloseOnEscapeKey = true });
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: Guid id }) Navigation.NavigateTo($"/customers/{id}?added=1");
     }
 }

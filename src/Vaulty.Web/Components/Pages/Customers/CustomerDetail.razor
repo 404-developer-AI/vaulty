@@ -1,12 +1,14 @@
 @page "/customers/{CustomerId:guid}"
 @attribute [Authorize(Policy = "perm:" + Permissions.CustomersView)]
+@using Vaulty.Core.Domain
+@using Vaulty.Infrastructure.Reporting
 @using Vaulty.Infrastructure.Tenants
 @inject CustomerService CustomerService
 @inject TenantService TenantService
+@inject DashboardService Dashboards
 @inject CurrentAccess Current
+@inject DisplayTime Time
 @inject NavigationManager Navigation
-@inject TimeProvider Clock
-@inject ISnackbar Snackbar
 
 <PageTitle>@(_customer?.Name ?? "Customer") · Vaulty</PageTitle>
 
@@ -17,83 +19,97 @@
 }
 else if (_customer is null)
 {
-    <p class="vy-muted">This customer does not exist or you have no access to it.</p>
+    <PageHeader Title="Customer not found" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb("Not found")])" />
+    <Section>
+        <EmptyState Title="This customer does not exist or you have no access to it" Icon="@Icons.Material.Outlined.SearchOff">
+            <Actions><MudButton Variant="Variant.Outlined" Href="/customers">All customers</MudButton></Actions>
+        </EmptyState>
+    </Section>
 }
 else
 {
-    <h1 class="vy-page-title">@_customer.Name</h1>
-    <p class="vy-page-lede">Customer code @_customer.Code</p>
+    <PageHeader Title="@_customer.Name" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb(_customer.Name)])">
+        <Status>
+            @if (_status is { } s)
+            {
+                <StatusChip Status="s.Status" />
+            }
+        </Status>
+        <LedeContent>
+            Customer code @_customer.Code
+            @foreach (var tag in _customer.Tags)
+            {
+                <MudChip T="string" Size="Size.Small" Class="ml-2">@tag</MudChip>
+            }
+        </LedeContent>
+        <Actions>
+            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Description" Href="@($"/customers/{CustomerId}/report")">Protection report</MudButton>
+            @if (_canConnect)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.AddLink" Href="@($"/customers/{CustomerId}/connect")">Connect a tenant</MudButton>
+            }
+        </Actions>
+    </PageHeader>
 
-    <MudTable Items="_tenants" Hover="true" Elevation="0" Outlined="true" Dense="true" Class="mb-4">
-        <HeaderContent>
-            <MudTh>Tenant</MudTh>
-            <MudTh>Consent</MudTh>
-            <MudTh>Protected objects</MudTh>
-            <MudTh>Last check</MudTh>
-        </HeaderContent>
-        <RowTemplate>
-            <MudTd><MudLink Href="@($"/tenants/{context.Id}")">@context.DisplayName</MudLink></MudTd>
-            <MudTd><ConsentChip State="@context.ConsentState" /></MudTd>
-            <MudTd>@context.ProtectedObjects</MudTd>
-            <MudTd>@(context.LastHealthCheckAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "never")</MudTd>
-        </RowTemplate>
-        <NoRecordsContent><span class="vy-muted">No tenant connected yet.</span></NoRecordsContent>
-    </MudTable>
-
-    @if (_canConnect)
+    @if (Added == 1)
     {
-        <MudPaper Class="pa-4" Elevation="0" Outlined="true">
-            <MudText Typo="Typo.h6">Connect a tenant</MudText>
-            @if (_pending is null)
-            {
-                <p class="vy-muted">
-                    Vaulty creates a certificate for this tenant and a script that creates the app registration "Vaulty" in the tenant,
-                    with read permissions for backups and write permissions for restores. A Global Administrator of the tenant runs it.
-                </p>
-                <MudGrid Spacing="2">
-                    <MudItem xs="12" md="6"><MudTextField @bind-Value="_tenantName" Label="Name of the tenant in Vaulty" /></MudItem>
-                    <MudItem xs="12" md="6" Class="d-flex align-center"><MudCheckBox @bind-Value="_includeRestore" Label="Include restore permissions" /></MudItem>
-                </MudGrid>
-                <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" OnClick="BeginAsync">Create certificate and script</MudButton>
-            }
-            else
-            {
-                <MudText Typo="Typo.subtitle1">1. Create the app registration</MudText>
-                <p class="vy-muted">Run this script in PowerShell 7 as a Global Administrator of the tenant, or follow the steps below it.</p>
-                <MudTextField T="string" Value="@_pending.Script" ReadOnly="true" Lines="12" Variant="Variant.Outlined" Class="vy-secret" />
-                <ol class="mt-3">
-                    @foreach (var step in _pending.ManualSteps)
-                    {
-                        <li>@step</li>
-                    }
-                </ol>
-                <details class="mt-2"><summary>Certificate (public part, for the manual steps)</summary><pre class="vy-secret">@_pending.CertificatePem</pre></details>
-                <MudText Typo="Typo.subtitle1" Class="mt-4">2. Enter the ids the script printed</MudText>
-                <MudGrid Spacing="2">
-                    <MudItem xs="12" md="5"><MudTextField @bind-Value="_entraTenantId" Label="Tenant ID" /></MudItem>
-                    <MudItem xs="12" md="5"><MudTextField @bind-Value="_clientId" Label="Application ID" /></MudItem>
-                    <MudItem xs="12" md="2" Class="d-flex align-center"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CompleteAsync">Connect</MudButton></MudItem>
-                </MudGrid>
-            }
-        </MudPaper>
+        <Notice Tone="success" Title="Customer added">Connect its Microsoft 365 tenant next. It takes about ten minutes, most of it in the tenant itself.</Notice>
     }
+
+    @if (_status is { } st && st.Counts.Count > 0)
+    {
+        <div class="vy-stats">
+            <StatTile Label="Protected" Tone="protected" Value="@StatusText.Number(st.Counts.GetValueOrDefault(ProtectionStatus.Protected))" Caption="Protected objects" />
+            <StatTile Label="Failed" Tone="failed" Value="@StatusText.Number(st.Counts.GetValueOrDefault(ProtectionStatus.Failed))" Caption="No current snapshot" />
+            <StatTile Label="Partial" Tone="partial" Value="@StatusText.Number(st.Counts.GetValueOrDefault(ProtectionStatus.Partial))" Caption="Snapshot misses items" />
+            <StatTile Label="Awaiting first backup" Tone="neutral" Value="@StatusText.Number(st.Counts.GetValueOrDefault(ProtectionStatus.NotRunYet))" Caption="Starts on schedule" />
+        </div>
+    }
+
+    <Section Title="Tenants" Flush="@(_tenants.Count > 0)">
+        @if (_tenants.Count == 0)
+        {
+            <EmptyState Title="No tenant connected yet" Icon="@Icons.Material.Outlined.Domain">
+                <ChildContent>Vaulty creates a certificate and a script; a Global Administrator of the tenant runs it. Then Vaulty checks its permissions and finds the mailboxes and OneDrives.</ChildContent>
+                <Actions>
+                    @if (_canConnect)
+                    {
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.AddLink" Href="@($"/customers/{CustomerId}/connect")">Connect a tenant</MudButton>
+                    }
+                </Actions>
+            </EmptyState>
+        }
+        else
+        {
+            <MudSimpleTable Dense="true" Elevation="0">
+                <thead><tr><th>Tenant</th><th>Status</th><th>Consent</th><th>Protected objects</th><th>Last permission check</th></tr></thead>
+                <tbody>
+                    @foreach (var t in _tenants)
+                    {
+                        var status = _status?.Tenants.FirstOrDefault(x => x.Id == t.Id);
+                        <tr>
+                            <td><a href="@($"/tenants/{t.Id}")" class="vy-cell-main">@t.DisplayName</a><div class="vy-cell-sub">@(t.DefaultDomain ?? t.EntraTenantId.ToString())</div></td>
+                            <td>@if (status is not null) { <StatusChip Status="status.Status" Reason="@status.Reason" /> }</td>
+                            <td><ConsentChip State="@t.ConsentState" /></td>
+                            <td>@(status is null || status.Counts.Count == 0 ? StatusText.Plural(t.ProtectedObjects, "protected object") : Vaulty.Infrastructure.Notifications.DigestMail.Counts(status.Counts))</td>
+                            <td class="vy-nowrap">@(t.LastHealthCheckAt is { } at ? Time.Relative(at) : "Never")</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        }
+    </Section>
 }
 
 @code {
     [Parameter] public Guid CustomerId { get; set; }
+    [SupplyParameterFromQuery(Name = "added")] public int? Added { get; set; }
     [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
 
     private CustomerRow? _customer;
+    private CustomerStatusRow? _status;
     private IReadOnlyList<TenantRow> _tenants = [];
     private bool _canConnect;
-    private string? _tenantName;
-    private bool _includeRestore = true;
-    private PendingConnection? _pending;
-    private string? _entraTenantId;
-    private string? _clientId;
-    private Guid _organizationId;
-    private Guid _userId;
-
     private bool _loaded;
 
     protected override async Task OnParametersSetAsync()
@@ -110,52 +126,14 @@ else
 
     private async Task LoadPageAsync()
     {
+        await Time.LoadAsync();
         var user = (await AuthenticationState).User;
-        _organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
-        _userId = VaultyWebSetup.UserId(user) ?? Guid.Empty;
+        var organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
         var access = await Current.GetAsync(user);
         if (!access.Allows(Permissions.CustomersView, CustomerId)) return;
         _canConnect = access.Allows(Permissions.TenantsConnect, CustomerId);
-        _customer = (await CustomerService.ListAsync(_organizationId)).FirstOrDefault(c => c.Id == CustomerId);
-        _tenants = await TenantService.ListAsync(_organizationId, CustomerId);
-    }
-
-    private async Task<bool> ConfirmedAsync()
-    {
-        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
-        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/customers/{CustomerId}")}", forceLoad: true);
-        return false;
-    }
-
-    private async Task BeginAsync()
-    {
-        if (!await ConfirmedAsync()) return;
-        try
-        {
-            _pending = await TenantService.BeginConnectAsync(_organizationId, _userId, CustomerId, _tenantName ?? "", _includeRestore);
-        }
-        catch (TenantException ex)
-        {
-            Snackbar.Add(ex.Message, Severity.Warning);
-        }
-    }
-
-    private async Task CompleteAsync()
-    {
-        if (_pending is null || !await ConfirmedAsync()) return;
-        if (!Guid.TryParse(_entraTenantId, out var tenant) || !Guid.TryParse(_clientId, out var applicationId))
-        {
-            Snackbar.Add("Both IDs are GUIDs, as printed by the script.", Severity.Warning);
-            return;
-        }
-        try
-        {
-            var id = await TenantService.CompleteConnectAsync(_organizationId, _userId, _pending.Id, tenant, applicationId);
-            Navigation.NavigateTo($"/tenants/{id}?connected=1");
-        }
-        catch (TenantException ex)
-        {
-            Snackbar.Add(ex.Message, Severity.Error);
-        }
+        _customer = (await CustomerService.ListAsync(organizationId)).FirstOrDefault(c => c.Id == CustomerId);
+        _tenants = await TenantService.ListAsync(organizationId, CustomerId);
+        _status = (await Dashboards.LoadAsync(access)).Customers.FirstOrDefault(c => c.Id == CustomerId);
     }
 }

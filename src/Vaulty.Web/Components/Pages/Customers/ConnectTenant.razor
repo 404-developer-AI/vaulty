@@ -1,0 +1,255 @@
+@page "/customers/{CustomerId:guid}/connect"
+@attribute [Authorize(Policy = "perm:" + Permissions.TenantsConnect)]
+@using Vaulty.Infrastructure.Tenants
+@inject CustomerService CustomerService
+@inject TenantService TenantService
+@inject CurrentAccess Current
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject IJSRuntime JS
+
+<PageTitle>Connect a tenant · Vaulty</PageTitle>
+
+@if (!_loaded)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-4" />
+}
+else if (_customer is null)
+{
+    <PageHeader Title="Connect a tenant" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb("Not found")])" />
+    <Section>
+        <EmptyState Title="This customer does not exist or you cannot connect tenants for it" Icon="@Icons.Material.Outlined.SearchOff">
+            <Actions><MudButton Variant="Variant.Outlined" Href="/customers">All customers</MudButton></Actions>
+        </EmptyState>
+    </Section>
+}
+else
+{
+    <PageHeader Title="Connect a tenant" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb(_customer.Name, $"/customers/{CustomerId}"), new Crumb("Connect a tenant")])"
+                Lede="@($"Give Vaulty access to a Microsoft 365 tenant of {_customer.Name}. Vaulty uses its own app registration in the tenant, signed in with a certificate only Vaulty holds.")" />
+
+    <WizardSteps Steps="Steps" Active="_step" Label="Steps to connect a tenant" />
+
+    <Section>
+        @switch (_step)
+        {
+            case 0:
+                <h2 class="mt-0 mb-1" style="font-size: 1rem">Name the tenant and choose its access</h2>
+                <p class="vy-muted mt-0 mb-4">Vaulty creates a certificate for this tenant (its private key stays in Vaulty's encrypted secret store) and a PowerShell script that creates the app registration.</p>
+                <MudTextField @bind-Value="_tenantName" Label="Name of the tenant in Vaulty" Variant="Variant.Outlined" Required="true" HelperText="As your team calls it, for example Acme Logistics" Class="mb-4" Style="max-width: 480px" />
+                <div class="vy-choice" role="radiogroup" aria-label="Access">
+                    <label class="vy-choice-option @(_includeRestore ? "selected" : "")">
+                        <input type="radio" name="access" checked="@_includeRestore" @onchange="@(() => _includeRestore = true)" />
+                        <span><span class="vy-choice-title">Back up and restore (recommended)</span><br />
+                            <span class="vy-choice-text">Read permissions for backups and write permissions for restores. Without them, items can only be exported.</span></span>
+                    </label>
+                    <label class="vy-choice-option @(!_includeRestore ? "selected" : "")">
+                        <input type="radio" name="access" checked="@(!_includeRestore)" @onchange="@(() => _includeRestore = false)" />
+                        <span><span class="vy-choice-title">Back up only</span><br />
+                            <span class="vy-choice-text">Read permissions only. Restores into the tenant are not possible until you rotate the certificate with restore permissions.</span></span>
+                    </label>
+                </div>
+                @if (_error is not null) { <Notice Tone="error" Class="mt-3">@_error</Notice> }
+                <div class="vy-wizard-footer">
+                    <MudButton Variant="Variant.Text" Href="@($"/customers/{CustomerId}")">Cancel</MudButton>
+                    <span class="vy-grow"></span>
+                    @if (!Fresh)
+                    {
+                        <span class="vy-muted" style="font-size: 0.8125rem">You confirm it's you next.</span>
+                    }
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || string.IsNullOrWhiteSpace(_tenantName))" OnClick="BeginAsync">Create certificate and script</MudButton>
+                </div>
+                break;
+
+            case 1:
+                <h2 class="mt-0 mb-1" style="font-size: 1rem">Create the app registration in the tenant</h2>
+                <p class="vy-muted mt-0 mb-3">A Global Administrator of the tenant runs this script in PowerShell 7. It creates the app "Vaulty", uploads the certificate, grants admin consent and prints two IDs. Keep this page open.</p>
+                @if (_pending is not null)
+                {
+                    <div class="d-flex justify-end mb-2"><MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.ContentCopy" OnClick="CopyScriptAsync">@(_copied ? "Copied" : "Copy the script")</MudButton></div>
+                    <pre class="vy-script" tabindex="0" aria-label="PowerShell script">@_pending.Script</pre>
+                    <details class="mt-4">
+                        <summary style="cursor: pointer; font-weight: 600">No PowerShell? Follow the steps in the Entra admin center instead</summary>
+                        <ol class="mt-2">
+                            @foreach (var step in _pending.ManualSteps) { <li class="mb-1">@step</li> }
+                        </ol>
+                        <p class="vy-muted mb-1">Certificate (public part, for the manual steps):</p>
+                        <pre class="vy-secret" style="white-space: pre-wrap; font-size: 0.75rem">@_pending.CertificatePem</pre>
+                    </details>
+                }
+                <div class="vy-wizard-footer">
+                    <span class="vy-grow"></span>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="@(() => _step = 2)">The script ran, enter the IDs</MudButton>
+                </div>
+                break;
+
+            case 2:
+                <h2 class="mt-0 mb-1" style="font-size: 1rem">Enter the IDs the script printed</h2>
+                <p class="vy-muted mt-0 mb-4">Both are GUIDs. In the Entra admin center they are on the overview of the app registration "Vaulty".</p>
+                <div style="max-width: 520px">
+                    <MudTextField @bind-Value="_entraTenantId" Label="Tenant ID" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000"
+                                  HelperText="Shown as Directory (tenant) ID in Entra" Validation="@(new Func<string?, string?>(GuidError))" Class="mb-3" />
+                    <MudTextField @bind-Value="_clientId" Label="Application ID" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000"
+                                  HelperText="Shown as Application ID on the overview of the app registration" Validation="@(new Func<string?, string?>(GuidError))" />
+                </div>
+                @if (_error is not null) { <Notice Tone="error" Class="mt-3">@_error</Notice> }
+                <div class="vy-wizard-footer">
+                    @if (_pending is not null)
+                    {
+                        <MudButton Variant="Variant.Text" OnClick="@(() => _step = 1)">Back to the script</MudButton>
+                    }
+                    <span class="vy-grow"></span>
+                    @if (!Fresh)
+                    {
+                        <span class="vy-muted" style="font-size: 0.8125rem">You confirm it's you next.</span>
+                    }
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || !ValidIds)" OnClick="CompleteAsync">Connect the tenant</MudButton>
+                </div>
+                break;
+        }
+    </Section>
+    <p class="vy-muted" style="font-size: 0.8125rem">After connecting, Vaulty checks its permissions in the tenant and finds the mailboxes and OneDrives. Microsoft can take a few minutes before a new app works.</p>
+}
+
+@code {
+    private static readonly string[] Steps = ["Name and access", "Run the script", "Enter the IDs", "Check and find mailboxes"];
+
+    [Parameter] public Guid CustomerId { get; set; }
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+    // Carried through "Confirm it's you": the step-up page returns here, and nothing typed so far is lost.
+    [SupplyParameterFromQuery(Name = "name")] public string? NameQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "restore")] public int? RestoreQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "pending")] public Guid? PendingQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "tenant")] public string? TenantQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "app")] public string? AppQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "go")] public int? Go { get; set; }
+
+    private CustomerRow? _customer;
+    private bool _loaded;
+    private int _step;
+    private string? _tenantName;
+    private bool _includeRestore = true;
+    private PendingConnection? _pending;
+    private Guid? _pendingId;
+    private string? _entraTenantId;
+    private string? _clientId;
+    private string? _error;
+    private bool _busy;
+    private bool _copied;
+    private bool _fresh;
+    private bool _resumed;
+    private Guid _organizationId;
+    private Guid _userId;
+
+    private bool Fresh => _fresh;
+
+    private bool ValidIds => Guid.TryParse(_entraTenantId?.Trim(), out _) && Guid.TryParse(_clientId?.Trim(), out _);
+
+    private static string? GuidError(string? value) =>
+        string.IsNullOrWhiteSpace(value) || Guid.TryParse(value.Trim(), out _) ? null : "Enter a GUID such as 00000000-0000-0000-0000-000000000000.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var user = (await AuthenticationState).User;
+            _organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
+            _userId = VaultyWebSetup.UserId(user) ?? Guid.Empty;
+            _fresh = VaultyWebSetup.HasFreshStepUp(user, Clock);
+            var access = await Current.GetAsync(user);
+            if (!access.Allows(Permissions.TenantsConnect, CustomerId)) return;
+            _customer = (await CustomerService.ListAsync(_organizationId)).FirstOrDefault(c => c.Id == CustomerId);
+            _tenantName = NameQuery ?? _customer?.Name;
+            if (RestoreQuery == 0) _includeRestore = false;
+            if (PendingQuery is { } pending)
+            {
+                (_pendingId, _entraTenantId, _clientId, _step) = (pending, TenantQuery, AppQuery, 2);
+            }
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Back from "Confirm it's you": continue with the step the user had asked for.
+        if (!firstRender || !RendererInfo.IsInteractive || Go != 1 || !_fresh || _resumed || _customer is null) return;
+        _resumed = true;
+        if (_step == 2 && ValidIds) await CompleteAsync();
+        else if (_step == 0 && !string.IsNullOrWhiteSpace(_tenantName)) await BeginAsync();
+        StateHasChanged();
+    }
+
+    private void StepUp(string query) =>
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/customers/{CustomerId}/connect?{query}&go=1")}", forceLoad: true);
+
+    private async Task BeginAsync()
+    {
+        _error = null;
+        if (!VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock))
+        {
+            StepUp($"name={Uri.EscapeDataString(_tenantName ?? "")}&restore={(_includeRestore ? 1 : 0)}");
+            return;
+        }
+        _busy = true;
+        try
+        {
+            _pending = await TenantService.BeginConnectAsync(_organizationId, _userId, CustomerId, _tenantName ?? "", _includeRestore);
+            _pendingId = _pending.Id;
+            _step = 1;
+        }
+        catch (TenantException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CompleteAsync()
+    {
+        _error = null;
+        if (_pendingId is not { } pendingId || !Guid.TryParse(_entraTenantId?.Trim(), out var tenant) || !Guid.TryParse(_clientId?.Trim(), out var applicationId))
+        {
+            _error = "Enter both IDs as the script printed them.";
+            return;
+        }
+        if (!VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock))
+        {
+            StepUp($"pending={pendingId}&tenant={Uri.EscapeDataString(tenant.ToString())}&app={Uri.EscapeDataString(applicationId.ToString())}");
+            return;
+        }
+        _busy = true;
+        try
+        {
+            var id = await TenantService.CompleteConnectAsync(_organizationId, _userId, pendingId, tenant, applicationId);
+            Navigation.NavigateTo($"/tenants/{id}?connected=1");
+        }
+        catch (TenantException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CopyScriptAsync()
+    {
+        if (_pending is null) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _pending.Script);
+            _copied = true;
+        }
+        catch (JSException)
+        {
+            _copied = false;
+        }
+    }
+}

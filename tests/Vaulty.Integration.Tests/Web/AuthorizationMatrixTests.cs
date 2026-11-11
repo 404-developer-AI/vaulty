@@ -37,6 +37,8 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/jobs"] = VaultyPolicies.Permission(Permissions.JobsView),
         ["/customers"] = VaultyPolicies.Permission(Permissions.CustomersView),
         ["/customers/{CustomerId:guid}"] = VaultyPolicies.Permission(Permissions.CustomersView),
+        ["/customers/{CustomerId:guid}/connect"] = VaultyPolicies.Permission(Permissions.TenantsConnect),
+        ["/customers/{CustomerId:guid}/report"] = VaultyPolicies.Permission(Permissions.CustomersView),
         ["/tenants/{TenantId:guid}"] = VaultyPolicies.Permission(Permissions.CustomersView),
         ["/search"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),
         ["/objects/{ObjectId:guid}"] = VaultyPolicies.Permission(Permissions.SnapshotsBrowse),

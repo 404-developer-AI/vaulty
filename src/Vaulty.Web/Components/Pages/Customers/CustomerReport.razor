@@ -1,0 +1,137 @@
+@page "/customers/{CustomerId:guid}/report"
+@attribute [Authorize(Policy = "perm:" + Permissions.CustomersView)]
+@using Vaulty.Core.Domain
+@using Vaulty.Infrastructure.Reporting
+@inject DashboardService Dashboards
+@inject CurrentAccess Current
+@inject DisplayTime Time
+@inject TimeProvider Clock
+@inject IJSRuntime JS
+
+<PageTitle>@($"Protection report {_customer?.Name}") · Vaulty</PageTitle>
+
+@if (!_loaded)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-4" />
+}
+else if (_customer is null)
+{
+    <PageHeader Title="Protection report" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb("Not found")])" />
+    <Section>
+        <EmptyState Title="This customer does not exist or you have no access to it" Icon="@Icons.Material.Outlined.SearchOff">
+            <Actions><MudButton Variant="Variant.Outlined" Href="/customers">All customers</MudButton></Actions>
+        </EmptyState>
+    </Section>
+}
+else
+{
+    <div class="vy-no-print">
+        <PageHeader Title="Protection report" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb(_customer.Name, $"/customers/{CustomerId}"), new Crumb("Protection report")])"
+                    Lede="A summary for the customer of what Vaulty protects and in what state. Print it or save it as PDF, then send it to the customer.">
+            <Actions>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Print" OnClick="PrintAsync">Print or save as PDF</MudButton>
+            </Actions>
+        </PageHeader>
+    </div>
+
+    var counts = _customer.Counts;
+    var counted = counts.Where(c => c.Key != ProtectionStatus.Excluded).Sum(c => c.Value);
+    <article class="vy-report">
+        <div class="vy-report-head">
+            <div>
+                <div class="vy-eyebrow">Vaulty · Microsoft 365 backup</div>
+                <h1 class="vy-page-title mt-1" style="font-size: 1.375rem">Protection report for @_customer.Name</h1>
+                <div class="vy-muted">Customer code @_customer.Code · status on @Time.Absolute(_generated)</div>
+            </div>
+            <div class="d-flex flex-column align-end gap-1">
+                <StatusChip Status="_customer.Status" />
+                <span class="vy-muted" style="font-size: 0.75rem">Overall status</span>
+            </div>
+        </div>
+
+        <h2>Summary</h2>
+        <p class="mt-0">
+            @StatusText.Number(counts.GetValueOrDefault(ProtectionStatus.Protected)) of @StatusText.Number(counted) protected objects are protected with a current snapshot
+            across @StatusText.Plural(_customer.Tenants.Count, "Microsoft 365 tenant").
+            @if (counts.GetValueOrDefault(ProtectionStatus.Partial) > 0)
+            {
+                <text> @StatusText.Plural(counts.GetValueOrDefault(ProtectionStatus.Partial), "protected object has", "protected objects have") a partial latest snapshot: items are missing, each with a recorded reason.</text>
+            }
+            @if (counts.GetValueOrDefault(ProtectionStatus.Failed) > 0)
+            {
+                <text> @StatusText.Plural(counts.GetValueOrDefault(ProtectionStatus.Failed), "protected object has", "protected objects have") no current snapshot; these need attention.</text>
+            }
+            Backups are stored immutably in the EU and encrypted per tenant; stored data is re-read regularly to verify that it can be restored.
+        </p>
+
+        @foreach (var tenant in _customer.Tenants)
+        {
+            <h2>@tenant.Name</h2>
+            <p class="vy-muted mt-0 mb-2">
+                <StatusChip Status="tenant.Status" /> @Vaulty.Infrastructure.Notifications.DigestMail.Counts(tenant.Counts)
+                @if (tenant.LastVerificationAt is { } v)
+                {
+                    <text> · last verification @Time.Absolute(v), @StatusText.Plural(tenant.LastVerificationFailures ?? 0, "problem") found</text>
+                }
+            </p>
+            @if (tenant.Objects.Count == 0)
+            {
+                <p class="vy-muted">No protected objects yet.</p>
+            }
+            else
+            {
+                <table>
+                    <thead><tr><th>Protected object</th><th>Type</th><th>Status</th><th>Latest snapshot</th><th style="text-align: right">Items</th><th>Verified</th></tr></thead>
+                    <tbody>
+                        @foreach (var o in tenant.Objects.OrderBy(o => o.Name, StringComparer.OrdinalIgnoreCase))
+                        {
+                            <tr>
+                                <td>@o.Name</td>
+                                <td>@StatusText.ObjectKind(o.Kind, o.SubKind)</td>
+                                <td><StatusChip Status="o.Status" Text="@(o.Status == ProtectionStatus.Partial ? $"Partial: {o.Missing} missing" : null)" /></td>
+                                <td class="vy-nowrap">@(o.LastSnapshotAt is { } at ? Time.Absolute(at) : "None yet")</td>
+                                <td class="vy-num">@(o.Items is { } n ? StatusText.Number(n) : "")</td>
+                                <td class="vy-nowrap">@(o.VerifiedAt is { } va ? Time.Absolute(va) : "Not yet")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        }
+
+        <h2>What the statuses mean</h2>
+        <dl class="vy-fields wide">
+            <dt><StatusChip Status="ProtectionStatus.Protected" /></dt><dd>The latest snapshot is current and holds every item.</dd>
+            <dt><StatusChip Status="ProtectionStatus.Partial" /></dt><dd>The latest snapshot was stored, but some items are missing; each has a recorded reason, such as a file over the size limit.</dd>
+            <dt><StatusChip Status="ProtectionStatus.Failed" /></dt><dd>There is no current snapshot, or access to the tenant was lost.</dd>
+            <dt><StatusChip Status="ProtectionStatus.NotRunYet" /></dt><dd>Newly added; the first backup has not run yet.</dd>
+            <dt><StatusChip Status="ProtectionStatus.SourceDeleted" /></dt><dd>The object no longer exists in Microsoft 365; its snapshots are kept until their retention ends.</dd>
+            <dt><StatusChip Status="ProtectionStatus.Excluded" /></dt><dd>Deliberately not backed up.</dd>
+        </dl>
+    </article>
+}
+
+@code {
+    [Parameter] public Guid CustomerId { get; set; }
+
+    private CustomerStatusRow? _customer;
+    private DateTimeOffset _generated;
+    private bool _loaded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            await Time.LoadAsync();
+            var access = await Current.GetAsync();
+            _customer = (await Dashboards.LoadAsync(access)).Customers.FirstOrDefault(c => c.Id == CustomerId);
+            _generated = Clock.GetUtcNow();
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task PrintAsync() => await JS.InvokeVoidAsync("print");
+}
