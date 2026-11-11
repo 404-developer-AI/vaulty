@@ -26,6 +26,15 @@ public sealed class DisplayTime(PlatformSettings settings, TimeProvider clock)
     public string Absolute(DateTimeOffset? value) =>
         value is { } v ? Local(v).ToString("d MMM yyyy, HH:mm", CultureInfo.InvariantCulture) : "";
 
+    /// <summary>A moment ahead, such as an expected finish: "14:35" today, "12 Nov, 02:10" on another day.</summary>
+    public string Ahead(DateTimeOffset value)
+    {
+        var local = Local(value);
+        return local.Date == Local(clock.GetUtcNow()).Date
+            ? local.ToString("HH:mm", CultureInfo.InvariantCulture)
+            : local.ToString("d MMM, HH:mm", CultureInfo.InvariantCulture);
+    }
+
     public string Relative(DateTimeOffset? value)
     {
         if (value is not { } v) return "";

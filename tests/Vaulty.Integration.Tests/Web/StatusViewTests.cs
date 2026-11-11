@@ -51,6 +51,18 @@ public sealed partial class StatusViewTests(WebAppFixture app) : IClassFixture<W
         Assert.Contains("vy-status partial", snapshots, StringComparison.Ordinal);
         Assert.DoesNotContain("vy-status succeeded", snapshots, StringComparison.Ordinal);
         Assert.DoesNotContain("vy-status protected", snapshots, StringComparison.Ordinal);
+
+        // A running first backup shows its bar with the percentage, what is done of the total, and (this early) no guess yet.
+        await owner.ExecuteAsync(
+            """
+            INSERT INTO vaulty.jobs (id, organization_id, kind, tenant_id, protected_object_id, state, started_at, workflow_id, workflow_run_id, progress)
+                VALUES (gen_random_uuid(), @org, 'backup', @tenant, @healthy, 'running', now(), 'backup-progress', 'run-p', '{"expected_items": 10547}');
+            """, new { org, tenant, healthy });
+        var jobs = await PageAsync(client, "/jobs");
+        Assert.Contains("0 / 10,547 items processed", jobs, StringComparison.Ordinal);
+        Assert.Contains("vy-progress-percent\">0%", jobs, StringComparison.Ordinal);
+        Assert.Contains("Estimating the time left", jobs, StringComparison.Ordinal);
+        await owner.ExecuteAsync("UPDATE vaulty.jobs SET state = 'cancelled' WHERE workflow_id = 'backup-progress'");
     }
 
     private static async Task<string> PageAsync(HttpClient client, string path)

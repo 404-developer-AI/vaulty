@@ -142,3 +142,9 @@ h1:focus, h1:focus-visible { outline: none; }
 .mud-table .mud-button-root { white-space: nowrap; }
 /* Names keep whole words and get room; a table wider than its frame scrolls instead of cutting off its last column. */
 .mud-table .mud-table-body .mud-table-cell:has(.mud-link) { min-width: 240px; }
+
+/* Progress of a running job: a clear bar with its percentage, then what is done and the time left. */
+.vy-progress { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+.vy-progress-bar { display: flex; align-items: center; gap: 10px; }
+.vy-progress-bar .mud-progress-linear { flex: 1; }
+.vy-progress-percent { min-width: 3.5ch; text-align: right; font-variant-numeric: tabular-nums; }

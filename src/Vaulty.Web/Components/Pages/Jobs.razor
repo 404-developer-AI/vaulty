@@ -59,21 +59,38 @@
         <MudTd>@(context.ObjectName ?? context.TenantName ?? "")</MudTd>
         <MudTd>@Time.Relative(context.StartedAt ?? context.CreatedAt)</MudTd>
         <MudTd>@Time.Relative(context.FinishedAt)</MudTd>
-        <MudTd Style="min-width: 260px">
+        <MudTd Style="min-width: 320px">
             @if (context.State == "running" && context.Kind == "backup")
             {
-                var progress = context.Progress(Clock.GetUtcNow());
-                @if (progress is { } p)
-                {
-                    <MudProgressLinear Value="@(p.Fraction * 100)" Color="Color.Primary" Rounded="true" Size="Size.Medium" Class="mb-1" />
-                    <span class="vy-muted">@ProgressText(context, p.Fraction, p.Remaining)</span>
-                }
-                else
-                {
-                    @* An incremental run learns its changes as it goes: there is no total to measure against, so no guess. *@
-                    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Rounded="true" Size="Size.Small" Class="mb-1" />
-                    <span class="vy-muted">@ItemsText(context.ItemsSoFar ?? 0) items stored so far</span>
-                }
+                var now = Clock.GetUtcNow();
+                var progress = context.Progress(now);
+                <div class="vy-progress">
+                    @if (progress is { } p)
+                    {
+                        <div class="vy-progress-bar">
+                            <MudProgressLinear Value="@(p.Fraction * 100)" Color="Color.Primary" Rounded="true" Size="Size.Large" />
+                            <strong class="vy-progress-percent">@((int)(p.Fraction * 100))%</strong>
+                        </div>
+                        <div>@DoneText(context)</div>
+                        <div class="vy-muted">
+                            @if (p.Remaining is { } left)
+                            {
+                                <text>About @Duration(left) left · done around @Time.Ahead(now + left)</text>
+                            }
+                            else
+                            {
+                                <text>Estimating the time left…</text>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        @* An incremental run learns its changes as it goes: there is no total to measure against, so no guess. *@
+                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Rounded="true" Size="Size.Medium" />
+                        <div>@ItemsText(context.ItemsSoFar ?? 0) changed items processed@(context.BytesSoFar is > 0 ? $" · {Bytes(context.BytesSoFar.Value)}" : "")</div>
+                        <div class="vy-muted">Incremental run: the number of changes is only known at the end, so there is no time estimate.</div>
+                    }
+                </div>
             }
             @Counts(context.ResultCounts)
             @if (!string.IsNullOrEmpty(context.Error)) { <div class="vy-muted">@context.Error</div> }
@@ -174,14 +191,10 @@
 
     private static string ItemsText(long count) => count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
 
-    private static string ProgressText(JobRow job, double fraction, TimeSpan? remaining)
-    {
-        var done = job.ExpectedBytes is > 0
-            ? $"{Bytes(job.BytesSoFar ?? 0)} of {Bytes(job.ExpectedBytes.Value)}"
-            : $"{ItemsText(job.ItemsSoFar ?? 0)} of {ItemsText(job.ExpectedItems ?? 0)} items";
-        var left = remaining is { } r ? $", about {Duration(r)} left" : ", estimating the time left";
-        return $"{(int)(fraction * 100)}% · {done}{left}";
-    }
+    // A drive is measured in bytes (its file count is not known up front); a mailbox in items.
+    private static string DoneText(JobRow job) => job.ExpectedBytes is > 0
+        ? $"{Bytes(job.BytesSoFar ?? 0)} / {Bytes(job.ExpectedBytes.Value)} processed · {ItemsText(job.ItemsSoFar ?? 0)} files"
+        : $"{ItemsText(job.ItemsSoFar ?? 0)} / {ItemsText(job.ExpectedItems ?? 0)} items processed";
 
     private static string Duration(TimeSpan span) => span.TotalMinutes < 1 ? "less than a minute"
         : span.TotalHours < 1 ? $"{(int)Math.Ceiling(span.TotalMinutes)} min"
