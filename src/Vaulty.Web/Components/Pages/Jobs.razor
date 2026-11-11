@@ -85,10 +85,11 @@
                     }
                     else
                     {
-                        @* An incremental run learns its changes as it goes: there is no total to measure against, so no guess. *@
+                        @* An incremental run learns its changes as it goes, and a run started before sizes were recorded has none:
+                           there is no total to measure against, so no guess. *@
                         <MudProgressLinear Indeterminate="true" Color="Color.Primary" Rounded="true" Size="Size.Medium" />
-                        <div>@ItemsText(context.ItemsSoFar ?? 0) changed items processed@(context.BytesSoFar is > 0 ? $" · {Bytes(context.BytesSoFar.Value)}" : "")</div>
-                        <div class="vy-muted">Incremental run: the number of changes is only known at the end, so there is no time estimate.</div>
+                        <div>@ItemsText(context.ItemsSoFar ?? 0) items processed@(context.BytesSoFar is > 0 ? $" · {Bytes(context.BytesSoFar.Value)}" : "")</div>
+                        <div class="vy-muted">Total not known for this run, so no time estimate.</div>
                     }
                 </div>
             }

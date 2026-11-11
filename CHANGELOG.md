@@ -18,8 +18,8 @@ All notable changes to this project are documented in this file. The format foll
 - A running first backup shows a progress bar with the share done and an estimate of the time left, from its own pace
   so far (which already reflects bandwidth, host load and other running backups); mailboxes count items, OneDrives
   bytes. The bar carries its percentage, the line below it what is done of the total ("4,431 / 10,547 items
-  processed") and the time left with the expected finish ("about 1 h 20 min left · done around 14:35"). An incremental
-  run shows the changed items processed so far. The jobs page refreshes running jobs every 15 seconds.
+  processed") and the time left with the expected finish ("about 1 h 20 min left · done around 14:35"). A run without a
+  known total (an incremental run) shows the items processed so far. The jobs page refreshes running jobs every 15 seconds.
 - Choose which mailboxes and OneDrives are backed up: a switch per protected object, "back up all" (all, mailboxes,
   OneDrives) and "exclude all" on the tenant page, and per tenant whether newly found ones are backed up at once or wait
   to be selected (the default; migration `0015`). An excluded object gets no new backups; all its snapshots, the newest too,
