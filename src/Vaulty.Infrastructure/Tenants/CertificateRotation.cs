@@ -183,7 +183,8 @@ public sealed class CertificateRotation(NpgsqlDataSource dataSource, ISecretStor
 }
 
 /// <summary>Renews expiring certificates of tenants and of the setup app, a few times a day.</summary>
-public sealed class CertificateRotationService(CertificateRotation rotation, SetupAppService setupApp, TimeProvider clock, ILogger<CertificateRotationService> logger)
+public sealed class CertificateRotationService(CertificateRotation rotation, SetupAppService setupApp, Identity.MicrosoftSignInService signIn, TimeProvider clock,
+    ILogger<CertificateRotationService> logger)
     : BackgroundService
 {
     public static readonly TimeSpan Interval = TimeSpan.FromHours(6);
@@ -221,10 +222,32 @@ public sealed class CertificateRotationService(CertificateRotation rotation, Set
                 await setupApp.RenewCertificateAsync("system:rotation", cancellationToken).ConfigureAwait(false);
                 logger.LogInformation("The certificate of the Vaulty setup app was renewed.");
             }
+            await RenewSignInCertificatesAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is TenantException or IdentityException or GraphException or HttpRequestException or NpgsqlException)
         {
             logger.LogWarning("Certificate renewal stopped: {Error}", ex.GetType().Name);
+        }
+    }
+
+    /// <summary>The certificate of each organization's sign-in app, renewed 60 days before it expires when Vaulty knows the app's object id.</summary>
+    private async Task RenewSignInCertificatesAsync(CancellationToken cancellationToken)
+    {
+        foreach (var (organizationId, settings) in await signIn.EnabledAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (settings.ApplicationObjectId is null || settings.CertificateExpiresAt is not { } expires || expires - clock.GetUtcNow() >= CertificateRotation.RenewBefore)
+            {
+                continue;
+            }
+            try
+            {
+                await signIn.RenewCertificateAsync(organizationId, "system:rotation", cancellationToken).ConfigureAwait(false);
+                logger.LogInformation("The certificate of the sign-in app of organization {OrganizationId} was renewed.", organizationId);
+            }
+            catch (Exception ex) when (ex is Identity.SignInSetupException or IdentityException or GraphException or HttpRequestException)
+            {
+                logger.LogWarning("Renewing the sign-in app certificate of organization {OrganizationId} failed: {Error}", organizationId, ex.GetType().Name);
+            }
         }
     }
 }

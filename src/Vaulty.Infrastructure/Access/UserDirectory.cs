@@ -4,7 +4,14 @@ using Vaulty.Infrastructure.Database;
 
 namespace Vaulty.Infrastructure.Access;
 
-public sealed record UserRow(Guid Id, string UserName, string? DisplayName, bool HasMfa, DateTimeOffset? DisabledAt);
+/// <param name="HasMfa">The user's own passkey or authenticator app.</param>
+/// <param name="MicrosoftAccount">The linked Microsoft account, or null for a local account.</param>
+/// <param name="MicrosoftHandlesSecondFactor">Linked, and the organization's tenant handles the second factor.</param>
+public sealed record UserRow(Guid Id, string UserName, string? DisplayName, bool HasMfa, DateTimeOffset? DisabledAt, string? MicrosoftAccount = null,
+    bool MicrosoftHandlesSecondFactor = false)
+{
+    public bool Linked => MicrosoftAccount is not null;
+}
 
 public sealed record RoleRow(Guid Id, string Name, bool BuiltIn, IReadOnlyList<string> Permissions);
 
@@ -18,16 +25,20 @@ public sealed class UserDirectory(NpgsqlDataSource dataSource)
     public async Task<IReadOnlyList<UserRow>> UsersAsync(Guid organizationId, CancellationToken cancellationToken = default)
     {
         await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
-        var rows = await session.Connection.QueryAsync<(Guid Id, string UserName, string? DisplayName, bool HasMfa, DateTime? DisabledAt)>(
+        var rows = await session.Connection.QueryAsync<(Guid Id, string UserName, string? DisplayName, bool HasMfa, DateTime? DisabledAt, Guid? ObjectId,
+            string? Account, bool Delegated)>(
             new CommandDefinition(
                 """
                 SELECT u.id, u.user_name, u.display_name,
                        (u.two_factor_enabled AND u.authenticator_key IS NOT NULL) OR EXISTS (SELECT 1 FROM vaulty.user_passkeys p WHERE p.user_id = u.id),
-                       u.disabled_at
-                  FROM vaulty.users u ORDER BY lower(u.user_name)
+                       u.disabled_at, u.entra_object_id, u.entra_account,
+                       coalesce(s.enabled AND s.microsoft_handles_second_factor AND s.entra_tenant_id = u.entra_tenant_id, false)
+                  FROM vaulty.users u LEFT JOIN vaulty.microsoft_sign_in s ON s.organization_id = u.organization_id
+                 ORDER BY lower(u.user_name)
                 """, transaction: session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         return rows.Select(r => new UserRow(r.Id, r.UserName, r.DisplayName, r.HasMfa,
-            r.DisabledAt is { } d ? new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)) : null)).ToList();
+            r.DisabledAt is { } d ? new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)) : null,
+            r.ObjectId is null ? null : r.Account ?? r.ObjectId.ToString(), r.ObjectId is not null && r.Delegated)).ToList();
     }
 
     public async Task<IReadOnlyList<RoleRow>> RolesAsync(Guid organizationId, CancellationToken cancellationToken = default)

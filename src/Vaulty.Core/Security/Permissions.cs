@@ -59,6 +59,7 @@ public static class Permissions
     public const string RolesManage = "roles.manage";
     public const string SettingsManage = "settings.manage";
     public const string StorageManage = "storage.manage";
+    public const string SignInManage = "signin.manage";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
     [
@@ -108,6 +109,9 @@ public static class Permissions
             RequiresMfa: true, RequiresStepUp: true),
         new(StorageManage, AdministrationGroup, "Manage storage",
             "Configure the object storage account and rotate its keys.", [], RequiresMfa: true, RequiresStepUp: true),
+        new(SignInManage, AdministrationGroup, "Manage sign-in",
+            "Set up sign-in with Microsoft, link users to their Microsoft account and choose who handles the second factor.", [],
+            RequiresMfa: true, RequiresStepUp: true),
     ];
 
     private static readonly Dictionary<string, PermissionInfo> ByKey = All.ToDictionary(p => p.Key, StringComparer.Ordinal);

@@ -46,7 +46,13 @@
             var assertion = await navigator.credentials.get({ publicKey: request });
             var url = mode === "stepup" ? "/account/stepup/passkey" : "/account/passkey/login";
             var result = await post(url, { credential: JSON.stringify(assertion.toJSON()) });
-            if (!result.ok) { show(element, "The passkey was not accepted."); return; }
+            if (!result.ok) {
+                var refusal = result.status === 403 ? (await result.json()).error : null;
+                show(element, refusal === "use-microsoft" ? "This Vaulty user is linked to a Microsoft account. Sign in with Microsoft."
+                    : refusal === "microsoft-only" ? "Your organization allows sign-in with Microsoft only."
+                    : "The passkey was not accepted.");
+                return;
+            }
             window.location.assign(element.getAttribute("data-passkey-next") || "/");
         } catch (error) {
             show(element, "The passkey request was cancelled or failed.");

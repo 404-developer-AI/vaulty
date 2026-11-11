@@ -1,0 +1,342 @@
+@page "/settings/sign-in"
+@attribute [Authorize(Policy = "perm:" + Permissions.SignInManage)]
+@using Vaulty.Infrastructure.Identity
+@using Vaulty.Infrastructure.Tenants
+@using Vaulty.Graph.Onboarding
+@using Vaulty.Core.Domain
+@inject MicrosoftSignInService MicrosoftSignIn
+@inject VaultyHostOptions HostOptions
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject DisplayTime Time
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Sign-in · Vaulty</PageTitle>
+
+<PageHeader Title="Sign-in with Microsoft"
+            Lede="Let the people of your organization sign in with their Microsoft work account, under the sign-in rules of your own tenant. Set it up once. Every change asks you to confirm it's you." />
+
+@if (!_loaded)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-4" />
+}
+else
+{
+    @if (_settings.Enabled)
+    {
+        <Notice Tone="success" Title="On: users linked to a Microsoft account sign in with Microsoft">
+            @(_settings.MicrosoftHandlesSecondFactor
+                ? "Your tenant asks them for their second factor; Vaulty asks none of its own."
+                : "Vaulty asks them for its own passkey or authenticator code after Microsoft.")
+        </Notice>
+    }
+    else if (_settings.Ready)
+    {
+        <Notice Tone="info" Title="Ready, but switched off">Every check passed. Switch sign-in with Microsoft on below.</Notice>
+    }
+    else
+    {
+        <Notice Tone="info" Title="Not set up yet">
+            Follow the steps below. It takes about five minutes and needs an administrator of your own Microsoft tenant who may create app registrations.
+        </Notice>
+    }
+    @if (_settings.Enabled && _settings.MicrosoftHandlesSecondFactor)
+    {
+        <Notice Tone="warning" Title="Vaulty relies on your tenant for the second factor">
+            Vaulty cannot see whether Microsoft asked for a second factor at each sign-in. Make sure Security defaults or a Conditional Access policy requires multi-factor authentication for everyone who uses Vaulty.
+        </Notice>
+    }
+
+    <Section Title="1. Certificate" Description="The sign-in app proves it is Vaulty with a certificate Vaulty creates. Its private key stays in Vaulty's encrypted secret store; you upload only the public part.">
+        @if (_settings.CertificateThumbprint is null)
+        {
+            <div class="vy-wizard-footer">
+                <span class="vy-grow"></span>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CreateCertificateAsync" Disabled="_busy">Create certificate</MudButton>
+            </div>
+        }
+        else
+        {
+            <dl class="vy-fields wide">
+                <dt>Thumbprint</dt><dd class="vy-mono">@_settings.CertificateThumbprint</dd>
+                <dt>Valid until</dt>
+                <dd>
+                    @Time.Absolute(_settings.CertificateExpiresAt)
+                    @if (_settings.CertificateExpiresAt is { } exp && exp - Clock.GetUtcNow() < CertificateRotation.RenewBefore)
+                    {
+                        <span class="vy-status partial ml-2">Expires in @Protection.Age(exp - Clock.GetUtcNow())</span>
+                    }
+                </dd>
+            </dl>
+            <div class="vy-wizard-footer">
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Download" Href="/settings/sign-in/certificate.cer" Target="_blank">Download the certificate</MudButton>
+                <span class="vy-grow"></span>
+                @if (_settings.ApplicationObjectId is not null && _settings.CredentialWorks)
+                {
+                    <MudButton Variant="Variant.Outlined" OnClick="RenewAsync" Disabled="_busy" title="Vaulty adds a new certificate to the app itself and removes the old one">Renew the certificate</MudButton>
+                }
+                <MudButton Variant="Variant.Text" OnClick="CreateCertificateAsync" Disabled="_busy">Create a new certificate</MudButton>
+            </div>
+            <p class="vy-muted mb-0" style="font-size: 0.8125rem">With the object ID entered below, Vaulty renews the certificate itself 60 days before it expires.</p>
+        }
+    </Section>
+
+    <Section Title="2. Register the app in Entra" Description="In your own tenant, the one your people sign in to.">
+        <ol class="vy-entra-steps mt-0">
+            <li>Sign in to the Microsoft Entra admin center and go to <strong>Identity &gt; Applications &gt; App registrations &gt; New registration</strong>.</li>
+            <li>Name: <CopyValue Value="@MicrosoftSignInSettings.DisplayName" Label="the name" />.
+                Supported account types: <strong>Accounts in this organizational directory only (Single tenant)</strong>.</li>
+            <li>Redirect URI: platform <strong>Web</strong>, value <CopyValue Value="@RedirectUri.ToString()" Label="the redirect URI" />. Select <strong>Register</strong>.</li>
+            <li><strong>Certificates &amp; secrets &gt; Certificates &gt; Upload certificate</strong>: the file from step 1. Do not create a secret: anyone holding one could sign in as the app.</li>
+            <li><strong>API permissions</strong>: the delegated Microsoft Graph permission <CopyValue Value="User.Read" /> is there by default; Vaulty asks for no more than <CopyValue Value="openid" />, <CopyValue Value="profile" /> and <CopyValue Value="email" />. Select <strong>Grant admin consent</strong>, so people are not asked to consent themselves.</li>
+            <li><strong>Token configuration &gt; Add optional claim &gt; ID</strong>: <CopyValue Value="auth_time" />. Vaulty uses it to check that the Microsoft sign-in behind "Confirm it's you" is fresh.</li>
+            <li>Optional, each with admin consent, as <strong>Application permissions</strong> of Microsoft Graph:
+                <CopyValue Value="@SignInAppPermissions.UserReadAll" /> to pick users from your tenant when you add or link them, and
+                <CopyValue Value="@SignInAppPermissions.PolicyReadAll" /> so Vaulty can check that your tenant requires multi-factor authentication.</li>
+            <li>Copy the <strong>Application ID</strong>, the <strong>Directory (tenant) ID</strong> and the <strong>Object ID</strong> from the overview of the app.</li>
+        </ol>
+    </Section>
+
+    <Section Title="3. Enter the IDs and check" Description="Vaulty checks that its certificate signs in, then you sign in once yourself as a test. The checks change nothing in Entra.">
+        <div class="vy-grid-2" style="max-width: 820px">
+            <MudTextField @bind-Value="_clientId" Label="Application ID" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000" />
+            <MudTextField @bind-Value="_tenantId" Label="Directory (tenant) ID" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000" />
+            <MudTextField @bind-Value="_objectId" Label="Object ID (optional)" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000"
+                          HelperText="Lets Vaulty renew the certificate itself" />
+        </div>
+        <div class="vy-wizard-footer">
+            <span class="vy-grow"></span>
+            <MudButton Variant="Variant.Outlined" OnClick="SaveIdsAsync" Disabled="@(_busy || _settings.CertificateThumbprint is null)">Save and check the certificate</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="TestSignIn" Disabled="@(_busy || !_settings.CredentialWorks)">Test sign-in</MudButton>
+        </div>
+
+        @if (Error is not null)
+        {
+            <Notice Tone="error" Title="The test sign-in did not start">Check the certificate first, then try again.</Notice>
+        }
+        <ul class="vy-check-list mt-3">
+            <li>
+                @CheckIcon(_settings.CredentialCheckedAt is null ? null : _settings.CredentialWorks, true)
+                <span><strong>Certificate signs in</strong><br /><span class="vy-muted">@(_settings.CredentialDetail ?? "Not checked yet.")</span></span>
+            </li>
+            @if (_settings.CredentialWorks)
+            {
+                <li>
+                    @CheckIcon(_settings.CanPickUsers, false)
+                    <span><strong>Pick users from the tenant</strong> (optional)<br /><span class="vy-muted">@(_settings.CanPickUsers
+                        ? "The app holds User.Read.All: you can search your tenant when you add or link a user."
+                        : "Without User.Read.All you enter the object ID of each account.")</span></span>
+                </li>
+                <li>
+                    @CheckIcon(_settings.MfaPosture switch { TenantMfaPosture.SecurityDefaults or TenantMfaPosture.ConditionalAccess => true, TenantMfaPosture.None => false, _ => null },
+                        _settings.MfaPosture == TenantMfaPosture.None)
+                    <span><strong>Your tenant requires multi-factor authentication</strong><br /><span class="vy-muted">@MfaText</span></span>
+                </li>
+            }
+            @if (_settings.SignInChecks.Count == 0)
+            {
+                <li>@CheckIcon(null, true)<span><strong>Test sign-in</strong><br /><span class="vy-muted">Run the test sign-in to check the app registration.</span></span></li>
+            }
+            @foreach (var check in _settings.SignInChecks)
+            {
+                <li>@CheckIcon(check.Passed, check.Required)<span><strong>@check.Name</strong>@(check.Required ? "" : " (optional)")<br /><span class="vy-muted">@check.Detail</span></span></li>
+            }
+        </ul>
+        @if (_settings.SignInCheckedAt is { } at)
+        {
+            <p class="vy-muted mb-0 mt-2" style="font-size: 0.8125rem">Test sign-in @Time.Absolute(at).</p>
+        }
+    </Section>
+
+    <Section Title="4. Switch it on" Description="Who may sign in how. Switching something off ends the sessions it affects at once.">
+        <div style="max-width: 820px">
+            <MudSwitch T="bool" @bind-Value="_enabled" Color="Color.Primary" Disabled="@(!_settings.Ready)" Label="Sign-in with Microsoft" />
+            <p class="vy-muted mt-0">Users you link to a Microsoft account sign in with Microsoft only, so your tenant's Conditional Access and off-boarding apply to Vaulty too.</p>
+            <MudSwitch T="bool" @bind-Value="_delegated" Color="Color.Primary" Label="Microsoft handles the second factor" />
+            <p class="vy-muted mt-0">On: Vaulty asks linked users no code of its own and counts the Microsoft sign-in as their second factor, also for restores and exports. Off: they also need a passkey or authenticator app in Vaulty. "Confirm it's you" is a new Microsoft sign-in either way.</p>
+            <MudSwitch T="bool" @bind-Value="_signInOnly" Color="Color.Primary" Disabled="@(!_enabled)" Label="Microsoft sign-in only" />
+            <p class="vy-muted mt-0">Local passwords and passkeys stop working, except for local Organization admins kept for emergencies. Each emergency sign-in raises an alert. Needs at least one local Organization admin with a passkey.</p>
+        </div>
+        <div class="vy-wizard-footer">
+            <span class="vy-grow"></span>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveOptionsAsync" Disabled="@(_busy || !OptionsChanged)">Save</MudButton>
+        </div>
+    </Section>
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+    [SupplyParameterFromQuery(Name = "go")] public string? Go { get; set; }
+    [SupplyParameterFromQuery(Name = "app")] public string? AppQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "tenant")] public string? TenantQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "object")] public string? ObjectQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "options")] public string? OptionsQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+
+    private MicrosoftSignInSettings _settings = new();
+    private string? _clientId;
+    private string? _tenantId;
+    private string? _objectId;
+    private bool _enabled;
+    private bool _delegated = true;
+    private bool _signInOnly;
+    private bool _loaded;
+    private bool _busy;
+    private bool _resumed;
+    private Guid _organizationId;
+    private string _actor = "user";
+
+    private Uri RedirectUri => MicrosoftSignInSettings.RedirectUri(HostOptions.PublicHost, new Uri(Navigation.BaseUri));
+
+    private bool OptionsChanged => _enabled != _settings.Enabled || _delegated != _settings.MicrosoftHandlesSecondFactor || _signInOnly != _settings.SignInOnly;
+
+    private string MfaText => _settings.MfaPosture switch
+    {
+        TenantMfaPosture.SecurityDefaults => "Security defaults are on: everyone registers and uses multi-factor authentication.",
+        TenantMfaPosture.ConditionalAccess => "A Conditional Access policy requires multi-factor authentication of all users.",
+        TenantMfaPosture.None => "Neither Security defaults nor a Conditional Access policy for all users requires multi-factor authentication. Microsoft may let people in with a password only; with \"Microsoft handles the second factor\" on, so would Vaulty.",
+        _ => "Not checked: give the app Policy.Read.All, or confirm in Entra that multi-factor authentication is required.",
+    };
+
+    private static RenderFragment CheckIcon(bool? passed, bool required) => passed switch
+    {
+        true => @<MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Size="Size.Small" Color="Color.Success" />,
+        false => @<MudIcon Icon="@(required ? Icons.Material.Outlined.Cancel : Icons.Material.Outlined.WarningAmber)" Size="Size.Small" Color="@(required ? Color.Error : Color.Warning)" />,
+        _ => @<MudIcon Icon="@Icons.Material.Outlined.RadioButtonUnchecked" Size="Size.Small" />,
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = (await AuthenticationState).User;
+        _organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
+        _actor = $"user:{VaultyWebSetup.UserId(user)}";
+        await Time.LoadAsync();
+        await LoadAsync();
+        if (OptionsQuery is { Length: 3 } o && o.All(c => c is '0' or '1')) (_enabled, _delegated, _signInOnly) = (o[0] == '1', o[1] == '1', o[2] == '1');
+        _loaded = true;
+    }
+
+    private async Task LoadAsync()
+    {
+        _settings = await MicrosoftSignIn.GetAsync(_organizationId);
+        _clientId ??= AppQuery ?? _settings.ClientId?.ToString();
+        _tenantId ??= TenantQuery ?? _settings.TenantId?.ToString();
+        _objectId ??= ObjectQuery ?? _settings.ApplicationObjectId?.ToString();
+        (_enabled, _delegated, _signInOnly) = (_settings.Enabled, _settings.MicrosoftHandlesSecondFactor, _settings.SignInOnly);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Back from "Confirm it's you": continue with what the user had asked for.
+        if (!firstRender || !RendererInfo.IsInteractive || _resumed || Go is null) return;
+        _resumed = true;
+        if (!VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return;
+        switch (Go)
+        {
+            case "certificate": await CreateCertificateAsync(); break;
+            case "ids": await SaveIdsAsync(); break;
+            case "renew": await RenewAsync(); break;
+            case "options": await SaveOptionsAsync(); break;
+        }
+        StateHasChanged();
+    }
+
+    private async Task<bool> ConfirmedAsync(string go)
+    {
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/settings/sign-in?go={go}")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task CreateCertificateAsync()
+    {
+        if (_settings.CertificateThumbprint is not null && !_resumed && !await Dialogs.ConfirmAsync("Create a new certificate?",
+                "The current certificate stops being used at once, so sign-in with Microsoft stops until you upload the new one and run the checks again.",
+                "Create a new certificate", danger: true))
+        {
+            return;
+        }
+        if (!await ConfirmedAsync("certificate")) return;
+        await RunAsync(async () =>
+        {
+            _settings = await MicrosoftSignIn.CreateCertificateAsync(_organizationId, _actor);
+            Snackbar.Add("Certificate created. Download it and upload it to the app registration.", Severity.Success);
+        });
+    }
+
+    private async Task SaveIdsAsync()
+    {
+        if (!Guid.TryParse(_clientId?.Trim(), out var clientId) || !Guid.TryParse(_tenantId?.Trim(), out var tenantId))
+        {
+            Snackbar.Add("Enter the application ID and the tenant ID as GUIDs, for example 00000000-0000-0000-0000-000000000000.", Severity.Warning);
+            return;
+        }
+        Guid? objectId = null;
+        if (!string.IsNullOrWhiteSpace(_objectId))
+        {
+            if (!Guid.TryParse(_objectId.Trim(), out var parsed))
+            {
+                Snackbar.Add("Enter the object ID as a GUID, or leave it empty.", Severity.Warning);
+                return;
+            }
+            objectId = parsed;
+        }
+        if (!await ConfirmedAsync($"ids&app={clientId}&tenant={tenantId}&object={objectId}")) return;
+        await RunAsync(async () =>
+        {
+            _settings = await MicrosoftSignIn.SaveIdsAsync(_organizationId, clientId, tenantId, objectId, _actor);
+            (_enabled, _delegated, _signInOnly) = (_settings.Enabled, _settings.MicrosoftHandlesSecondFactor, _settings.SignInOnly);
+            Snackbar.Add(_settings.CredentialWorks ? "Saved. The certificate signs in; run the test sign-in next." : "Saved, but the certificate does not sign in yet.",
+                _settings.CredentialWorks ? Severity.Success : Severity.Warning);
+        });
+    }
+
+    // A full page load: the test sign-in starts on the server, which binds it to this browser with a cookie.
+    private void TestSignIn() => Navigation.NavigateTo("/account/microsoft/check", forceLoad: true);
+
+    private async Task RenewAsync()
+    {
+        if (!await ConfirmedAsync("renew")) return;
+        await RunAsync(async () =>
+        {
+            Snackbar.Add(await MicrosoftSignIn.RenewCertificateAsync(_organizationId, _actor), Severity.Success);
+            _settings = await MicrosoftSignIn.GetAsync(_organizationId);
+        });
+    }
+
+    private async Task SaveOptionsAsync()
+    {
+        var turningOnDelegated = _enabled && _delegated && !(_settings.Enabled && _settings.MicrosoftHandlesSecondFactor);
+        if (turningOnDelegated && !_resumed && !await Dialogs.ConfirmAsync("Let Microsoft handle the second factor?",
+                "Vaulty then asks linked users no code of its own and cannot see whether Microsoft asked for one. Only do this when your tenant requires multi-factor authentication for everyone who uses Vaulty.",
+                "Let Microsoft handle it"))
+        {
+            return;
+        }
+        if (!await ConfirmedAsync($"options&options={(_enabled ? 1 : 0)}{(_delegated ? 1 : 0)}{(_signInOnly ? 1 : 0)}")) return;
+        await RunAsync(async () =>
+        {
+            _settings = await MicrosoftSignIn.SetOptionsAsync(_organizationId, _actor, _enabled, _delegated, _signInOnly);
+            Snackbar.Add("Saved. Sessions that lost access were ended.", Severity.Success);
+        });
+        (_enabled, _delegated, _signInOnly) = (_settings.Enabled, _settings.MicrosoftHandlesSecondFactor, _settings.SignInOnly);
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        _busy = true;
+        try
+        {
+            await action();
+        }
+        catch (Exception ex) when (ex is SignInSetupException or IdentityException or Vaulty.Graph.GraphException or HttpRequestException)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

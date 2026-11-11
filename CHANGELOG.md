@@ -7,6 +7,31 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- Sign-in with Microsoft for the people of an organization, through its own "Vaulty sign-in" app registration in its
+  own Microsoft tenant (single tenant, certificate only, asking for `openid profile email` and nothing else). Settings >
+  Sign-in guides the set-up: Vaulty creates the certificate, shows each value for the Entra admin center, checks that
+  the certificate signs in, reads which optional permissions the app holds, and checks with a test sign-in. With
+  `Policy.Read.All` it also reports whether the tenant requires multi-factor authentication; with `User.Read.All` users
+  are picked from the tenant, otherwise entered by object ID. Vaulty renews the certificate itself when it knows the
+  app's object ID.
+- A sign-in is the authorization code flow with PKCE, a one-time state and nonce, and a cookie that binds it to the
+  browser that started it; the code is redeemed with the app's certificate and no token is kept. The id token must come
+  from the organization's tenant, for the sign-in app, be current and name a member (guests are refused). Accounts are
+  matched on tenant and object ID only, never on an e-mail address.
+- Users are added from Microsoft or linked to their Microsoft account, by an administrator under Settings > Users and
+  roles or by the users themselves (Account > Microsoft account). A linked user signs in with Microsoft only, so the
+  tenant's Conditional Access and off-boarding apply to Vaulty too; linking, unlinking or switching sign-in off ends the
+  user's sessions at once. The last local Organization admin cannot be linked.
+- "Microsoft handles the second factor" (on by default, with a warning): the organization's tenant asks linked users
+  for their second factor and Vaulty asks none of its own; switched off, they also need a passkey or authenticator app
+  in Vaulty. A token that proves a second factor is recorded as such. "Confirm it's you" for a linked user is a new
+  Microsoft sign-in of the same account no older than five minutes.
+- "Microsoft sign-in only": local passwords and passkeys stop working except for local Organization admins kept for
+  emergencies (at least one with a passkey is required); every emergency sign-in raises a critical alert.
+- New permission "Manage sign-in" (`signin.manage`), held by the built-in Organization admin role.
+- The audit log records how each sign-in came in (password, passkey or Microsoft, with the second-factor source and the
+  short authentication method names Microsoft reports), refused sign-ins, links and every change of the sign-in settings.
+
 - Connect a tenant from the browser: a Global Administrator of the customer signs in with Microsoft, and Vaulty
   creates the app registration "Vaulty" in the tenant with its own certificate, grants admin consent for its
   application permissions, saves the tenant and application IDs itself, checks the permissions and removes the
@@ -241,6 +266,11 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- Refreshing a session after the periodic security check kept the user's claims but restarted the session's own: the
+  8-hour session limit counted from the last check instead of from the sign-in. The sign-in time, sign-in method and
+  step-up time now carry over.
+- Opening the second-factor set-up page created the authenticator key in a way that changed the account's security
+  stamp, which ended the session at its next check while the user was still scanning the code.
 - A second certificate rotation of a tenant wrote the new certificate over the one in use, before the new one was
   proven to work: after a rotation the current certificate had the name the next one was given. Every certificate now
   has its own name.

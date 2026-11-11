@@ -46,6 +46,18 @@ internal sealed class MicrosoftSimulator : IDisposable
     public X509Certificate2? SetupCertificate { get; set; }
     public Guid SetupClientId { get; set; }
 
+    // ---- the organization's "Vaulty sign-in" app
+    public X509Certificate2? SignInCertificate { get; set; }
+    public Guid SignInClientId { get; set; }
+    /// <summary>The application permissions in the sign-in app's own token (its roles claim).</summary>
+    public string[] SignInAppRoles { get; set; } = [];
+    /// <summary>The oid of the next id token; null gives a new one each time.</summary>
+    public Guid? NextObjectId { get; set; }
+    /// <summary>Changes the claims of the next id tokens (a guest, another nonce, an old auth_time).</summary>
+    public Action<JsonObject>? ShapeIdToken { get; set; }
+    public List<(Guid Id, string Name, string Upn, string Type)> Members { get; } = [];
+    public bool SecurityDefaults { get; set; }
+
     public Dictionary<Guid, JsonObject> Applications { get; } = [];
     public Dictionary<Guid, Guid> ServicePrincipals { get; } = [];
     public Dictionary<Guid, HashSet<Guid>> Assignments { get; } = [];
@@ -121,14 +133,25 @@ internal sealed class MicrosoftSimulator : IDisposable
         if (!VerifyAssertion(form["client_assertion"]!, clientId, tokenEndpoint)) return Json(401, new JsonObject { ["error"] = "invalid_client", ["error_description"] = "AADSTS700027: Client assertion failed signature validation." });
         var access = "access-" + Guid.NewGuid().ToString("N");
         Issued.Add(access);
+        if (form["grant_type"] == "client_credentials" && clientId == SignInClientId && SignInClientId != Guid.Empty)
+        {
+            // An app-only token is a JWT whose roles claim lists the application permissions of the app.
+            var payload = new JsonObject { ["roles"] = new JsonArray(SignInAppRoles.Select(r => (JsonNode)r).ToArray()) };
+            access = $"{CertificateJwt.Base64Url("{\"alg\":\"none\"}"u8)}.{CertificateJwt.Base64Url(Encoding.UTF8.GetBytes(payload.ToJsonString()))}.{Guid.NewGuid():N}";
+            Issued.Add(access);
+        }
         if (form["grant_type"] == "client_credentials") return Json(200, new JsonObject { ["access_token"] = access, ["expires_in"] = 3599 });
         if (!_codes.TryRemove(form["code"]!, out var issued)) return Json(400, new JsonObject { ["error"] = "invalid_grant", ["error_description"] = "AADSTS54005: The code was already redeemed." });
         if (Pkce.Challenge(form["code_verifier"]!) != issued.Challenge) return Json(400, new JsonObject { ["error"] = "invalid_grant", ["error_description"] = "AADSTS501481: The code verifier does not match." });
         var claims = new JsonObject
         {
-            ["tid"] = issued.Tenant.ToString(), ["oid"] = Guid.NewGuid().ToString(), ["preferred_username"] = UserName, ["nonce"] = issued.Nonce,
+            ["tid"] = issued.Tenant.ToString(), ["oid"] = (NextObjectId ?? Guid.NewGuid()).ToString(), ["preferred_username"] = UserName, ["nonce"] = issued.Nonce,
+            ["iss"] = SignInTokenRules.Issuer(Endpoints.AuthorityHost, issued.Tenant), ["aud"] = clientId.ToString(),
+            ["exp"] = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds(), ["nbf"] = DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds(),
+            ["iat"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ["auth_time"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ["name"] = "Alex Example",
         };
         if (DirectoryRoles is { } roles) claims["wids"] = new JsonArray(roles.Select(r => (JsonNode)r.ToString()).ToArray());
+        ShapeIdToken?.Invoke(claims);
         var idToken = $"{CertificateJwt.Base64Url("{\"alg\":\"none\"}"u8)}.{CertificateJwt.Base64Url(Encoding.UTF8.GetBytes(claims.ToJsonString()))}.";
         Issued.Add(idToken);
         return Json(200, new JsonObject { ["access_token"] = access, ["id_token"] = idToken, ["expires_in"] = 3599, ["token_type"] = "Bearer" });
@@ -139,6 +162,7 @@ internal sealed class MicrosoftSimulator : IDisposable
         var payload = CertificateJwt.Payload(assertion);
         if (payload["aud"]?.GetValue<string>() != tokenEndpoint || payload["iss"]?.GetValue<string>() != clientId.ToString()) return false;
         var certificates = clientId == SetupClientId && SetupCertificate is not null ? [SetupCertificate]
+            : clientId == SignInClientId && SignInCertificate is not null ? [SignInCertificate]
             : Applications.Values.Where(a => a["appId"]!.GetValue<string>() == clientId.ToString()).SelectMany(Keys).Select(KeyCertificate).ToList();
         return certificates.Any(c => SignedBy(assertion, c));
     }
@@ -273,6 +297,25 @@ internal sealed class MicrosoftSimulator : IDisposable
                 keys.Remove(match);
                 return new ResponseMessage { StatusCode = 204 };
             }
+            case "GET" when path == "users" && query.Contains("startswith(displayName,'", StringComparison.Ordinal):
+            {
+                var text = query.Split("startswith(displayName,'")[1].Split('\'')[0];
+                return Json(200, new JsonObject
+                {
+                    ["value"] = new JsonArray(Members.Where(m => m.Type == "Member" && (m.Name.StartsWith(text, StringComparison.OrdinalIgnoreCase) || m.Upn.StartsWith(text, StringComparison.OrdinalIgnoreCase)))
+                        .Select(m => (JsonNode)new JsonObject { ["id"] = m.Id.ToString(), ["displayName"] = m.Name, ["userPrincipalName"] = m.Upn }).ToArray()),
+                });
+            }
+            case "GET" when path.StartsWith("users/", StringComparison.Ordinal):
+            {
+                var member = Members.FirstOrDefault(m => m.Id == Guid.Parse(path[6..42]));
+                return member.Id == Guid.Empty ? Error(404, "Request_ResourceNotFound", "Not found.")
+                    : Json(200, new JsonObject { ["id"] = member.Id.ToString(), ["displayName"] = member.Name, ["userPrincipalName"] = member.Upn, ["userType"] = member.Type });
+            }
+            case "GET" when path == "policies/identitySecurityDefaultsEnforcementPolicy":
+                return Json(200, new JsonObject { ["isEnabled"] = SecurityDefaults });
+            case "GET" when path == "identity/conditionalAccess/policies":
+                return Json(200, new JsonObject { ["value"] = new JsonArray() });
             case "GET" when path is "organization" or "users":
                 return Json(200, new JsonObject { ["value"] = new JsonArray() });
         }

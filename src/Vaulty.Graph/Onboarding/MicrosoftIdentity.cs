@@ -194,6 +194,58 @@ public sealed class IdentityClient(HttpClient http, MicrosoftEndpoints endpoints
         return new DelegatedToken(AccessToken(json), ExpiresOn(json), SignedInUser.FromIdToken(idToken));
     }
 
+    /// <summary>What a sign-in to Vaulty asks for: who the person is, and no access to anything in the tenant.</summary>
+    public static readonly string[] SignInScopes = ["openid", "profile", "email"];
+
+    /// <summary>
+    /// Where a person is sent to sign in to Vaulty with the organization's sign-in app. A fresh sign-in ("Confirm it's
+    /// you") makes Microsoft ask for the credentials again (<c>prompt=login</c>, <c>max_age=0</c>).
+    /// </summary>
+    public Uri SignInAuthorizationUrl(string tenant, Guid clientId, Uri redirectUri, string state, string nonce, string codeChallenge, bool fresh)
+    {
+        ArgumentNullException.ThrowIfNull(redirectUri);
+        var query = new List<KeyValuePair<string, string>>
+        {
+            new("client_id", clientId.ToString()),
+            new("response_type", "code"),
+            new("redirect_uri", redirectUri.ToString()),
+            new("response_mode", "query"),
+            new("scope", string.Join(' ', SignInScopes)),
+            new("state", state),
+            new("nonce", nonce),
+            new("code_challenge", codeChallenge),
+            new("code_challenge_method", "S256"),
+            new("prompt", fresh ? "login" : "select_account"),
+        };
+        if (fresh) query.Add(new("max_age", "0"));
+        var text = string.Join('&', query.Select(p => $"{Uri.EscapeDataString(p.Key)}={Uri.EscapeDataString(p.Value)}"));
+        return new Uri($"{endpoints.Authorize(tenant)}?{text}");
+    }
+
+    /// <summary>
+    /// Redeems the code of a sign-in to Vaulty and returns the claims of its id token, unvalidated (the caller applies
+    /// <see cref="SignInTokenRules"/>). The access token is dropped at once: Vaulty needs no access on the person's behalf.
+    /// </summary>
+    public async Task<JsonObject> RedeemSignInCodeAsync(string tenant, Guid clientId, X509Certificate2 certificate, Uri redirectUri, string code,
+        string codeVerifier, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(redirectUri);
+        var tokenEndpoint = endpoints.Token(tenant);
+        var json = await PostAsync(tokenEndpoint, new Dictionary<string, string>
+        {
+            ["client_id"] = clientId.ToString(),
+            ["grant_type"] = "authorization_code",
+            ["code"] = code,
+            ["redirect_uri"] = redirectUri.ToString(),
+            ["code_verifier"] = codeVerifier,
+            ["scope"] = string.Join(' ', SignInScopes),
+            ["client_assertion_type"] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            ["client_assertion"] = CertificateJwt.ClientAssertion(certificate, clientId, tokenEndpoint, clock.GetUtcNow()),
+        }, cancellationToken).ConfigureAwait(false);
+        var idToken = json["id_token"]?.GetValue<string>() ?? throw new IdentityException("invalid_response", "No id token in the response.");
+        return CertificateJwt.Payload(idToken);
+    }
+
     /// <summary>An app-only Graph token of an application with a certificate (client credentials).</summary>
     public async Task<(string AccessToken, DateTimeOffset ExpiresOn)> AppOnlyTokenAsync(string tenant, Guid clientId, X509Certificate2 certificate,
         CancellationToken cancellationToken = default)
@@ -274,6 +326,32 @@ public static class SignInErrors
             return "Microsoft refused the certificate of the Vaulty setup app. Check it under Settings > Microsoft 365.";
         }
         return "Microsoft refused the sign-in" + (string.IsNullOrWhiteSpace(error) ? "." : $" ({FirstCode(text) ?? error}).") + " Start again, or use the script instead.";
+    }
+
+    /// <summary>The same, for a person signing in to Vaulty with the organization's sign-in app.</summary>
+    public static string ExplainSignIn(string? error, string? description)
+    {
+        var text = $"{error} {description}";
+        if (Has(text, "AADSTS65004") || Has(error, "access_denied")) return "The sign-in with Microsoft was cancelled.";
+        if (Has(text, "AADSTS65001") || Has(text, "AADSTS90094"))
+        {
+            return "Your tenant has not approved the Vaulty sign-in app yet. Ask an administrator of your tenant to grant admin consent to it.";
+        }
+        if (Has(text, "AADSTS53003") || Has(text, "AADSTS53000") || Has(text, "AADSTS53001"))
+        {
+            return "A Conditional Access policy of your tenant blocked the sign-in. Sign in from a device or location the policy allows.";
+        }
+        if (Has(text, "AADSTS50020") || Has(text, "AADSTS90072")) return "This account is not in the Microsoft tenant this Vaulty signs in with.";
+        if (Has(text, "AADSTS700016") || Has(text, "AADSTS7000112") || Has(text, "AADSTS500113") || Has(text, "AADSTS50011"))
+        {
+            return "Microsoft does not accept the Vaulty sign-in app (it is missing, disabled or its redirect URI differs). An administrator can check it under Settings > Sign-in.";
+        }
+        if (Has(text, "AADSTS9002313") || Has(text, "AADSTS54005") || Has(text, "AADSTS70008")) return "The sign-in expired or was already used. Start again.";
+        if (Has(text, "AADSTS700027") || Has(text, "AADSTS7000222") || Has(text, "AADSTS700024"))
+        {
+            return "Microsoft refused the certificate of the Vaulty sign-in app. An administrator can check it under Settings > Sign-in.";
+        }
+        return "Microsoft refused the sign-in" + (string.IsNullOrWhiteSpace(error) ? "." : $" ({FirstCode(text) ?? error}).") + " Start again.";
     }
 
     private static bool Has(string? text, string value) => text?.Contains(value, StringComparison.OrdinalIgnoreCase) == true;

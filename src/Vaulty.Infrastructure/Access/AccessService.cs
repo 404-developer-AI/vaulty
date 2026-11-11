@@ -74,15 +74,16 @@ public sealed class AccessService(NpgsqlDataSource dataSource)
         return new UserAccess(userId, organizationId, hasMfa, grants);
     }
 
-    /// <summary>A second factor: an authenticator app (TOTP) or at least one passkey.</summary>
+    /// <summary>
+    /// A second factor: an authenticator app (TOTP), at least one passkey, or a link to a Microsoft account while the
+    /// organization leaves the second factor to its tenant (a linked user signs in with Microsoft only).
+    /// </summary>
     public static async Task<bool> HasMfaAsync(OrganizationSession session, Guid userId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(session);
         return await session.Connection.ExecuteScalarAsync<bool>(new CommandDefinition(
-            """
-            SELECT EXISTS (SELECT 1 FROM vaulty.users WHERE id = @userId AND two_factor_enabled AND authenticator_key IS NOT NULL)
-                OR EXISTS (SELECT 1 FROM vaulty.user_passkeys WHERE user_id = @userId)
-            """, new { userId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            $"SELECT {Identity.MicrosoftSignInService.SecondFactorSql}", new { userId }, session.Transaction, cancellationToken: cancellationToken))
+            .ConfigureAwait(false);
     }
 
     /// <summary>

@@ -11,6 +11,7 @@
 @inject TimeProvider Clock
 @inject ISnackbar Snackbar
 @inject IDialogService Dialogs
+@inject Vaulty.Infrastructure.Identity.MicrosoftSignInService MicrosoftSignIn
 
 <PageTitle>Users and roles · Vaulty</PageTitle>
 
@@ -19,6 +20,10 @@
     <Actions>
         @if (!_adding)
         {
+            @if (_microsoftReady && _canManageSignIn)
+            {
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.PersonAdd" OnClick="AddMicrosoftUserAsync">Add from Microsoft</MudButton>
+            }
             <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.PersonAdd" OnClick="@(() => _adding = true)">Add a user</MudButton>
         }
     </Actions>
@@ -40,6 +45,7 @@
 <MudTable Items="_users" Hover="true" Elevation="0" Dense="true" Breakpoint="Breakpoint.None" HorizontalScrollbar="true">
     <HeaderContent>
         <MudTh>User</MudTh>
+        <MudTh>Sign-in</MudTh>
         <MudTh>Second factor</MudTh>
         <MudTh>Roles</MudTh>
         <MudTh><span class="vy-sr-only">Add a role</span></MudTh>
@@ -50,7 +56,30 @@
             <div class="vy-muted">@context.UserName</div>
         </MudTd>
         <MudTd>
-            @if (context.HasMfa)
+            @if (context.Linked)
+            {
+                <div>Microsoft</div>
+                <div class="vy-muted">@context.MicrosoftAccount</div>
+                @if (_canManageSignIn)
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => UnlinkAsync(context))">Unlink</MudButton>
+                }
+            }
+            else
+            {
+                <div>Vaulty account</div>
+                @if (_microsoftReady && _canManageSignIn)
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => LinkAsync(context))">Link to Microsoft</MudButton>
+                }
+            }
+        </MudTd>
+        <MudTd>
+            @if (context.MicrosoftHandlesSecondFactor)
+            {
+                <span class="vy-status succeeded" title="The organization's Microsoft tenant asks for the second factor">By Microsoft</span>
+            }
+            else if (context.HasMfa)
             {
                 <span class="vy-status succeeded">Set up</span>
             }
@@ -91,6 +120,9 @@
     private IReadOnlyList<RoleRow> _roles = [];
     private IReadOnlyList<AssignmentRow> _assignments = [];
     private bool _canManageRoles;
+    private bool _canManageSignIn;
+    private bool _microsoftReady;
+    private bool _canPickUsers;
     private string? _newEmail;
     private string? _newName;
     private string? _newPassword;
@@ -98,7 +130,8 @@
     private Guid _organizationId;
     private Guid _userId;
 
-    public sealed record PageData(List<UserRow> Users, List<RoleRow> Roles, List<AssignmentRow> Assignments, bool CanManageRoles);
+    public sealed record PageData(List<UserRow> Users, List<RoleRow> Roles, List<AssignmentRow> Assignments, bool CanManageRoles, bool CanManageSignIn,
+        bool MicrosoftReady, bool CanPickUsers);
 
     // Carried from the prerendered page to the interactive circuit, so the table does not empty itself while it loads again.
     [PersistentState] public PageData? Loaded { get; set; }
@@ -110,12 +143,15 @@
         _userId = VaultyWebSetup.UserId(state.User) ?? Guid.Empty;
         if (Loaded is null)
         {
-            _canManageRoles = (await Current.GetAsync(state.User)).Allows(Permissions.RolesManage);
+            var access = await Current.GetAsync(state.User);
+            _canManageRoles = access.Allows(Permissions.RolesManage);
+            _canManageSignIn = access.Allows(Permissions.SignInManage);
             await LoadAsync();
         }
         else
         {
             (_users, _roles, _assignments, _canManageRoles) = (Loaded.Users, Loaded.Roles, Loaded.Assignments, Loaded.CanManageRoles);
+            (_canManageSignIn, _microsoftReady, _canPickUsers) = (Loaded.CanManageSignIn, Loaded.MicrosoftReady, Loaded.CanPickUsers);
         }
     }
 
@@ -124,7 +160,9 @@
         _users = await Directory.UsersAsync(_organizationId);
         _roles = await Directory.RolesAsync(_organizationId);
         _assignments = await Directory.AssignmentsAsync(_organizationId);
-        Loaded = new PageData([.. _users], [.. _roles], [.. _assignments], _canManageRoles);
+        var signIn = await MicrosoftSignIn.GetAsync(_organizationId);
+        (_microsoftReady, _canPickUsers) = (signIn.Ready, signIn.CanPickUsers);
+        Loaded = new PageData([.. _users], [.. _roles], [.. _assignments], _canManageRoles, _canManageSignIn, _microsoftReady, _canPickUsers);
     }
 
     /// <summary>Sensitive changes need a recent "Confirm it's you".</summary>
@@ -134,6 +172,87 @@
         if (VaultyWebSetup.HasFreshStepUp(state.User, Clock)) return true;
         Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString("/settings/users")}", forceLoad: true);
         return false;
+    }
+
+    private async Task<Vaulty.Graph.Onboarding.DirectoryMember?> ChooseMicrosoftAccountAsync(string title, string confirmText)
+    {
+        var parameters = new DialogParameters<MicrosoftAccountDialog>
+        {
+            { d => d.OrganizationId, _organizationId },
+            { d => d.CanPick, _canPickUsers },
+            { d => d.Title, title },
+            { d => d.ConfirmText, confirmText },
+        };
+        var dialog = await Dialogs.ShowAsync<MicrosoftAccountDialog>(title, parameters, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        var result = await dialog.Result;
+        return result is { Canceled: false, Data: Vaulty.Graph.Onboarding.DirectoryMember member } ? member : null;
+    }
+
+    /// <summary>A new user who signs in with Microsoft only: no password, linked at once.</summary>
+    private async Task AddMicrosoftUserAsync()
+    {
+        if (!await ConfirmedAsync()) return;
+        if (await ChooseMicrosoftAccountAsync("Add a user from Microsoft", "Add user") is not { } member) return;
+        var name = member.UserPrincipalName ?? member.ObjectId.ToString();
+        var user = new User
+        {
+            Id = Guid.CreateVersion7(),
+            OrganizationId = _organizationId,
+            UserName = name,
+            NormalizedUserName = UserManager.NormalizeName(name),
+            Email = member.UserPrincipalName,
+            NormalizedEmail = member.UserPrincipalName is null ? null : UserManager.NormalizeEmail(member.UserPrincipalName),
+            DisplayName = member.DisplayName,
+        };
+        var created = await UserManager.CreateAsync(user);
+        if (!created.Succeeded)
+        {
+            Snackbar.Add(created.Errors.First().Description, Severity.Warning);
+            return;
+        }
+        try
+        {
+            await MicrosoftSignIn.LinkAsync(_organizationId, $"user:{_userId}", user.Id, member.ObjectId, member.UserPrincipalName);
+        }
+        catch (Vaulty.Infrastructure.Identity.SignInSetupException ex)
+        {
+            await UserManager.DeleteAsync(user);
+            Snackbar.Add(ex.Message, Severity.Warning);
+            return;
+        }
+        await AccessService.RecordAsync(_organizationId, $"user:{_userId}", "user.created", $"user:{user.Id}", new { method = "microsoft" });
+        Snackbar.Add($"{name} can now sign in with Microsoft. Give the user a role.", Severity.Success);
+        await LoadAsync();
+    }
+
+    private async Task LinkAsync(UserRow row)
+    {
+        if (!await ConfirmedAsync()) return;
+        if (await ChooseMicrosoftAccountAsync($"Link {row.DisplayName ?? row.UserName} to Microsoft", "Link") is not { } member) return;
+        try
+        {
+            await MicrosoftSignIn.LinkAsync(_organizationId, $"user:{_userId}", row.Id, member.ObjectId, member.UserPrincipalName);
+            Snackbar.Add($"{row.UserName} signs in with Microsoft from now on; the user's sessions were ended.", Severity.Success);
+            await LoadAsync();
+        }
+        catch (Vaulty.Infrastructure.Identity.SignInSetupException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task UnlinkAsync(UserRow row)
+    {
+        if (!await Dialogs.ConfirmAsync($"Unlink {row.DisplayName ?? row.UserName}?",
+                "The user's sessions end at once. Without a link, the user signs in with a Vaulty password and second factor, if the account has them.",
+                "Unlink", danger: true, stepUp: !VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)))
+        {
+            return;
+        }
+        if (!await ConfirmedAsync()) return;
+        await MicrosoftSignIn.UnlinkAsync(_organizationId, $"user:{_userId}", row.Id);
+        Snackbar.Add($"{row.UserName} is no longer linked to Microsoft.", Severity.Success);
+        await LoadAsync();
     }
 
     private async Task AddUserAsync()

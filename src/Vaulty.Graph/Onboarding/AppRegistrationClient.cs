@@ -239,8 +239,46 @@ public sealed class AppRegistrationClient(HttpClient http, MicrosoftEndpoints en
                                                                     || exception.Message.Contains("Request_ResourceNotFound", StringComparison.Ordinal));
     }
 
+    // ---- reads of the sign-in app, with its own app-only token and only the optional permissions it was given ------------
+
+    /// <summary>Members of the tenant whose name or account starts with the text (User.Read.All); guests are left out.</summary>
+    public async Task<IReadOnlyList<DirectoryMember>> SearchMembersAsync(string token, string text, CancellationToken cancellationToken = default)
+    {
+        var value = (text ?? "").Trim().Replace("'", "''", StringComparison.Ordinal);
+        if (value.Length < 2) return [];
+        var filter = Uri.EscapeDataString($"userType eq 'Member' and (startswith(displayName,'{value}') or startswith(userPrincipalName,'{value}'))");
+        var json = await SendAsync(token, HttpMethod.Get, $"users?$filter={filter}&$select=id,displayName,userPrincipalName&$top=10&$count=true",
+            null, cancellationToken, consistencyEventual: true).ConfigureAwait(false);
+        return (json?["value"] as JsonArray ?? []).OfType<JsonObject>().Select(Member).OfType<DirectoryMember>().ToList();
+    }
+
+    /// <summary>One member of the tenant by object id (User.Read.All); null for a guest or an unknown id.</summary>
+    public async Task<DirectoryMember?> MemberAsync(string token, Guid objectId, CancellationToken cancellationToken = default)
+    {
+        var json = await SendAsync(token, HttpMethod.Get, $"users/{objectId}?$select=id,displayName,userPrincipalName,userType", null, cancellationToken,
+            notFoundIsNull: true).ConfigureAwait(false);
+        return json is not null && string.Equals(json["userType"]?.GetValue<string>(), "Member", StringComparison.OrdinalIgnoreCase) ? Member(json) : null;
+    }
+
+    /// <summary>Whether the tenant requires multi-factor authentication of everyone (Policy.Read.All).</summary>
+    public async Task<TenantMfaPosture> MfaPostureAsync(string token, CancellationToken cancellationToken = default)
+    {
+        var defaults = await SendAsync(token, HttpMethod.Get, "policies/identitySecurityDefaultsEnforcementPolicy", null, cancellationToken).ConfigureAwait(false);
+        if (defaults?["isEnabled"] is JsonValue on && on.TryGetValue<bool>(out var enabled) && enabled) return TenantMfaPosture.SecurityDefaults;
+        var policies = await SendAsync(token, HttpMethod.Get, "identity/conditionalAccess/policies", null, cancellationToken).ConfigureAwait(false);
+        var everyone = (policies?["value"] as JsonArray ?? []).OfType<JsonObject>().Any(p =>
+            p["state"]?.GetValue<string>() == "enabled"
+            && (p["conditions"]?["users"]?["includeUsers"] as JsonArray ?? []).Any(u => u?.ToString() == "All")
+            && ((p["grantControls"]?["builtInControls"] as JsonArray ?? []).Any(c => c?.ToString() == "mfa") || p["grantControls"]?["authenticationStrength"] is JsonObject));
+        return everyone ? TenantMfaPosture.ConditionalAccess : TenantMfaPosture.None;
+    }
+
+    private static DirectoryMember? Member(JsonObject json) => Guid.TryParse(json["id"]?.GetValue<string>(), out var id)
+        ? new DirectoryMember(id, json["displayName"]?.GetValue<string>(), json["userPrincipalName"]?.GetValue<string>())
+        : null;
+
     private async Task<JsonObject?> SendAsync(string token, HttpMethod method, string path, JsonObject? body, CancellationToken cancellationToken,
-        bool notFoundIsNull = false)
+        bool notFoundIsNull = false, bool consistencyEventual = false)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -249,6 +287,8 @@ public sealed class AppRegistrationClient(HttpClient http, MicrosoftEndpoints en
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.UserAgent.ParseAdd(DecorationHandler.UserAgent);
             request.Headers.Add("client-request-id", Guid.NewGuid().ToString());
+            // Filters on userType with startswith are advanced queries.
+            if (consistencyEventual) request.Headers.Add("ConsistencyLevel", "eventual");
             if (body is not null) request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
             using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
             var text = response.Content is null ? "" : await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);

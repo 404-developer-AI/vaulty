@@ -28,6 +28,8 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/account/recovery-codes"] = VaultyPolicies.SignedIn,
         ["/access-denied"] = VaultyPolicies.SignedIn,
         ["/account/confirm"] = null,   // signed in with a second factor (fallback policy)
+        ["/account/microsoft"] = null,
+        ["/settings/sign-in"] = VaultyPolicies.Permission(Permissions.SignInManage),
         ["/"] = null,
         ["/settings/users"] = VaultyPolicies.Permission(Permissions.UsersManage),
         ["/settings/audit"] = VaultyPolicies.Permission(Permissions.AuditView),
@@ -79,9 +81,10 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
     {
         // A value that does not deserialize would end the circuit as soon as the page becomes interactive.
         var data = new Vaulty.Web.Components.Pages.Settings.Users.PageData(
-            [new(Guid.NewGuid(), "admin@contoso.example", "Admin", true, null)],
+            [new(Guid.NewGuid(), "admin@contoso.example", "Admin", true, null),
+             new(Guid.NewGuid(), "tech@contoso.example", "Tech", false, null, "tech@contoso.example", true)],
             [new(Guid.NewGuid(), "Organization admin", true, ["users.manage", "roles.manage"])],
-            [new(Guid.NewGuid(), Guid.NewGuid(), "Organization admin", null, null)], true);
+            [new(Guid.NewGuid(), Guid.NewGuid(), "Organization admin", null, null)], true, true, true, false);
         var options = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
         var back = System.Text.Json.JsonSerializer.Deserialize<Vaulty.Web.Components.Pages.Settings.Users.PageData>(
             System.Text.Json.JsonSerializer.Serialize(data, options), options)!;
@@ -89,6 +92,8 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         Assert.Equal(data.Roles.Single().Permissions, back.Roles.Single().Permissions);
         Assert.Equal(data.Assignments, back.Assignments);
         Assert.True(back.CanManageRoles);
+        Assert.True(back.Users[1].Linked && back.Users[1].MicrosoftHandlesSecondFactor);
+        Assert.True(back.MicrosoftReady);
     }
 
     [PostgresFact]
@@ -99,7 +104,10 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         var anonymous = new[] { "/account/login", "/account/login/second-factor", "/account/passkey/request-options", "/account/passkey/login",
             "/setup", "/error", "/healthz",
             // Microsoft redirects here without Vaulty's SameSite=Strict cookie; the one-time state identifies the user.
-            "/connect/microsoft/callback" };
+            "/connect/microsoft/callback",
+            // Sign-in with Microsoft: starting it needs no session; the callback and the page that finishes it are bound to
+            // the browser by a cookie and to a one-time state and ticket.
+            "/account/microsoft/start", "/account/microsoft/callback", "/account/microsoft/finish" };
         foreach (var endpoint in endpoints)
         {
             var route = "/" + endpoint.RoutePattern.RawText?.TrimStart('/');

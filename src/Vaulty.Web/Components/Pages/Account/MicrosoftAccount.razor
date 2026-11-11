@@ -1,0 +1,68 @@
+@page "/account/microsoft"
+@attribute [Authorize]
+@using Vaulty.Infrastructure.Identity
+@inject MicrosoftSignInService MicrosoftSignIn
+@inject Vaulty.Web.Account.SignInMessages Messages
+
+<PageTitle>Microsoft account · Vaulty</PageTitle>
+
+<PageHeader Title="Microsoft account"
+            Lede="Link your Vaulty user to your Microsoft work account, so you sign in with Microsoft and your organization's sign-in rules apply." />
+
+@if (Messages.Unprotect(Detail) is { } message)
+{
+    <Notice Tone="error" Title="Your account was not linked">@message</Notice>
+}
+else if (Error is not null)
+{
+    <Notice Tone="error" Title="Your account was not linked">Sign-in with Microsoft is not available. Try again later.</Notice>
+}
+
+@if (!_loaded)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-4" />
+}
+else if (_link is { } link)
+{
+    <Section Title="Linked">
+        <p class="mt-0">Your Vaulty user is linked to <strong>@(link.Account ?? link.ObjectId.ToString())</strong>. You sign in with Microsoft. An administrator can remove the link under Settings &gt; Users and roles.</p>
+    </Section>
+}
+else if (!_available)
+{
+    <Notice Tone="info" Title="Not available">Your organization has not set up sign-in with Microsoft.</Notice>
+}
+else
+{
+    <Section Title="Link your Microsoft account" Description="You sign in with Microsoft once to prove the account is yours.">
+        <ul class="mt-0">
+            <li>From then on you sign in with Microsoft only; your Vaulty password and passkey no longer sign you in.</li>
+            <li>You are signed out right after linking.</li>
+        </ul>
+        <form method="post" action="/account/microsoft/link" data-enhance="false">
+            <AntiforgeryToken />
+            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary">Link my Microsoft account</MudButton>
+        </form>
+    </Section>
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+    [SupplyParameterFromQuery] private string? Detail { get; set; }
+    [SupplyParameterFromQuery] private string? Error { get; set; }
+
+    private MicrosoftLink? _link;
+    private bool _available;
+    private bool _loaded;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var principal = (await AuthenticationState).User;
+        if (VaultyWebSetup.OrganizationId(principal) is { } org && VaultyWebSetup.UserId(principal) is { } user)
+        {
+            _link = await MicrosoftSignIn.LinkOfAsync(org, user);
+            _available = (await MicrosoftSignIn.GetAsync(org)).Ready;
+        }
+        _loaded = true;
+    }
+}

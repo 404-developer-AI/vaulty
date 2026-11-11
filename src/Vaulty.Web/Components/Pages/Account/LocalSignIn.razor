@@ -1,0 +1,26 @@
+@* Passkey and password sign-in with a Vaulty account. *@
+
+<button class="vy-button@(Secondary ? " secondary" : "")" type="button" data-passkey="login" data-passkey-next="@AccountReturn">Sign in with a passkey</button>
+
+<div class="vy-divider">or</div>
+
+<form method="post" action="/account/login" data-enhance="false">
+    <AntiforgeryToken />
+    <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+    <div class="vy-field">
+        <label for="username">E-mail address</label>
+        <input id="username" name="username" type="email" autocomplete="username webauthn" required />
+    </div>
+    <div class="vy-field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+    </div>
+    <button class="vy-button secondary" type="submit">Continue</button>
+</form>
+
+@code {
+    [Parameter] public string? ReturnUrl { get; set; }
+    [Parameter] public bool Secondary { get; set; }
+
+    private string AccountReturn => Vaulty.Web.Account.AccountEndpoints.Safe(ReturnUrl);
+}

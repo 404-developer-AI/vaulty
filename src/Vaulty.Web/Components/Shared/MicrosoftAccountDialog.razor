@@ -1,0 +1,95 @@
+@* Choose an account of the organization's Microsoft tenant: search when the sign-in app may read users, otherwise its object ID. *@
+@using Vaulty.Infrastructure.Identity
+@using Vaulty.Graph.Onboarding
+@inject MicrosoftSignInService MicrosoftSignIn
+
+<MudDialog>
+    <TitleContent>@Title</TitleContent>
+    <DialogContent>
+        @if (CanPick)
+        {
+            <MudTextField T="string" @bind-Value="_search" Label="Name or account" Variant="Variant.Outlined" Immediate="true" DebounceInterval="350"
+                          OnDebounceIntervalElapsed="SearchAsync" AutoFocus="true" HelperText="Members of your tenant only; guests sign in with a Vaulty account." />
+            @if (_error is not null)
+            {
+                <Notice Tone="error" Class="mt-2">@_error</Notice>
+            }
+            <MudList T="DirectoryMember" SelectionMode="SelectionMode.SingleSelection" @bind-SelectedValue="_selected" Class="mt-2">
+                @foreach (var member in _results)
+                {
+                    <MudListItem T="DirectoryMember" Value="@member">
+                        <div>@(member.DisplayName ?? member.UserPrincipalName)</div>
+                        <div class="vy-muted">@member.UserPrincipalName</div>
+                    </MudListItem>
+                }
+            </MudList>
+        }
+        else
+        {
+            <p class="vy-muted mt-0">Find the account in the Microsoft Entra admin center under <strong>Users</strong> and copy its <strong>Object ID</strong> and <strong>User principal name</strong>.</p>
+            <MudTextField @bind-Value="_objectId" Label="Object ID" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000" AutoFocus="true" />
+            <MudTextField @bind-Value="_account" Label="User principal name" Variant="Variant.Outlined" Placeholder="name@example.com" Class="mt-2" />
+            @if (_error is not null)
+            {
+                <Notice Tone="error" Class="mt-2">@_error</Notice>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ChooseAsync">@ConfirmText</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public Guid OrganizationId { get; set; }
+    [Parameter] public bool CanPick { get; set; }
+    [Parameter] public string Title { get; set; } = "Choose a Microsoft account";
+    [Parameter] public string ConfirmText { get; set; } = "Choose";
+
+    private string? _search;
+    private IReadOnlyList<DirectoryMember> _results = [];
+    private DirectoryMember? _selected;
+    private string? _objectId;
+    private string? _account;
+    private string? _error;
+
+    private async Task SearchAsync(string text)
+    {
+        _error = null;
+        try
+        {
+            _results = await MicrosoftSignIn.SearchMembersAsync(OrganizationId, text);
+        }
+        catch (Exception ex) when (ex is SignInSetupException or IdentityException or Vaulty.Graph.GraphException or HttpRequestException)
+        {
+            _error = ex is Vaulty.Graph.GraphException ? "Microsoft did not return the users. Try again, or check the permissions of the sign-in app." : ex.Message;
+        }
+    }
+
+    private void ChooseAsync()
+    {
+        if (CanPick)
+        {
+            if (_selected is null)
+            {
+                _error = "Choose an account from the list.";
+                return;
+            }
+            Dialog.Close(DialogResult.Ok(_selected));
+            return;
+        }
+        if (!Guid.TryParse(_objectId?.Trim(), out var objectId) || objectId == Guid.Empty)
+        {
+            _error = "Enter the object ID as a GUID.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_account) || !_account.Contains('@'))
+        {
+            _error = "Enter the user principal name, for example name@example.com.";
+            return;
+        }
+        Dialog.Close(DialogResult.Ok(new DirectoryMember(objectId, null, _account.Trim())));
+    }
+}

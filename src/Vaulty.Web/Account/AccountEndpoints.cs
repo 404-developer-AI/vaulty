@@ -9,6 +9,7 @@ using Vaulty.Core.Domain;
 using Vaulty.Infrastructure.Access;
 using Vaulty.Infrastructure.Audit;
 using Vaulty.Infrastructure.Database;
+using Vaulty.Infrastructure.Identity;
 using Vaulty.Infrastructure.Web;
 
 namespace Vaulty.Web.Account;
@@ -26,6 +27,14 @@ public sealed class AccountAudit(NpgsqlDataSource dataSource, ILogger<AccountAud
         }
         await using var session = await OrganizationSession.BeginAsync(dataSource, user.OrganizationId);
         await AuditLog.WriteAsync(session, $"user:{user.Id}", action, $"user:{user.Id}", details);
+        await session.CommitAsync();
+    }
+
+    /// <summary>An event of a sign-in that reached an organization but no user of it (an account that is not linked).</summary>
+    public async Task WriteOrganizationAsync(Guid organizationId, string action, object? details = null)
+    {
+        await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId);
+        await AuditLog.WriteAsync(session, "anonymous:microsoft", action, $"organization:{organizationId}", details);
         await session.CommitAsync();
     }
 }
@@ -58,13 +67,30 @@ public static class AccountEndpoints
     public sealed record PasskeyCredential(string Credential, string? Name);
 
     private static async Task<IResult> LoginAsync([FromForm] string username, [FromForm] string password, [FromForm] string? returnUrl,
-        SignInManager<User> signIn, UserManager<User> users, AccountAudit audit)
+        SignInManager<User> signIn, UserManager<User> users, AccountAudit audit, MicrosoftSignInService microsoft)
     {
         var user = await users.FindByNameAsync(username ?? "");
+        var decision = user is null ? LocalSignInDecision.Allowed : await microsoft.LocalSignInAsync(user);
+        if (decision is LocalSignInDecision.UseMicrosoft or LocalSignInDecision.MicrosoftOnly)
+        {
+            if (await users.IsLockedOutAsync(user!)) return Results.Redirect($"/account/login?error=locked&returnUrl={Safe(returnUrl)}");
+            // Answered only once the password is right, so the answer reveals nothing about the account to a guesser.
+            var correct = await users.CheckPasswordAsync(user!, password ?? "");
+            await audit.WriteAsync(user, correct ? "login.refused" : "login.failed",
+                new { method = "password", reason = decision == LocalSignInDecision.UseMicrosoft ? "linked" : "microsoft_only" });
+            if (!correct)
+            {
+                // A wrong password counts towards the lockout exactly as on the normal path.
+                await users.AccessFailedAsync(user!);
+                return Results.Redirect($"/account/login?error=invalid&returnUrl={Safe(returnUrl)}");
+            }
+            return Results.Redirect($"/account/login?error={(decision == LocalSignInDecision.UseMicrosoft ? "use-microsoft" : "microsoft-only")}&returnUrl={Safe(returnUrl)}");
+        }
         var result = await signIn.PasswordSignInAsync(username ?? "", password ?? "", isPersistent: false, lockoutOnFailure: true);
         if (result.RequiresTwoFactor) return Results.Redirect($"/account/login/second-factor?returnUrl={Safe(returnUrl)}");
         if (result.Succeeded)
         {
+            if (decision == LocalSignInDecision.BreakGlass) await microsoft.RaiseBreakGlassAlertAsync(user!, "password");
             await audit.WriteAsync(user, "login.succeeded", new { method = "password", mfa = false });
             // Without a second factor the user can only enroll one.
             return Results.Redirect("/account/mfa-setup");
@@ -74,7 +100,7 @@ public static class AccountEndpoints
     }
 
     private static async Task<IResult> SecondFactorAsync([FromForm] string code, [FromForm] bool? recovery, [FromForm] string? returnUrl,
-        SignInManager<User> signIn, AccountAudit audit)
+        SignInManager<User> signIn, AccountAudit audit, MicrosoftSignInService microsoft)
     {
         var user = await signIn.GetTwoFactorAuthenticationUserAsync();
         if (user is null) return Results.Redirect("/account/login?error=expired");
@@ -84,6 +110,7 @@ public static class AccountEndpoints
             : await signIn.TwoFactorAuthenticatorSignInAsync(cleaned, isPersistent: false, rememberClient: false);
         if (result.Succeeded)
         {
+            if (await microsoft.LocalSignInAsync(user) == LocalSignInDecision.BreakGlass) await microsoft.RaiseBreakGlassAlertAsync(user, "password");
             await audit.WriteAsync(user, "login.succeeded", new { method = recovery == true ? "recovery_code" : "totp", mfa = true });
             return Results.Redirect(Safe(returnUrl));
         }
@@ -101,9 +128,11 @@ public static class AccountEndpoints
     }
 
     private static async Task<IResult> PasskeyLoginAsync(HttpContext context, [FromBody] PasskeyCredential body, SignInManager<User> signIn,
-        UserManager<User> users, IAntiforgery antiforgery, AccountAudit audit)
+        UserManager<User> users, IAntiforgery antiforgery, AccountAudit audit, MicrosoftSignInService microsoft)
     {
         await antiforgery.ValidateRequestAsync(context);
+        // A passkey after a password or a Microsoft sign-in is a second factor; on its own it is a local sign-in.
+        var secondFactor = await signIn.GetTwoFactorAuthenticationUserAsync() is not null;
         var result = await signIn.PasskeySignInAsync(body.Credential);
         if (!result.Succeeded)
         {
@@ -112,6 +141,14 @@ public static class AccountEndpoints
         }
         var user = await users.GetUserAsync(context.User) ?? await signIn.UserManager.FindByIdAsync(
             signIn.Context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "");
+        var decision = user is null || secondFactor ? LocalSignInDecision.Allowed : await microsoft.LocalSignInAsync(user);
+        if (decision is LocalSignInDecision.UseMicrosoft or LocalSignInDecision.MicrosoftOnly)
+        {
+            await signIn.SignOutAsync();
+            await audit.WriteAsync(user, "login.refused", new { method = "passkey", reason = decision == LocalSignInDecision.UseMicrosoft ? "linked" : "microsoft_only" });
+            return Results.Json(new { ok = false, error = decision == LocalSignInDecision.UseMicrosoft ? "use-microsoft" : "microsoft-only" }, statusCode: 403);
+        }
+        if (decision == LocalSignInDecision.BreakGlass) await microsoft.RaiseBreakGlassAlertAsync(user!, "passkey");
         await audit.WriteAsync(user, "login.succeeded", new { method = "passkey", mfa = true });
         return Results.Json(new { ok = true });
     }

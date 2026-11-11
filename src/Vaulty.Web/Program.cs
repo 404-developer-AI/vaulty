@@ -42,6 +42,10 @@ builder.Services.AddSingleton<SetupAppService>();
 builder.Services.AddSingleton<MicrosoftSignIns>();
 builder.Services.AddSingleton<BrowserConnection>();
 builder.Services.AddSingleton<ICredentialVerifier, MsalCredentialVerifier>();
+// Sign-in with Microsoft: the organization's sign-in app, and sign-ins held in memory until Microsoft redirects back.
+builder.Services.AddSingleton<Vaulty.Infrastructure.Identity.MicrosoftSignInService>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Identity.MicrosoftLogins>();
+builder.Services.AddSingleton<SignInMessages>();
 builder.Services.AddSingleton<CertificateRotation>();
 builder.Services.AddHostedService<CertificateRotationService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.ApiBackupStorage>();
@@ -107,6 +111,7 @@ app.MapAccountEndpoints();
 Vaulty.Web.Browse.PreviewEndpoints.MapPreviewEndpoints(app);
 Vaulty.Web.Browse.ExportEndpoints.MapExportEndpoints(app);
 Vaulty.Web.Account.MicrosoftConnectEndpoints.MapMicrosoftConnectEndpoints(app);
+app.MapMicrosoftSignInEndpoints();
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode(o => o.ContentSecurityFrameAncestorsPolicy = null);
 

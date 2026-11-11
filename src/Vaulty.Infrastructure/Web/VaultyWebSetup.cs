@@ -33,7 +33,20 @@ public static class VaultyClaims
     public const string Mfa = "vaulty:mfa";
     /// <summary>Unix seconds of the last "Confirm it's you".</summary>
     public const string StepUp = "vaulty:stepup";
+    /// <summary>How the session signed in: "microsoft" for sign-in with Microsoft; absent for a local account.</summary>
+    public const string Method = "vaulty:method";
+    /// <summary>
+    /// Where the second factor of a Microsoft sign-in came from: "entra" when the token proved it, "delegated" when the
+    /// organization leaves it to its tenant. Absent when Vaulty asked its own.
+    /// </summary>
+    public const string MfaSource = "vaulty:mfa_source";
+
+    /// <summary>The HttpContext item a sign-in sets so the claims factory adds the method and the second-factor source.</summary>
+    public const string SignInItem = "vaulty:signin";
 }
+
+/// <summary>What a sign-in with Microsoft hands to the claims factory for the new session.</summary>
+public sealed record MicrosoftSessionFacts(string? MfaSource);
 
 public static class VaultyPolicies
 {
@@ -145,7 +158,7 @@ public static class VaultyWebSetup
                 o.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
             })
             .AddUserStore<VaultyUserStore>()
-            .AddSignInManager()
+            .AddSignInManager<VaultySignInManager>()
             // Only the authenticator app as a code-based factor: no SMS, no e-mail codes.
             .AddTokenProvider<AuthenticatorTokenProvider<User>>(TokenOptions.DefaultAuthenticatorProvider)
             .AddTokenProvider<DataProtectorTokenProvider<User>>(TokenOptions.DefaultProvider)
@@ -157,7 +170,11 @@ public static class VaultyWebSetup
             o.UserVerificationRequirement = "required";
             o.ResidentKeyRequirement = "required";
         });
-        services.Configure<SecurityStampValidatorOptions>(o => o.ValidationInterval = TimeSpan.FromMinutes(1));
+        services.Configure<SecurityStampValidatorOptions>(o =>
+        {
+            o.ValidationInterval = TimeSpan.FromMinutes(1);
+            o.OnRefreshingPrincipal = KeepSessionClaims;
+        });
         services.ConfigureApplicationCookie(o =>
         {
             o.Cookie.Name = "__Host-vaulty";
@@ -209,6 +226,30 @@ public static class VaultyWebSetup
         });
     }
 
+    /// <summary>Claims of the session itself, not of the user: a refresh of the principal must keep them as they were.</summary>
+    private static readonly string[] SessionClaims = [VaultyClaims.AuthTime, VaultyClaims.Method, VaultyClaims.MfaSource, VaultyClaims.StepUp];
+
+    /// <summary>
+    /// The security stamp check rebuilds the principal while the request has no user yet, so the claims factory cannot
+    /// see the session it refreshes. Without this the 8-hour limit would restart at every check, and a Microsoft
+    /// sign-in would lose how it signed in. The user's own claims (roles, second factor) are rebuilt from the database.
+    /// </summary>
+    public static Task KeepSessionClaims(SecurityStampRefreshingPrincipalContext context)
+    {
+        if (context.CurrentPrincipal is not { } current || context.NewPrincipal?.Identity is not ClaimsIdentity identity) return Task.CompletedTask;
+        foreach (var type in SessionClaims)
+        {
+            foreach (var claim in identity.FindAll(type).ToList()) identity.RemoveClaim(claim);
+            if (current.FindFirst(type) is { } kept) identity.AddClaim(new Claim(type, kept.Value));
+        }
+        // A token that proved a second factor counts for the session it started (see VaultyClaimsFactory).
+        if (current.FindFirst(VaultyClaims.MfaSource)?.Value == "entra" && !identity.HasClaim(VaultyClaims.Mfa, "1"))
+        {
+            identity.AddClaim(new Claim(VaultyClaims.Mfa, "1"));
+        }
+        return Task.CompletedTask;
+    }
+
     private static Task ApiAwareRedirect(Microsoft.AspNetCore.Authentication.RedirectContext<CookieAuthenticationOptions> context, int status)
     {
         if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
@@ -244,15 +285,49 @@ public sealed class VaultyClaimsFactory(UserManager<User> users, IOptions<Identi
         ArgumentNullException.ThrowIfNull(user);
         var identity = await base.GenerateClaimsAsync(user).ConfigureAwait(false);
         identity.AddClaim(new Claim(VaultyClaims.Organization, user.OrganizationId.ToString()));
-        await using var session = await OrganizationSession.BeginAsync(dataSource, user.OrganizationId).ConfigureAwait(false);
-        if (await AccessService.HasMfaAsync(session, user.Id).ConfigureAwait(false)) identity.AddClaim(new Claim(VaultyClaims.Mfa, "1"));
-        // A refreshed sign-in keeps the original sign-in time; a new sign-in starts a new 8-hour session.
+        // A refreshed sign-in keeps the original sign-in time, method and second-factor source; a new sign-in starts over.
         var existing = http.HttpContext?.User;
-        var keep = existing?.Identity?.IsAuthenticated == true && VaultyWebSetup.UserId(existing) == user.Id
-            ? existing.FindFirst(VaultyClaims.AuthTime)?.Value
-            : null;
+        var same = existing?.Identity?.IsAuthenticated == true && VaultyWebSetup.UserId(existing) == user.Id;
+        string? method;
+        string? mfaSource;
+        if (http.HttpContext?.Items[VaultyClaims.SignInItem] is MicrosoftSessionFacts microsoft)
+        {
+            (method, mfaSource) = ("microsoft", microsoft.MfaSource);
+        }
+        else
+        {
+            (method, mfaSource) = same ? (existing!.FindFirst(VaultyClaims.Method)?.Value, existing.FindFirst(VaultyClaims.MfaSource)?.Value) : (null, null);
+        }
+        await using var session = await OrganizationSession.BeginAsync(dataSource, user.OrganizationId).ConfigureAwait(false);
+        // "delegated" counts through HasMfaAsync only, so switching it off takes effect at the next check of the session;
+        // a token that proved a second factor counts for the session it started.
+        if (await AccessService.HasMfaAsync(session, user.Id).ConfigureAwait(false) || mfaSource == "entra") identity.AddClaim(new Claim(VaultyClaims.Mfa, "1"));
+        if (method is not null) identity.AddClaim(new Claim(VaultyClaims.Method, method));
+        if (mfaSource is not null) identity.AddClaim(new Claim(VaultyClaims.MfaSource, mfaSource));
+        var keep = same ? existing!.FindFirst(VaultyClaims.AuthTime)?.Value : null;
         identity.AddClaim(new Claim(VaultyClaims.AuthTime, keep ?? clock.GetUtcNow().ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture)));
         return identity;
+    }
+}
+
+/// <summary>The sign-in manager, with the step a sign-in with Microsoft takes when Vaulty asks its own second factor.</summary>
+public sealed class VaultySignInManager(UserManager<User> userManager, IHttpContextAccessor contextAccessor, IUserClaimsPrincipalFactory<User> claimsFactory,
+    IOptions<IdentityOptions> optionsAccessor, Microsoft.Extensions.Logging.ILogger<SignInManager<User>> logger, IAuthenticationSchemeProvider schemes,
+    IUserConfirmation<User> confirmation)
+    : SignInManager<User>(userManager, contextAccessor, claimsFactory, optionsAccessor, logger, schemes, confirmation)
+{
+    /// <summary>
+    /// Signs in a user Microsoft identified. With a second factor from Microsoft (<paramref name="mfaSource"/>) the session
+    /// starts at once; otherwise a user with a passkey or authenticator app continues on the second-factor page, exactly as
+    /// after a password.
+    /// </summary>
+    public async Task<SignInResult> MicrosoftSignInAsync(User user, string? mfaSource)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        Context.Items[VaultyClaims.SignInItem] = new MicrosoftSessionFacts(mfaSource);
+        if (!await CanSignInAsync(user).ConfigureAwait(false)) return SignInResult.NotAllowed;
+        if (await UserManager.IsLockedOutAsync(user).ConfigureAwait(false)) return SignInResult.LockedOut;
+        return await SignInOrTwoFactorAsync(user, isPersistent: false, loginProvider: null, bypassTwoFactor: mfaSource is not null).ConfigureAwait(false);
     }
 }
 

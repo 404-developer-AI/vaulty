@@ -1,35 +1,73 @@
 @page "/account/confirm"
 @layout AccountLayout
 @attribute [Authorize]
+@using Vaulty.Infrastructure.Identity
+@inject Microsoft.AspNetCore.Identity.UserManager<Vaulty.Core.Domain.User> Users
+@inject Vaulty.Web.Account.SignInMessages Messages
 
 <PageTitle>Confirm it's you · Vaulty</PageTitle>
 
 <h1>Confirm it's you</h1>
-<p class="vy-muted">This action changes or reveals protected data. Confirm with your passkey or authenticator app.</p>
+<p class="vy-muted">@(_microsoft ? "This action changes or reveals protected data. Sign in with Microsoft again to confirm." : "This action changes or reveals protected data. Confirm with your passkey or authenticator app.")</p>
 
 @if (Error == "code")
 {
     <div class="vy-alert error">That code is not correct.</div>
 }
+else if (Error == "microsoft")
+{
+    <div class="vy-alert error">@(Messages.Unprotect(Detail) ?? "The sign-in with Microsoft did not complete. Start again.")</div>
+}
 <div id="passkey-error" class="vy-alert error" hidden></div>
 
-<button class="vy-button" type="button" data-passkey="stepup" data-passkey-next="@Next">Use a passkey</button>
+@if (_microsoft)
+{
+    <form method="post" action="/account/microsoft/stepup" data-enhance="false">
+        <AntiforgeryToken />
+        <input type="hidden" name="returnUrl" value="@Next" />
+        <button class="vy-button" type="submit">Confirm with Microsoft</button>
+    </form>
+}
+@if (_ownFactor)
+{
+    @if (_microsoft)
+    {
+        <div class="vy-divider">or</div>
+    }
+    <button class="vy-button@(_microsoft ? " secondary" : "")" type="button" data-passkey="stepup" data-passkey-next="@Next">Use a passkey</button>
 
-<div class="vy-divider">or</div>
+    <div class="vy-divider">or</div>
 
-<form method="post" action="/account/stepup/totp" data-enhance="false">
-    <AntiforgeryToken />
-    <input type="hidden" name="returnUrl" value="@Next" />
-    <div class="vy-field">
-        <label for="code">Code from your authenticator app</label>
-        <input id="code" name="code" autocomplete="one-time-code" inputmode="numeric" required />
-    </div>
-    <button class="vy-button secondary" type="submit">Confirm</button>
-</form>
+    <form method="post" action="/account/stepup/totp" data-enhance="false">
+        <AntiforgeryToken />
+        <input type="hidden" name="returnUrl" value="@Next" />
+        <div class="vy-field">
+            <label for="code">Code from your authenticator app</label>
+            <input id="code" name="code" autocomplete="one-time-code" inputmode="numeric" required />
+        </div>
+        <button class="vy-button secondary" type="submit">Confirm</button>
+    </form>
+}
 
 @code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
     [SupplyParameterFromQuery] private string? Error { get; set; }
+    [SupplyParameterFromQuery] private string? Detail { get; set; }
     [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
 
+    private bool _microsoft;
+    private bool _ownFactor = true;
+
     private string Next => Vaulty.Web.Account.AccountEndpoints.Safe(ReturnUrl);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var principal = (await AuthenticationState).User;
+        // A session that signed in with Microsoft confirms with Microsoft; its own passkey or code still works when it has one.
+        _microsoft = principal.FindFirst(VaultyClaims.Method)?.Value == "microsoft";
+        if (_microsoft && await Users.GetUserAsync(principal) is { } user)
+        {
+            _ownFactor = user.TwoFactorEnabled && user.AuthenticatorKey is not null || (await Users.GetPasskeysAsync(user)).Count > 0;
+        }
+    }
 }

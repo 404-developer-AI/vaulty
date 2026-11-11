@@ -1,12 +1,19 @@
 @page "/account/login"
 @layout AccountLayout
 @attribute [AllowAnonymous]
+@using Vaulty.Infrastructure.Identity
+@inject MicrosoftSignInService MicrosoftSignIn
+@inject Vaulty.Web.Account.SignInMessages Messages
 
 <PageTitle>Sign in · Vaulty</PageTitle>
 
 <h1>Sign in</h1>
-<p class="vy-muted">Use your passkey, or your e-mail address and password.</p>
+<p class="vy-muted">@(_microsoft ? "Use your Microsoft work account, or your passkey or Vaulty account." : "Use your passkey, or your e-mail address and password.")</p>
 
+@if (Linked)
+{
+    <div class="vy-alert info">Your Vaulty user is now linked to your Microsoft account. Sign in with Microsoft from now on.</div>
+}
 @if (Error == "invalid")
 {
     <div class="vy-alert error">The e-mail address or password is not correct.</div>
@@ -19,29 +26,59 @@ else if (Error == "expired")
 {
     <div class="vy-alert error">The sign-in took too long. Start again.</div>
 }
+else if (Error == "use-microsoft")
+{
+    <div class="vy-alert error">This Vaulty user is linked to a Microsoft account. Sign in with Microsoft.</div>
+}
+else if (Error == "microsoft-only")
+{
+    <div class="vy-alert error">Your organization allows sign-in with Microsoft only. Sign in with Microsoft, or ask an administrator to link your Vaulty user.</div>
+}
+else if (Error == "microsoft")
+{
+    <div class="vy-alert error">@(Messages.Unprotect(Detail) ?? "The sign-in with Microsoft did not complete. Start again.")</div>
+}
 <div id="passkey-error" class="vy-alert error" hidden></div>
 
-<button class="vy-button" type="button" data-passkey="login" data-passkey-next="@AccountReturn">Sign in with a passkey</button>
+@if (_microsoft)
+{
+    <form method="post" action="/account/microsoft/start" data-enhance="false">
+        <AntiforgeryToken />
+        <input type="hidden" name="returnUrl" value="@AccountReturn" />
+        <button class="vy-button" type="submit">Sign in with Microsoft</button>
+    </form>
+    <div class="vy-divider">or</div>
+}
 
-<div class="vy-divider">or</div>
-
-<form method="post" action="/account/login" data-enhance="false">
-    <AntiforgeryToken />
-    <input type="hidden" name="returnUrl" value="@ReturnUrl" />
-    <div class="vy-field">
-        <label for="username">E-mail address</label>
-        <input id="username" name="username" type="email" autocomplete="username webauthn" required />
-    </div>
-    <div class="vy-field">
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required />
-    </div>
-    <button class="vy-button secondary" type="submit">Continue</button>
-</form>
+@if (_signInOnly)
+{
+    <details>
+        <summary class="vy-muted">Emergency access with a local administrator account</summary>
+        <LocalSignIn ReturnUrl="@ReturnUrl" Secondary="true" />
+    </details>
+}
+else
+{
+    <LocalSignIn ReturnUrl="@ReturnUrl" Secondary="@_microsoft" />
+}
 
 @code {
     [SupplyParameterFromQuery] private string? Error { get; set; }
+    [SupplyParameterFromQuery] private string? Detail { get; set; }
     [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "linked")] private string? LinkedQuery { get; set; }
 
+    private bool _microsoft;
+    private bool _signInOnly;
+
+    private bool Linked => LinkedQuery == "1";
     private string AccountReturn => Vaulty.Web.Account.AccountEndpoints.Safe(ReturnUrl);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var enabled = await MicrosoftSignIn.EnabledAsync();
+        // One organization per Vaulty: with exactly one switched on, the button knows which tenant to send the person to.
+        _microsoft = enabled.Count == 1;
+        _signInOnly = _microsoft && enabled[0].Settings.SignInOnly;
+    }
 }

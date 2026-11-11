@@ -217,3 +217,10 @@ public sealed class BrowserConnectMigration : SqlMigration
 {
     protected override string ScriptName => "0017_browser_connect";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261111000018_MicrosoftSignIn")]
+public sealed class MicrosoftSignInMigration : SqlMigration
+{
+    protected override string ScriptName => "0018_microsoft_sign_in";
+}

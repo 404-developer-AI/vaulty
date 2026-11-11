@@ -7,6 +7,7 @@
 @using QRCoder
 @using Vaulty.Core.Domain
 @inject UserManager<User> Users
+@inject IUserStore<User> Store
 
 <PageTitle>Second factor · Vaulty</PageTitle>
 
@@ -51,6 +52,8 @@
     private string? _qr;
     private string? _formattedKey;
 
+    private IUserAuthenticatorKeyStore<User> KeyStore => (IUserAuthenticatorKeyStore<User>)Store;
+
     protected override async Task OnInitializedAsync()
     {
         var user = await Users.GetUserAsync(HttpContext.User);
@@ -58,8 +61,11 @@
         var key = await Users.GetAuthenticatorKeyAsync(user);
         if (string.IsNullOrEmpty(key))
         {
-            await Users.ResetAuthenticatorKeyAsync(user);
-            key = await Users.GetAuthenticatorKeyAsync(user);
+            // The first key of an account that has no second factor yet. ResetAuthenticatorKeyAsync would also change the
+            // security stamp, which ends this very session at its next check, while the user is still scanning the code.
+            key = Users.GenerateNewAuthenticatorKey();
+            await KeyStore.SetAuthenticatorKeyAsync(user, key, CancellationToken.None);
+            await Users.UpdateAsync(user);
         }
         _formattedKey = string.Join(' ', Enumerable.Range(0, (key!.Length + 3) / 4).Select(i => key.Substring(i * 4, Math.Min(4, key.Length - i * 4))));
         var uri = $"otpauth://totp/{Uri.EscapeDataString("Vaulty:" + user.UserName)}?secret={key}&issuer=Vaulty&digits=6";

@@ -44,7 +44,7 @@
             <span class="vy-topbar-spacer"></span>
             <div class="vy-topbar-user">
                 <MudIcon Icon="@Icons.Material.Outlined.AccountCircle" Size="Size.Small" />
-                <span class="vy-user-name">@_userName</span>
+                <a class="vy-user-name" href="/account/microsoft" title="Microsoft account">@_userName</a>
                 <form method="post" action="/account/logout" data-enhance="false">
                     <AntiforgeryToken />
                     <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Outlined.Logout">Sign out</MudButton>
@@ -67,6 +67,7 @@
         new("/jobs", Icons.Material.Outlined.History, "Jobs", Permissions.JobsView, false),
         new("/settings/storage", Icons.Material.Outlined.Lock, "Storage", Permissions.StorageManage, true),
         new("/settings/microsoft", Icons.Material.Outlined.Hub, "Microsoft 365", Permissions.SettingsManage, true),
+        new("/settings/sign-in", Icons.Material.Outlined.Key, "Sign-in", Permissions.SignInManage, true),
         new("/settings/platform", Icons.Material.Outlined.Settings, "E-mail and display", Permissions.SettingsManage, true),
         new("/settings/webhooks", Icons.Material.Outlined.Webhook, "Webhooks", Permissions.SettingsManage, true),
         new("/settings/users", Icons.Material.Outlined.Group, "Users and roles", Permissions.UsersManage, true),
