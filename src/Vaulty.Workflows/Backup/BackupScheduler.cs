@@ -27,6 +27,9 @@ public sealed class BackupStarter(ITemporalClient client, NpgsqlDataSource dataS
     /// <summary>Starts a backup unless one is running for the object. Returns the job id, or null when one was already running.</summary>
     public async Task<Guid?> StartAsync(Guid organizationId, Guid tenantId, Guid objectId, string kind, Guid? requestedBy, CancellationToken cancellationToken = default)
     {
+        // A backup that runs longer than the interval is due again while it runs: ask first, so no job is recorded (and at
+        // once cancelled) for a run that cannot start. The start below still refuses a second run if two callers race.
+        if (await RunningAsync(objectId, cancellationToken).ConfigureAwait(false)) return null;
         var jobId = await JobRecords.CreateAsync(dataSource, organizationId, JobKind.Backup, tenantId, objectId, requestedBy, cancellationToken).ConfigureAwait(false);
         var input = new BackupInput(jobId, organizationId, tenantId, objectId, Guid.CreateVersion7());
         var options = new WorkflowOptions(WorkflowId(objectId), TaskQueues.Backup)
@@ -58,6 +61,20 @@ public sealed class BackupStarter(ITemporalClient client, NpgsqlDataSource dataS
             return null;
         }
         return jobId;
+    }
+
+    private async Task<bool> RunningAsync(Guid objectId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var description = await client.GetWorkflowHandle(WorkflowId(objectId)).DescribeAsync(new() { Rpc = new() { CancellationToken = cancellationToken } })
+                .ConfigureAwait(false);
+            return description.Status == Temporalio.Api.Enums.V1.WorkflowExecutionStatus.Running;
+        }
+        catch (Temporalio.Exceptions.RpcException ex) when (ex.Code == Temporalio.Exceptions.RpcException.StatusCode.NotFound)
+        {
+            return false;
+        }
     }
 }
 

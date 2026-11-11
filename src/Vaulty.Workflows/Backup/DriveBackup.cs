@@ -233,7 +233,14 @@ public sealed class DriveActivities(NpgsqlDataSource dataSource, GraphServices g
     public async Task<BackupOutcome> CommitAsync(BackupInput input, string rootId)
     {
         ArgumentNullException.ThrowIfNull(input);
-        var ct = ActivityExecutionContext.Current.CancellationToken;
+        var context = ActivityExecutionContext.Current;
+        var ct = context.CancellationToken;
+        // Removing orphans, sealing manifests and writing the snapshot report no progress; keep the activity alive meanwhile.
+        return await Heartbeats.WhileRunningAsync(() => context.Heartbeat(), () => CommitDriveAsync(input, rootId, ct));
+    }
+
+    private async Task<BackupOutcome> CommitDriveAsync(BackupInput input, string rootId, CancellationToken ct)
+    {
         var repositoryKeys = await keys.GetAsync(input.OrganizationId, input.TenantId, ct);
         var policy = await PolicyResolver.ForObjectAsync(dataSource, input.OrganizationId, input.TenantId, input.ProtectedObjectId, ct);
         // Items under a deleted folder and versions of a deleted file leave the snapshot with their parent.

@@ -222,6 +222,12 @@ All notable changes to this project are documented in this file. The format foll
   the worker service and object storage as the causes to check.
 - The jobs page shows for a running backup how many items it has stored so far, so a long first backup is visibly
   moving.
+- Every backup after an object's first one starts again: the jobs table required a unique workflow id, while every
+  run of an object uses the same one, so recording the start of a second run failed and was retried forever. Jobs are
+  unique on their workflow run instead (migration `0014`). The test harness now uses the production workflow id.
+- Committing a mailbox or drive snapshot heartbeats while it runs: a commit longer than the heartbeat timeout was
+  declared dead and started again while still running, and failed the backup after its retries.
+- The scheduler records no job for an object whose backup is still running, instead of a job cancelled at once.
 - The installer prints `[ ok ]` when a step finishes.
 - The installer test opens the sign-in page through Caddy and checks the https redirect, every linked stylesheet and
   that a query string never reaches the access log.

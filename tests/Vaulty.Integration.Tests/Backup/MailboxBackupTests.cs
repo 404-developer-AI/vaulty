@@ -162,7 +162,7 @@ internal sealed class BackupHarness : IAsyncDisposable
         var jobId = await JobRecords.CreateAsync(DataSource, Org, Vaulty.Core.Domain.JobKind.Backup, Tenant, objectId, null);
         var input = new BackupInput(jobId, Org, Tenant, objectId, Guid.CreateVersion7());
         var handle = await _fixture.Server.Client.StartWorkflowAsync((DriveBackupWorkflow w) => w.RunAsync(input),
-            new WorkflowOptions($"backup-{objectId:N}-{input.SnapshotId:N}", Queue) { ExecutionTimeout = TimeSpan.FromMinutes(10) });
+            new WorkflowOptions(BackupStarter.WorkflowId(objectId), Queue) { ExecutionTimeout = TimeSpan.FromMinutes(10) });
         return (await handle.GetResultAsync(), input.SnapshotId);
     }
 
@@ -171,7 +171,7 @@ internal sealed class BackupHarness : IAsyncDisposable
         var jobId = await JobRecords.CreateAsync(DataSource, Org, Vaulty.Core.Domain.JobKind.Backup, Tenant, objectId, null);
         var input = new BackupInput(jobId, Org, Tenant, objectId, Guid.CreateVersion7());
         var handle = await _fixture.Server.Client.StartWorkflowAsync((MailboxBackupWorkflow w) => w.RunAsync(input),
-            new WorkflowOptions($"backup-{objectId:N}-{input.SnapshotId:N}", Queue) { ExecutionTimeout = TimeSpan.FromMinutes(10) });
+            new WorkflowOptions(BackupStarter.WorkflowId(objectId), Queue) { ExecutionTimeout = TimeSpan.FromMinutes(10) });
         if (whileRunning is not null) await whileRunning(handle);
         return (await handle.GetResultAsync(), input.SnapshotId);
     }
@@ -243,6 +243,48 @@ internal sealed class BackupHarness : IAsyncDisposable
 
 public sealed class MailboxBackupTests(TemporalFixture fixture, ITestOutputHelper output) : IClassFixture<TemporalFixture>
 {
+    [Fact]
+    public async Task A_step_without_progress_of_its_own_heartbeats_until_it_ends()
+    {
+        // A commit that ran longer than the heartbeat timeout was declared dead and started again while still running.
+        var beats = 0;
+        var result = await Vaulty.Workflows.Heartbeats.WhileRunningAsync(() => Interlocked.Increment(ref beats), async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(400));
+            return 42;
+        }, TimeSpan.FromMilliseconds(50));
+        Assert.Equal(42, result);
+        Assert.True(beats >= 4, $"{beats} heartbeats during the step");
+        var after = beats;
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+        Assert.Equal(after, beats);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Vaulty.Workflows.Heartbeats.WhileRunningAsync<int>(() => { },
+            () => throw new InvalidOperationException("commit failed"), TimeSpan.FromMilliseconds(50)));
+    }
+
+    [TemporalFact]
+    public async Task Every_run_of_a_protected_object_records_its_own_job_under_the_same_workflow_id()
+    {
+        // The scheduler gives every run of an object the same workflow id; the second run must record and finish its job like
+        // the first (a unique workflow id per job made every run after the first wait forever to record its start).
+        using var simulator = new MailboxSimulator(items: 12, seed: 3);
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var mailbox = await harness.SeedMailboxAsync();
+        harness.StartWorker();
+        var (first, _) = await harness.BackupAsync(mailbox);
+        simulator.Add("f-inbox");
+        var (second, _) = await harness.BackupAsync(mailbox);
+        Assert.False(first.IsPartial || second.IsPartial);
+        await using var owner = new NpgsqlConnection(fixture.Database.Migrator);
+        var jobs = (await owner.QueryAsync<(string State, string WorkflowId, string RunId)>(
+            "SELECT state, workflow_id, workflow_run_id FROM vaulty.jobs WHERE protected_object_id = @mailbox ORDER BY created_at", new { mailbox })).ToList();
+        Assert.Equal(2, jobs.Count);
+        Assert.All(jobs, j => Assert.Equal("succeeded", j.State));
+        Assert.Equal(jobs[0].WorkflowId, jobs[1].WorkflowId);
+        Assert.NotEqual(jobs[0].RunId, jobs[1].RunId);
+    }
+
     [TemporalFact]
     public async Task A_full_backup_and_three_incremental_runs_match_the_source_item_for_item()
     {

@@ -320,9 +320,10 @@ public sealed class MailboxActivities(NpgsqlDataSource dataSource, GraphServices
         var index = new PostgresChunkIndex(dataSource, backup.OrganizationId, backup.TenantId);
         var writer = new RepositoryWriter(objectStore, repositoryKeys, index, new RepositoryWriterOptions { LockUntil = policy.LockUntil(clock.GetUtcNow()) });
         var reader = new RepositoryReader(objectStore, repositoryKeys, index);
-        var result = await store.CommitAsync(backup.Target, repositoryKeys, writer, reader,
+        // Sealing manifests and writing the snapshot reports no progress of its own; keep the activity alive meanwhile.
+        var result = await Heartbeats.WhileRunningAsync(() => context.Heartbeat(), () => store.CommitAsync(backup.Target, repositoryKeys, writer, reader,
             input.Folders.Select(f => new FolderCount(f.Id, f.Name, f.SourceCount)).ToList(), policy.LockUntil(clock.GetUtcNow()),
-            TimeSpan.FromMinutes(policy.FrequencyMinutes), context.CancellationToken);
+            TimeSpan.FromMinutes(policy.FrequencyMinutes), context.CancellationToken));
         return new BackupOutcome(result.Counts, result.Partial, result.Exceptions.Count);
     }
 

@@ -189,3 +189,10 @@ public sealed class TenantReconnectMigration : SqlMigration
 {
     protected override string ScriptName => "0013_tenant_reconnect";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261111000014_JobRuns")]
+public sealed class JobRunsMigration : SqlMigration
+{
+    protected override string ScriptName => "0014_job_runs";
+}
