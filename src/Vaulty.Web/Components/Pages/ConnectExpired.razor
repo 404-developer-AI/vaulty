@@ -1,0 +1,12 @@
+@page "/connect/microsoft/expired"
+@attribute [Authorize]
+
+<PageTitle>Sign-in expired · Vaulty</PageTitle>
+
+<PageHeader Title="This Microsoft sign-in can no longer be used" />
+<Section>
+    <EmptyState Title="Start the connection again" Icon="@Icons.Material.Outlined.TimerOff">
+        <ChildContent><p class="vy-muted mt-0">A sign-in works once and for ten minutes, and only for the Vaulty session that started it. It also ends when Vaulty restarts. Nothing was changed in the tenant by this sign-in.</p></ChildContent>
+        <Actions><MudButton Variant="Variant.Outlined" Href="/customers">Customers</MudButton></Actions>
+    </EmptyState>
+</Section>

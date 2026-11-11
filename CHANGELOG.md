@@ -7,6 +7,26 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- Connect a tenant from the browser: a Global Administrator of the customer signs in with Microsoft, and Vaulty
+  creates the app registration "Vaulty" in the tenant with its own certificate, grants admin consent for its
+  application permissions, saves the tenant and application IDs itself, checks the permissions and removes the
+  setup app from the tenant again. The result is the same dedicated app per tenant as the script makes; the script
+  stays available. The sign-in uses the authorization code flow with PKCE, a one-time state bound to the Vaulty user,
+  a nonce, and no refresh token; the token is held in memory for the set-up only and never stored or logged. Each
+  step is recorded, so signing in again after an interruption continues where it stopped and never creates a second
+  app. A tenant already connected, or an account that cannot grant application permissions, is refused before
+  anything is created; an app made by an account whose grant Microsoft refuses is removed again. Entra's replication
+  delay after a create is retried. Technicians who work through GDAP enter the customer's tenant domain.
+- Settings > Microsoft 365: a guided set-up of the "Vaulty setup" app (multi-tenant, delegated permissions only) in
+  your own tenant. Vaulty creates its certificate, shows each value to enter in the Entra admin center with a copy
+  button, checks that the certificate signs in, and reads the registration with a test sign-in to report every
+  setting (account types, redirect URI, permissions, certificate, no client secret) in plain words.
+- Repair a tenant's connection with a Microsoft sign-in: Vaulty puts back a removed app registration, its certificate
+  and missing permissions, optionally with the restore permissions.
+- Vaulty renews certificates itself 60 days before they expire, for tenants whose app it knows and for the setup app:
+  it adds the new certificate with a proof signed by the current one, switches only once the new one signs in, and
+  then removes the old key. "Rotate certificate" does the same; when Microsoft refuses, the script is shown.
+
 - A redesigned web interface built on one set of shared components (page header with breadcrumbs, sections, status
   chips that say what happened, data tables with search, filters, sorting and loading, empty and error states,
   confirmation dialogs that announce "Confirm it's you", wizard steps). Text is 14px, every chip meets WCAG AA
@@ -221,6 +241,9 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- A second certificate rotation of a tenant wrote the new certificate over the one in use, before the new one was
+  proven to work: after a rotation the current certificate had the name the next one was given. Every certificate now
+  has its own name.
 - The memory limits of the Vaulty services take effect: the installer wrote them as "680MB", which systemd does not
   parse and ignored. Units now get "680M" or "2G"; an update rewrites them, and the installer test checks that every
   service has a limit.

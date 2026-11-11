@@ -19,6 +19,10 @@
 @inject TimeProvider Clock
 @inject ISnackbar Snackbar
 @inject IDialogService Dialogs
+@inject SetupAppService SetupApp
+@inject BrowserConnection Connection
+@inject CertificateRotation Rotation
+@inject VaultyHostOptions HostOptions
 
 <PageTitle>@(_tenant?.DisplayName ?? "Tenant") · Vaulty</PageTitle>
 
@@ -67,12 +71,18 @@ else
         <Notice Tone="error" Title="Vaulty lost access to this tenant; backups cannot run">
             <ChildContent>
                 @(string.IsNullOrEmpty(HealthDetail) ? "The app registration was removed, its consent revoked, or its certificate no longer works." : HealthDetail)
-                Check permissions to see what is missing. If the app was created again, correct the application ID on the Connection tab.
+                @(_setupReady
+                    ? "Repair the connection: an administrator of the tenant signs in, and Vaulty puts back the app, its certificate and its permissions."
+                    : "Check permissions to see what is missing. If the app was created again, correct the application ID on the Connection tab.")
             </ChildContent>
             <Actions>
                 @if (_canConnect)
                 {
-                    <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
+                    @if (_setupReady)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" OnClick="RepairAsync" Disabled="_busy">Repair with Microsoft sign-in</MudButton>
+                    }
+                    <MudButton Size="Size.Small" Variant="@(_setupReady ? Variant.Outlined : Variant.Filled)" Color="Color.Primary" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
                     <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => SelectTab(TabConnection))">Open the Connection tab</MudButton>
                 }
             </Actions>
@@ -87,6 +97,13 @@ else
                 <li>Choose what is backed up below, and set the backup frequency and retention on the Policy tab.</li>
             </ol>
         </Notice>
+    }
+
+    @if (RunQuery is { } run)
+    {
+        <Section Title="Repair the connection">
+            <SetupRunProgress RunId="run" UserId="_userId" OnFinished="RepairFinishedAsync" />
+        </Section>
     }
 
     @if (_report is not null)
@@ -319,7 +336,12 @@ else
                 {
                     <div class="vy-wizard-footer">
                         <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
-                        @if (_tenant.NextCertificateExpiresAt is null)
+                        @if (_setupReady)
+                        {
+                            <MudButton Variant="Variant.Outlined" OnClick="RepairAsync" Disabled="_busy"
+                                       title="An administrator of the tenant signs in; Vaulty puts back the app, its certificate and its permissions">Repair with Microsoft sign-in</MudButton>
+                        }
+                        @if (_tenant.NextCertificateExpiresAt is null || _tenant.SelfRotation)
                         {
                             <MudButton Variant="Variant.Outlined" OnClick="BeginRotationAsync" Disabled="_busy">Rotate certificate</MudButton>
                         }
@@ -330,7 +352,16 @@ else
                         <MudButton Variant="Variant.Text" OnClick="ToggleCorrection" Disabled="_busy">Correct tenant ID or application ID</MudButton>
                     </div>
                 }
-                @if (_rotationScript is not null || _tenant.NextCertificateExpiresAt is not null)
+                @if (_canConnect && _setupReady)
+                {
+                    <MudCheckBox T="bool" @bind-Value="_repairWithRestore" Label="Include restore permissions when repairing" Class="mt-2" />
+                }
+                <p class="vy-muted mt-2 mb-0" style="font-size: 0.8125rem">
+                    @(_tenant.SelfRotation
+                        ? "Vaulty renews this certificate itself 60 days before it expires: it adds the new certificate to the app, switches once it works, and removes the old one."
+                        : "Vaulty cannot renew this certificate itself yet: rotate it with the script, or repair the connection once with a Microsoft sign-in.")
+                </p>
+                @if (_rotationScript is not null || (_tenant.NextCertificateExpiresAt is not null && !_tenant.SelfRotation))
                 {
                     <Notice Tone="info" Class="mt-4" Title="Certificate rotation started">
                         Run this script in the tenant, then select Confirm the new certificate. Vaulty switches only after the new certificate works.
@@ -435,6 +466,12 @@ else
     private IReadOnlyList<ProtectedObjectRow> _objects = [];
     private PermissionProbeReport? _report;
     private string? _rotationScript;
+    private bool _setupReady;
+    private bool _repairWithRestore = true;
+    [SupplyParameterFromQuery(Name = "run")] public Guid? RunQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "go")] public string? GoQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "restore")] public int? RestoreQuery { get; set; }
+    private bool _resumed;
     private bool _canConnect;
     private bool _canRun;
     private bool _canBrowse;
@@ -539,6 +576,9 @@ else
         if (tenant is null || !access.Allows(Permissions.CustomersView, tenant.CustomerId)) return;
         _tenant = tenant;
         _canConnect = access.Allows(Permissions.TenantsConnect, tenant.CustomerId);
+        _setupReady = _canConnect && (await SetupApp.GetAsync()).Ready;
+        if (!_resumed && RestoreQuery is { } restore) _repairWithRestore = restore != 0;
+        else if (!_resumed) _repairWithRestore = HasRestorePermissions(tenant.GrantedPermissions) || tenant.ConsentState != "granted";
         _canRun = access.Allows(Permissions.BackupsRun, tenant.CustomerId);
         _canBrowse = access.Allows(Permissions.SnapshotsBrowse, tenant.CustomerId);
         _canManagePolicy = access.Allows(Permissions.PoliciesManage, tenant.CustomerId);
@@ -877,8 +917,79 @@ else
     private async Task BeginRotationAsync()
     {
         if (!await ConfirmedAsync()) return;
-        _rotationScript = await TenantService.BeginRotationAsync(_organizationId, _userId, TenantId);
+        if (_tenant?.SelfRotation != true)
+        {
+            _rotationScript = await TenantService.BeginRotationAsync(_organizationId, _userId, TenantId);
+            await LoadAsync();
+            return;
+        }
+        _busy = true;
+        try
+        {
+            var outcome = await Rotation.RotateAsync(_organizationId, $"user:{_userId}", TenantId);
+            _rotationScript = outcome.FallbackScript;
+            Snackbar.Add(outcome.Message, outcome.Rotated ? Severity.Success : Severity.Warning);
+            await LoadAsync();
+        }
+        catch (Exception ex) when (ex is TenantException or InvalidOperationException or Microsoft.Identity.Client.MsalException)
+        {
+            Snackbar.Add($"The certificate was not rotated: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static bool HasRestorePermissions(string grantedJson)
+    {
+        try
+        {
+            var granted = JsonSerializer.Deserialize<string[]>(grantedJson) ?? [];
+            return GraphPermissions.All.Where(p => p.ForRestore).Any(p => granted.Contains(p.Name));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>An administrator of the tenant signs in; Vaulty repairs the app registration, its certificate and its permissions.</summary>
+    private async Task RepairAsync()
+    {
+        if (!_canConnect || !_setupReady) return;
+        if (!VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock))
+        {
+            Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/tenants/{TenantId}?tab=connection&go=repair&restore={(_repairWithRestore ? 1 : 0)}")}", forceLoad: true);
+            return;
+        }
+        _busy = true;
+        try
+        {
+            var redirect = SetupAppService.RedirectUri(HostOptions.PublicHost, new Uri(Navigation.BaseUri));
+            var url = await Connection.BeginAsync(SignInPurpose.Repair, _organizationId, _userId, TenantId, redirect, $"/tenants/{TenantId}?tab=connection",
+                _repairWithRestore, _tenant?.EntraTenantId.ToString(), consent: true);
+            Navigation.NavigateTo(url.ToString(), forceLoad: true);
+        }
+        catch (TenantException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+            _busy = false;
+        }
+    }
+
+    private async Task RepairFinishedAsync(SetupRunView view)
+    {
         await LoadAsync();
+        StateHasChanged();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Back from "Confirm it's you" with a repair asked for: continue with it.
+        if (!firstRender || !RendererInfo.IsInteractive || _resumed || GoQuery != "repair" || _tenant is null) return;
+        _resumed = true;
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) await RepairAsync();
     }
 
     private async Task CompleteRotationAsync()

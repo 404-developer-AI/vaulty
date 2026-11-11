@@ -7,6 +7,9 @@
 @inject NavigationManager Navigation
 @inject TimeProvider Clock
 @inject IJSRuntime JS
+@inject SetupAppService SetupApp
+@inject BrowserConnection Connection
+@inject VaultyHostOptions HostOptions
 
 <PageTitle>Connect a tenant · Vaulty</PageTitle>
 
@@ -28,14 +31,14 @@ else
     <PageHeader Title="Connect a tenant" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb(_customer.Name, $"/customers/{CustomerId}"), new Crumb("Connect a tenant")])"
                 Lede="@($"Give Vaulty access to a Microsoft 365 tenant of {_customer.Name}. Vaulty uses its own app registration in the tenant, signed in with a certificate only Vaulty holds.")" />
 
-    <WizardSteps Steps="Steps" Active="_step" Label="Steps to connect a tenant" />
+    <WizardSteps Steps="@(_browser ? BrowserSteps : Steps)" Active="_step" Label="Steps to connect a tenant" />
 
     <Section>
         @switch (_step)
         {
             case 0:
                 <h2 class="mt-0 mb-1" style="font-size: 1rem">Name the tenant and choose its access</h2>
-                <p class="vy-muted mt-0 mb-4">Vaulty creates a certificate for this tenant (its private key stays in Vaulty's encrypted secret store) and a PowerShell script that creates the app registration.</p>
+                <p class="vy-muted mt-0 mb-4">Vaulty creates a certificate for this tenant (its private key stays in Vaulty's encrypted secret store) and an app registration "Vaulty" in the tenant that signs in with it.</p>
                 <MudTextField @bind-Value="_tenantName" Label="Name of the tenant in Vaulty" Variant="Variant.Outlined" Required="true" HelperText="As your team calls it, for example Acme Logistics" Class="mb-4" Style="max-width: 480px" />
                 <div class="vy-choice" role="radiogroup" aria-label="Access">
                     <label class="vy-choice-option @(_includeRestore ? "selected" : "")">
@@ -49,6 +52,26 @@ else
                             <span class="vy-choice-text">Read permissions only. Restores into the tenant are not possible until you rotate the certificate with restore permissions.</span></span>
                     </label>
                 </div>
+                <h3 class="mt-5 mb-2" style="font-size: 0.9375rem">How the app registration is created</h3>
+                <div class="vy-choice" role="radiogroup" aria-label="How the app registration is created">
+                    <label class="vy-choice-option @(_browser ? "selected" : "") @(_setupReady ? "" : "disabled")">
+                        <input type="radio" name="method" checked="@_browser" disabled="@(!_setupReady)" @onchange="@(() => _browser = true)" />
+                        <span><span class="vy-choice-title">Sign in with Microsoft (recommended)</span><br />
+                            <span class="vy-choice-text">@(_setupReady
+                                ? "A Global Administrator of the customer signs in, and Vaulty creates the app registration and grants its permissions. Nothing to copy, and Vaulty keeps no sign-in afterwards."
+                                : "Not available yet: the Vaulty setup app is not set up under Settings > Microsoft 365.")</span></span>
+                    </label>
+                    <label class="vy-choice-option @(!_browser ? "selected" : "")">
+                        <input type="radio" name="method" checked="@(!_browser)" @onchange="@(() => _browser = false)" />
+                        <span><span class="vy-choice-title">Use a PowerShell script</span><br />
+                            <span class="vy-choice-text">A Global Administrator runs a script that Vaulty generates, and you enter the two IDs it prints. For customers who allow no external app.</span></span>
+                    </label>
+                </div>
+                @if (_browser)
+                {
+                    <MudTextField @bind-Value="_tenantHint" Label="Customer tenant domain or ID (optional)" Variant="Variant.Outlined" Class="mt-4" Style="max-width: 480px"
+                                  HelperText="Only when you sign in through GDAP from your partner tenant, for example contoso.onmicrosoft.com" />
+                }
                 @if (_error is not null) { <Notice Tone="error" Class="mt-3">@_error</Notice> }
                 <div class="vy-wizard-footer">
                     <MudButton Variant="Variant.Text" Href="@($"/customers/{CustomerId}")">Cancel</MudButton>
@@ -57,8 +80,26 @@ else
                     {
                         <span class="vy-muted" style="font-size: 0.8125rem">You confirm it's you next.</span>
                     }
-                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || string.IsNullOrWhiteSpace(_tenantName))" OnClick="BeginAsync">Create certificate and script</MudButton>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || string.IsNullOrWhiteSpace(_tenantName))" OnClick="BeginAsync">@(_browser ? "Sign in with Microsoft" : "Create certificate and script")</MudButton>
                 </div>
+                break;
+
+            case 2 when _browser:
+                <h2 class="mt-0 mb-1" style="font-size: 1rem">Vaulty sets up the app in the tenant</h2>
+                <p class="vy-muted mt-0 mb-3">This takes a minute or two. You can close this page; the set-up continues, and the tenant appears on the customer page when it is done.</p>
+                @if (RunQuery is { } run)
+                {
+                    <SetupRunProgress RunId="run" UserId="_userId" OnFinished="RunFinishedAsync" />
+                }
+                @if (_error is not null) { <Notice Tone="error" Class="mt-3">@_error</Notice> }
+                @if (_runFailed is not null || RunQuery is null)
+                {
+                    <div class="vy-wizard-footer">
+                        <MudButton Variant="Variant.Text" Href="@($"/customers/{CustomerId}/connect?method=script&name={Uri.EscapeDataString(_tenantName ?? "")}")">Use the script instead</MudButton>
+                        <span class="vy-grow"></span>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="RetryAsync" Disabled="_busy">Sign in again</MudButton>
+                    </div>
+                }
                 break;
 
             case 1:
@@ -113,6 +154,7 @@ else
 
 @code {
     private static readonly string[] Steps = ["Name and access", "Run the script", "Enter the IDs", "Check and find mailboxes"];
+    private static readonly string[] BrowserSteps = ["Name and access", "Sign in with Microsoft", "Vaulty sets up the app", "Check and find mailboxes"];
 
     [Parameter] public Guid CustomerId { get; set; }
     [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
@@ -123,6 +165,10 @@ else
     [SupplyParameterFromQuery(Name = "tenant")] public string? TenantQuery { get; set; }
     [SupplyParameterFromQuery(Name = "app")] public string? AppQuery { get; set; }
     [SupplyParameterFromQuery(Name = "go")] public int? Go { get; set; }
+    [SupplyParameterFromQuery(Name = "method")] public string? MethodQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "hint")] public string? HintQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "run")] public Guid? RunQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "retry")] public Guid? RetryQuery { get; set; }
 
     private CustomerRow? _customer;
     private bool _loaded;
@@ -140,8 +186,14 @@ else
     private bool _resumed;
     private Guid _organizationId;
     private Guid _userId;
+    private bool _setupReady;
+    private bool _browser;
+    private string? _tenantHint;
+    private SetupRunView? _runFailed;
 
     private bool Fresh => _fresh;
+
+    private Uri RedirectUri => SetupAppService.RedirectUri(HostOptions.PublicHost, new Uri(Navigation.BaseUri));
 
     private bool ValidIds => Guid.TryParse(_entraTenantId?.Trim(), out _) && Guid.TryParse(_clientId?.Trim(), out _);
 
@@ -161,9 +213,16 @@ else
             _customer = (await CustomerService.ListAsync(_organizationId)).FirstOrDefault(c => c.Id == CustomerId);
             _tenantName = NameQuery ?? _customer?.Name;
             if (RestoreQuery == 0) _includeRestore = false;
+            _setupReady = (await SetupApp.GetAsync()).Ready;
+            _browser = _setupReady && MethodQuery != "script";
+            _tenantHint = HintQuery;
             if (PendingQuery is { } pending)
             {
-                (_pendingId, _entraTenantId, _clientId, _step) = (pending, TenantQuery, AppQuery, 2);
+                (_pendingId, _entraTenantId, _clientId, _step, _browser) = (pending, TenantQuery, AppQuery, 2, false);
+            }
+            if (RunQuery is not null || RetryQuery is not null)
+            {
+                (_browser, _step) = (true, 2);
             }
         }
         finally
@@ -177,7 +236,8 @@ else
         // Back from "Confirm it's you": continue with the step the user had asked for.
         if (!firstRender || !RendererInfo.IsInteractive || Go != 1 || !_fresh || _resumed || _customer is null) return;
         _resumed = true;
-        if (_step == 2 && ValidIds) await CompleteAsync();
+        if (RetryQuery is not null) await RetryAsync();
+        else if (_step == 2 && ValidIds) await CompleteAsync();
         else if (_step == 0 && !string.IsNullOrWhiteSpace(_tenantName)) await BeginAsync();
         StateHasChanged();
     }
@@ -190,12 +250,20 @@ else
         _error = null;
         if (!VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock))
         {
-            StepUp($"name={Uri.EscapeDataString(_tenantName ?? "")}&restore={(_includeRestore ? 1 : 0)}");
+            StepUp($"name={Uri.EscapeDataString(_tenantName ?? "")}&restore={(_includeRestore ? 1 : 0)}&method={(_browser ? "browser" : "script")}&hint={Uri.EscapeDataString(_tenantHint ?? "")}");
             return;
         }
         _busy = true;
         try
         {
+            if (_browser)
+            {
+                // Check the optional tenant before a pending connection exists.
+                if (!string.IsNullOrWhiteSpace(_tenantHint)) BrowserConnection.NormalizeTenant(_tenantHint);
+                var browserPending = await TenantService.BeginConnectAsync(_organizationId, _userId, CustomerId, _tenantName ?? "", _includeRestore, default, browser: true);
+                await SignInAsync(browserPending.Id, _includeRestore);
+                return;
+            }
             _pending = await TenantService.BeginConnectAsync(_organizationId, _userId, CustomerId, _tenantName ?? "", _includeRestore);
             _pendingId = _pending.Id;
             _step = 1;
@@ -235,6 +303,53 @@ else
         }
         finally
         {
+            _busy = false;
+        }
+    }
+
+    private async Task SignInAsync(Guid pendingId, bool includeRestore)
+    {
+        var url = await Connection.BeginAsync(SignInPurpose.Connect, _organizationId, _userId, pendingId, RedirectUri,
+            $"/customers/{CustomerId}/connect", includeRestore, _tenantHint);
+        Navigation.NavigateTo(url.ToString(), forceLoad: true);
+    }
+
+    private async Task RunFinishedAsync(SetupRunView view)
+    {
+        if (view.State == SetupRunState.Succeeded && view.TenantId is { } tenantId)
+        {
+            Navigation.NavigateTo($"/tenants/{tenantId}?connected=1");
+            return;
+        }
+        _runFailed = view;
+        StateHasChanged();
+        await Task.CompletedTask;
+    }
+
+    /// <summary>Signs in again for the same pending connection: the set-up resumes where it stopped.</summary>
+    private async Task RetryAsync()
+    {
+        _error = null;
+        var pendingId = _runFailed?.TargetId ?? RetryQuery;
+        var includeRestore = _runFailed?.IncludeRestore ?? RestoreQuery != 0;
+        if (pendingId is not { } id)
+        {
+            _error = "Start the connection again from the first step.";
+            return;
+        }
+        if (!VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock))
+        {
+            StepUp($"retry={id}&restore={(includeRestore ? 1 : 0)}&hint={Uri.EscapeDataString(_tenantHint ?? "")}");
+            return;
+        }
+        _busy = true;
+        try
+        {
+            await SignInAsync(id, includeRestore);
+        }
+        catch (TenantException ex)
+        {
+            _error = ex.Message;
             _busy = false;
         }
     }

@@ -40,6 +40,14 @@ public static class TenantCertificate
 
     public static X509Certificate2 Load(ReadOnlySpan<byte> pfx) =>
         X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.EphemeralKeySet);
+
+    /// <summary>The material of a stored certificate (the public part is derived from the PKCS#12 with the key).</summary>
+    public static TenantCertificateMaterial FromPfx(ReadOnlySpan<byte> pfx)
+    {
+        using var certificate = Load(pfx);
+        return new TenantCertificateMaterial(pfx.ToArray(), certificate.Export(X509ContentType.Cert), certificate.Thumbprint,
+            new DateTimeOffset(certificate.NotBefore.ToUniversalTime(), TimeSpan.Zero), new DateTimeOffset(certificate.NotAfter.ToUniversalTime(), TimeSpan.Zero));
+    }
 }
 
 /// <summary>

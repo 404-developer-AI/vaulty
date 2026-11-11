@@ -1,0 +1,83 @@
+@* The progress of a set-up Vaulty runs after a Microsoft sign-in: the steps done, the current step, and the outcome. *@
+@using Vaulty.Infrastructure.Tenants
+@implements IDisposable
+@inject BrowserConnection Connection
+
+@if (_view is null)
+{
+    <Notice Tone="warning" Title="This set-up is not available">It finished a while ago, ran for another Vaulty user, or Vaulty restarted since. Start again if it did not finish.</Notice>
+}
+else
+{
+    <div class="vy-run" aria-live="polite">
+        <ol class="vy-run-steps">
+            @foreach (var step in _view.Done)
+            {
+                <li class="done"><MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Size="Size.Small" Color="Color.Success" /> @step</li>
+            }
+            @if (_view.Current is { } current)
+            {
+                <li class="@(_view.State == SetupRunState.Running ? "current" : "stopped")">
+                    @if (_view.State == SetupRunState.Running)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Color="Color.Primary" Style="width: 18px; height: 18px" />
+                    }
+                    else
+                    {
+                        <MudIcon Icon="@Icons.Material.Outlined.ErrorOutline" Size="Size.Small" Color="Color.Error" />
+                    }
+                    @current
+                </li>
+            }
+        </ol>
+        @if (_view.State == SetupRunState.Failed)
+        {
+            <Notice Tone="error" Title="The set-up stopped" Class="mt-3">@_view.Message</Notice>
+        }
+        else if (_view.State == SetupRunState.Succeeded)
+        {
+            <Notice Tone="success" Title="@(_view.Message ?? "Done")" Class="mt-3" />
+        }
+        @foreach (var warning in _view.Warnings)
+        {
+            <Notice Tone="warning" Class="mt-3">@warning</Notice>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid RunId { get; set; }
+    [Parameter, EditorRequired] public Guid UserId { get; set; }
+    [Parameter] public EventCallback<SetupRunView> OnFinished { get; set; }
+
+    private SetupRunView? _view;
+    private Timer? _timer;
+    private bool _reported;
+
+    protected override void OnParametersSet()
+    {
+        _view = Connection.Get(RunId, UserId);
+        _timer?.Dispose();
+        _reported = false;
+        if (_view is { State: SetupRunState.Running }) _timer = new Timer(_ => _ = InvokeAsync(PollAsync), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_view is not null && _view.State != SetupRunState.Running && !_reported)
+        {
+            _reported = true;
+            await OnFinished.InvokeAsync(_view);
+        }
+    }
+
+    private async Task PollAsync()
+    {
+        _view = Connection.Get(RunId, UserId);
+        if (_view is null || _view.State != SetupRunState.Running) _timer?.Dispose();
+        StateHasChanged();
+        await Task.CompletedTask;
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

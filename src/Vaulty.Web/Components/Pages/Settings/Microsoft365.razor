@@ -1,0 +1,280 @@
+@page "/settings/microsoft"
+@attribute [Authorize(Policy = "perm:" + Permissions.SettingsManage)]
+@using Vaulty.Infrastructure.Tenants
+@using Vaulty.Core.Domain
+@inject SetupAppService SetupApp
+@inject BrowserConnection Connection
+@inject VaultyHostOptions HostOptions
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject DisplayTime Time
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Microsoft 365 · Vaulty</PageTitle>
+
+<PageHeader Title="Microsoft 365"
+            Lede="The Vaulty setup app lets a technician connect a customer's tenant from the browser: an administrator of the customer signs in, and Vaulty creates its own app registration in that tenant. Set it up once for this Vaulty. Saving asks you to confirm it's you." />
+
+@if (!_loaded)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-4" />
+}
+else
+{
+    @if (_settings.Ready)
+    {
+        <Notice Tone="success" Title="Ready: tenants can be connected from the browser">
+            The setup app has no access to any data of its own. It only acts while an administrator of a customer is signed in, and Vaulty removes it from the customer's tenant afterwards.
+        </Notice>
+    }
+    else
+    {
+        <Notice Tone="info" Title="Not set up yet: tenants are connected with the PowerShell script">
+            Follow the three steps below. It takes about five minutes and needs an administrator of your own Microsoft 365 tenant who may create app registrations.
+        </Notice>
+    }
+
+    @if (RunId is { } run)
+    {
+        <Section Title="Test sign-in">
+            <SetupRunProgress RunId="run" UserId="_userId" OnFinished="RunFinishedAsync" />
+        </Section>
+    }
+
+    <Section Title="1. Certificate" Description="The setup app signs in with a certificate Vaulty creates. Its private key stays in Vaulty's encrypted secret store; you upload only the public part.">
+        @if (_settings.CertificateThumbprint is null)
+        {
+            <div class="vy-wizard-footer">
+                <span class="vy-grow"></span>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CreateCertificateAsync" Disabled="_busy">Create certificate</MudButton>
+            </div>
+        }
+        else
+        {
+            <dl class="vy-fields wide">
+                <dt>Thumbprint</dt><dd class="vy-mono">@_settings.CertificateThumbprint</dd>
+                <dt>Valid until</dt>
+                <dd>
+                    @Time.Absolute(_settings.CertificateExpiresAt)
+                    @if (_settings.CertificateExpiresAt is { } exp && exp - Clock.GetUtcNow() < CertificateRotation.RenewBefore)
+                    {
+                        <span class="vy-status partial ml-2">Expires in @Protection.Age(exp - Clock.GetUtcNow())</span>
+                    }
+                </dd>
+            </dl>
+            <div class="vy-wizard-footer">
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Download" Href="/settings/microsoft/certificate.cer" Target="_blank">Download the certificate</MudButton>
+                <span class="vy-grow"></span>
+                @if (_settings.ApplicationObjectId is not null && _settings.CredentialWorks)
+                {
+                    <MudButton Variant="Variant.Outlined" OnClick="RenewAsync" Disabled="_busy" title="Vaulty adds a new certificate to the app itself and removes the old one">Renew the certificate</MudButton>
+                }
+                <MudButton Variant="Variant.Text" OnClick="CreateCertificateAsync" Disabled="_busy">Create a new certificate</MudButton>
+            </div>
+            <p class="vy-muted mb-0" style="font-size: 0.8125rem">Vaulty renews the certificate itself 60 days before it expires, once the test sign-in below has passed.</p>
+        }
+    </Section>
+
+    <Section Title="2. Register the app in Entra" Description="In your own tenant, the one that runs Vaulty, not in a customer's tenant.">
+        <ol class="vy-entra-steps mt-0">
+            <li>Sign in to the Microsoft Entra admin center and go to <strong>Identity &gt; Applications &gt; App registrations &gt; New registration</strong>.</li>
+            <li>Name: <CopyValue Value="@SetupAppSettings.DisplayName" Label="the name" />.
+                Supported account types: <strong>Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant)</strong>.</li>
+            <li>Redirect URI: platform <strong>Web</strong>, value <CopyValue Value="@RedirectUri.ToString()" Label="the redirect URI" />. Select <strong>Register</strong>.</li>
+            <li><strong>Certificates &amp; secrets &gt; Certificates &gt; Upload certificate</strong>: the file from step 1. Do not create a secret.</li>
+            <li><strong>API permissions &gt; Add a permission &gt; Microsoft Graph &gt; Delegated permissions</strong>: add
+                <CopyValue Value="Application.ReadWrite.All" /> and <CopyValue Value="AppRoleAssignment.ReadWrite.All" />.
+                Add no application permissions. Admin consent is not needed here.</li>
+            <li>Optional, recommended: <strong>Token configuration &gt; Add groups claim &gt; Directory roles</strong>. Vaulty then sees at sign-in whether the account may grant permissions, and stops before changing anything if not.</li>
+            <li>Copy the <strong>Application ID</strong> and the <strong>Directory (tenant) ID</strong> from the overview of the app.</li>
+        </ol>
+    </Section>
+
+    <Section Title="3. Enter the IDs and check" Description="Vaulty checks that its certificate signs in, then reads the registration with a test sign-in of an administrator of your tenant. The checks change nothing in Entra.">
+        <div class="vy-grid-2" style="max-width: 820px">
+            <MudTextField @bind-Value="_clientId" Label="Application ID" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000" />
+            <MudTextField @bind-Value="_homeTenantId" Label="Directory (tenant) ID" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000" />
+        </div>
+        <div class="vy-wizard-footer">
+            <span class="vy-grow"></span>
+            <MudButton Variant="Variant.Outlined" OnClick="SaveIdsAsync" Disabled="@(_busy || _settings.CertificateThumbprint is null)">Save and check the certificate</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="TestSignInAsync" Disabled="@(_busy || !_settings.CredentialWorks)">Test sign-in</MudButton>
+        </div>
+
+        <ul class="vy-check-list mt-3">
+            <li>
+                @CheckIcon(_settings.CredentialCheckedAt is null ? null : _settings.CredentialWorks, true)
+                <span><strong>Certificate signs in</strong><br /><span class="vy-muted">@(_settings.CredentialDetail ?? "Not checked yet.")</span></span>
+            </li>
+            @if (_settings.RegistrationChecks.Count == 0)
+            {
+                <li>@CheckIcon(null, true)<span><strong>App registration</strong><br /><span class="vy-muted">Run the test sign-in to check the registration.</span></span></li>
+            }
+            @foreach (var check in _settings.RegistrationChecks)
+            {
+                <li>@CheckIcon(check.Passed, check.Required)<span><strong>@check.Name</strong>@(check.Required ? "" : " (optional)")<br /><span class="vy-muted">@check.Detail</span></span></li>
+            }
+        </ul>
+        @if (_settings.RegistrationCheckedAt is { } at)
+        {
+            <p class="vy-muted mb-0 mt-2" style="font-size: 0.8125rem">Registration checked @Time.Absolute(at).</p>
+        }
+    </Section>
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+    [SupplyParameterFromQuery(Name = "run")] public Guid? RunId { get; set; }
+    [SupplyParameterFromQuery(Name = "go")] public string? Go { get; set; }
+    [SupplyParameterFromQuery(Name = "app")] public string? AppQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "home")] public string? HomeQuery { get; set; }
+
+    private SetupAppSettings _settings = new();
+    private string? _clientId;
+    private string? _homeTenantId;
+    private bool _loaded;
+    private bool _busy;
+    private bool _resumed;
+    private Guid _userId;
+    private Guid _organizationId;
+    private string _actor = "user";
+
+    private Uri RedirectUri => SetupAppService.RedirectUri(HostOptions.PublicHost, new Uri(Navigation.BaseUri));
+
+    private static RenderFragment CheckIcon(bool? passed, bool required) => passed switch
+    {
+        true => @<MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Size="Size.Small" Color="Color.Success" />,
+        false => @<MudIcon Icon="@(required ? Icons.Material.Outlined.Cancel : Icons.Material.Outlined.WarningAmber)" Size="Size.Small" Color="@(required ? Color.Error : Color.Warning)" />,
+        _ => @<MudIcon Icon="@Icons.Material.Outlined.RadioButtonUnchecked" Size="Size.Small" />,
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = (await AuthenticationState).User;
+        _userId = VaultyWebSetup.UserId(user) ?? Guid.Empty;
+        _organizationId = VaultyWebSetup.OrganizationId(user) ?? Guid.Empty;
+        _actor = $"user:{_userId}";
+        await Time.LoadAsync();
+        await LoadAsync();
+        _loaded = true;
+    }
+
+    private async Task LoadAsync()
+    {
+        _settings = await SetupApp.GetAsync();
+        _clientId ??= AppQuery ?? _settings.ClientId?.ToString();
+        _homeTenantId ??= HomeQuery ?? _settings.HomeTenantId?.ToString();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Back from "Confirm it's you": continue with what the user had asked for.
+        if (!firstRender || !RendererInfo.IsInteractive || _resumed || Go is null) return;
+        _resumed = true;
+        if (!VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return;
+        switch (Go)
+        {
+            case "certificate": await CreateCertificateAsync(); break;
+            case "signin": await TestSignInAsync(); break;
+            case "ids": await SaveIdsAsync(); break;
+            case "renew": await RenewAsync(); break;
+        }
+        StateHasChanged();
+    }
+
+    private async Task<bool> ConfirmedAsync(string go)
+    {
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/settings/microsoft?go={go}")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task CreateCertificateAsync()
+    {
+        if (_settings.CertificateThumbprint is not null && !await Dialogs.ConfirmAsync("Create a new certificate?",
+                "The current certificate stops being used. Upload the new one to the app registration and run the checks again; until then, tenants are connected with the script.",
+                "Create a new certificate", danger: true))
+        {
+            return;
+        }
+        if (!await ConfirmedAsync("certificate")) return;
+        _busy = true;
+        try
+        {
+            _settings = await SetupApp.CreateCertificateAsync(_actor);
+            Snackbar.Add("Certificate created. Download it and upload it to the app registration.", Severity.Success);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveIdsAsync()
+    {
+        if (!Guid.TryParse(_clientId?.Trim(), out var clientId) || !Guid.TryParse(_homeTenantId?.Trim(), out var homeTenantId))
+        {
+            Snackbar.Add("Enter both IDs as GUIDs, for example 00000000-0000-0000-0000-000000000000.", Severity.Warning);
+            return;
+        }
+        if (!await ConfirmedAsync($"ids&app={clientId}&home={homeTenantId}")) return;
+        _busy = true;
+        try
+        {
+            _settings = await SetupApp.SaveIdsAsync(clientId, homeTenantId, _actor);
+            Snackbar.Add(_settings.CredentialWorks ? "Saved. The certificate signs in; run the test sign-in next." : "Saved, but the certificate does not sign in yet.",
+                _settings.CredentialWorks ? Severity.Success : Severity.Warning);
+        }
+        catch (TenantException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TestSignInAsync()
+    {
+        if (!await ConfirmedAsync("signin")) return;
+        _busy = true;
+        try
+        {
+            var url = await Connection.BeginAsync(SignInPurpose.SetupCheck, _organizationId, _userId, Guid.Empty, RedirectUri, "/settings/microsoft",
+                includeRestore: false);
+            Navigation.NavigateTo(url.ToString(), forceLoad: true);
+        }
+        catch (TenantException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+            _busy = false;
+        }
+    }
+
+    private async Task RenewAsync()
+    {
+        if (!await ConfirmedAsync("renew")) return;
+        _busy = true;
+        try
+        {
+            Snackbar.Add(await SetupApp.RenewCertificateAsync(_actor), Severity.Success);
+            _settings = await SetupApp.GetAsync();
+        }
+        catch (Exception ex) when (ex is TenantException or Vaulty.Graph.Onboarding.IdentityException or Vaulty.Graph.GraphException or HttpRequestException)
+        {
+            Snackbar.Add($"The certificate was not renewed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RunFinishedAsync(SetupRunView view)
+    {
+        await LoadAsync();
+        StateHasChanged();
+    }
+}

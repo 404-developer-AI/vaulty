@@ -375,3 +375,13 @@ button.vy-stat { cursor: pointer; width: 100%; }
 /* Sub-headings inside a wizard step or a side panel. */
 .vy-wizard-h { font-size: 0.875rem; font-weight: 600; margin: 0 0 12px; }
 .vy-wizard-dialog .mud-dialog-actions { padding: 12px 24px 16px; gap: 8px; }
+
+/* Values to copy into the Entra admin center, and the progress of a set-up after a Microsoft sign-in. */
+.vy-copy { display: inline-flex; align-items: center; gap: 2px; overflow-wrap: anywhere; }
+.vy-run-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 0.875rem; }
+.vy-run-steps li { display: flex; align-items: center; gap: 8px; }
+.vy-run-steps li.current { font-weight: 600; }
+.vy-run-steps li.stopped { color: var(--vy-text-secondary); }
+.vy-check-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 0.875rem; }
+.vy-check-list li { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: start; }
+.vy-entra-steps li { margin-bottom: 10px; }

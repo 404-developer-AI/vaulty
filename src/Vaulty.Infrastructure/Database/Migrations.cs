@@ -210,3 +210,10 @@ public sealed class JobReconcileMigration : SqlMigration
 {
     protected override string ScriptName => "0016_job_reconcile";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261111000017_BrowserConnect")]
+public sealed class BrowserConnectMigration : SqlMigration
+{
+    protected override string ScriptName => "0017_browser_connect";
+}

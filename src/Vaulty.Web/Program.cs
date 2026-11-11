@@ -30,6 +30,20 @@ builder.Services.AddScoped<StorageSetupAssistant>();
 builder.Services.AddSingleton<IMailSender, SmtpMailSender>();
 builder.Services.AddScoped<CustomerService>();
 builder.Services.AddScoped<TenantService>();
+// Connecting tenants from the browser: the setup app, delegated sign-ins held in memory, and certificate rolling.
+var microsoft = new Vaulty.Graph.Onboarding.MicrosoftEndpoints(
+    new Uri(builder.Configuration["Vaulty:Microsoft:AuthorityHost"] ?? Vaulty.Graph.Onboarding.MicrosoftEndpoints.Public.AuthorityHost.ToString()),
+    new Uri(builder.Configuration["Vaulty:Microsoft:GraphBaseUrl"] ?? Vaulty.Graph.Onboarding.MicrosoftEndpoints.Public.Graph.ToString()));
+var microsoftHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(100) };
+builder.Services.AddSingleton(microsoft);
+builder.Services.AddSingleton(sp => new Vaulty.Graph.Onboarding.IdentityClient(microsoftHttp, microsoft, sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(_ => new Vaulty.Graph.Onboarding.AppRegistrationClient(microsoftHttp, microsoft));
+builder.Services.AddSingleton<SetupAppService>();
+builder.Services.AddSingleton<MicrosoftSignIns>();
+builder.Services.AddSingleton<BrowserConnection>();
+builder.Services.AddSingleton<ICredentialVerifier, MsalCredentialVerifier>();
+builder.Services.AddSingleton<CertificateRotation>();
+builder.Services.AddHostedService<CertificateRotationService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.ApiBackupStorage>();
 builder.Services.AddSingleton(sp => new Vaulty.Infrastructure.Backup.TenantKeyProvider(sp.GetRequiredService<Npgsql.NpgsqlDataSource>(),
     sp.GetRequiredService<Vaulty.Infrastructure.Secrets.IMasterKeySource>(), sp.GetRequiredService<Vaulty.Infrastructure.Browse.ApiBackupStorage>(),
@@ -92,6 +106,7 @@ app.MapStaticAssets().AllowAnonymous();
 app.MapAccountEndpoints();
 Vaulty.Web.Browse.PreviewEndpoints.MapPreviewEndpoints(app);
 Vaulty.Web.Browse.ExportEndpoints.MapExportEndpoints(app);
+Vaulty.Web.Account.MicrosoftConnectEndpoints.MapMicrosoftConnectEndpoints(app);
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode(o => o.ContentSecurityFrameAncestorsPolicy = null);
 

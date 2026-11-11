@@ -11,6 +11,15 @@ public sealed class PostgresFactAttribute : FactAttribute
     }
 }
 
+/// <summary>A theory that needs PostgreSQL; skipped like <see cref="PostgresFactAttribute"/>.</summary>
+public sealed class PostgresTheoryAttribute : TheoryAttribute
+{
+    public PostgresTheoryAttribute()
+    {
+        if (string.IsNullOrEmpty(PostgresDatabase.AdminConnectionString)) Skip = "VAULTY_TEST_PG is not set.";
+    }
+}
+
 /// <summary>
 /// A throwaway Vaulty database: the same roles, schema and default privileges as the installer creates
 /// (deploy/install/postgres/roles.sql), then every migration applied as vaulty_migrator. Each role-specific connection

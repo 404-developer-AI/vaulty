@@ -15,7 +15,11 @@ public sealed record CustomerRow(Guid Id, string Code, string Name, string[] Tag
 
 public sealed record TenantRow(Guid Id, Guid CustomerId, string CustomerName, Guid EntraTenantId, string DisplayName, string? DefaultDomain,
     Guid? ClientId, string ConsentState, DateTimeOffset? CertificateExpiresAt, DateTimeOffset? NextCertificateExpiresAt,
-    DateTimeOffset? LastHealthCheckAt, string Health, string GrantedPermissions, int ProtectedObjects);
+    DateTimeOffset? LastHealthCheckAt, string Health, string GrantedPermissions, int ProtectedObjects, Guid? ApplicationObjectId = null)
+{
+    /// <summary>Vaulty knows the app registration's object id, so it can roll the certificate itself (addKey).</summary>
+    public bool SelfRotation => ApplicationObjectId is not null;
+}
 
 /// <param name="NewestSnapshotAt">Start of the newest snapshot still kept; with retention it says when an excluded object's data goes.</param>
 /// <param name="LockedUntil">The latest Object Lock of the object's kept snapshots; nothing is removed before it.</param>
@@ -35,6 +39,10 @@ public sealed record ProtectedObjectRow(Guid Id, string Kind, string? SubKind, s
 
 public sealed record PendingConnection(Guid Id, Guid CustomerId, string DisplayName, string CertificateThumbprint, DateTimeOffset CertificateExpiresAt,
     string Script, IReadOnlyList<string> ManualSteps, string CertificatePem);
+
+/// <summary>What Vaulty learned while it created the app registration itself (browser connection).</summary>
+/// <param name="AdministratorName">User name of the administrator who signed in; written to the audit log only.</param>
+public sealed record CreatedAppDetails(Guid ApplicationObjectId, Guid? CertificateKeyId, string AdministratorName);
 
 /// <summary>Customers of an organization.</summary>
 public sealed class CustomerService(NpgsqlDataSource dataSource)
@@ -98,7 +106,7 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
 
     /// <summary>Step 1: a certificate for the new app registration (private key straight into the secrets store) and the script.</summary>
     public async Task<PendingConnection> BeginConnectAsync(Guid organizationId, Guid actor, Guid customerId, string displayName,
-        bool includeRestore = true, CancellationToken cancellationToken = default)
+        bool includeRestore = true, CancellationToken cancellationToken = default, bool browser = false)
     {
         if (string.IsNullOrWhiteSpace(displayName)) throw new TenantException("Enter a name for the tenant.");
         var id = Guid.CreateVersion7();
@@ -109,12 +117,13 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
         await session.Connection.ExecuteAsync(new CommandDefinition(
             """
             INSERT INTO vaulty.pending_tenant_connections (id, organization_id, customer_id, display_name, certificate_secret_name,
-                certificate_thumbprint, certificate_expires_at, created_by)
-            VALUES (@id, @organizationId, @customerId, @displayName, @secretName, @thumbprint, @expires, @actor)
+                certificate_thumbprint, certificate_expires_at, created_by, include_restore, method)
+            VALUES (@id, @organizationId, @customerId, @displayName, @secretName, @thumbprint, @expires, @actor, @includeRestore, @method)
             """, new { id, organizationId, customerId, displayName = displayName.Trim(), secretName, thumbprint = certificate.Thumbprint,
-                expires = certificate.NotAfter, actor }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
-        await AuditLog.WriteAsync(session, $"user:{actor}", "tenant.connect_started", $"customer:{customerId}", new { displayName },
-            cancellationToken).ConfigureAwait(false);
+                expires = certificate.NotAfter, actor, includeRestore, method = browser ? "browser" : "script" }, session.Transaction,
+            cancellationToken: cancellationToken)).ConfigureAwait(false);
+        await AuditLog.WriteAsync(session, $"user:{actor}", "tenant.connect_started", $"customer:{customerId}",
+            new { displayName, method = browser ? "browser" : "script" }, cancellationToken).ConfigureAwait(false);
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new PendingConnection(id, customerId, displayName.Trim(), certificate.Thumbprint, certificate.NotAfter,
             OnboardingScript.PowerShell(AppName, certificate, includeRestore), OnboardingScript.ManualSteps(AppName, includeRestore),
@@ -126,7 +135,7 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
     /// connected to Vaulty, by this or any other organization.
     /// </summary>
     public async Task<Guid> CompleteConnectAsync(Guid organizationId, Guid actor, Guid pendingId, Guid entraTenantId, Guid clientId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, CreatedAppDetails? created = null)
     {
         await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
         var pending = await session.Connection.QuerySingleOrDefaultAsync<(Guid CustomerId, string DisplayName, string SecretName, string Thumbprint, DateTime Expires)?>(
@@ -154,9 +163,9 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
             await session.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 INSERT INTO vaulty.tenants (id, organization_id, customer_id, entra_tenant_id, display_name, auth_mode, client_id,
-                    certificate_secret_name, certificate_thumbprint, certificate_expires_at, consent_state)
+                    certificate_secret_name, certificate_thumbprint, certificate_expires_at, consent_state, application_object_id, certificate_key_id)
                 VALUES (@tenantId, @organizationId, @customerId, @entraTenantId, @displayName, 'dedicated_app', @clientId,
-                    @secretName, @thumbprint, @expires, 'pending');
+                    @secretName, @thumbprint, @expires, 'pending', @objectId, @keyId);
                 DELETE FROM vaulty.pending_tenant_connections WHERE id = @pendingId;
                 INSERT INTO vaulty.policies (id, organization_id, tenant_id, name) VALUES (@policyId, @organizationId, @tenantId, 'Default');
                 """,
@@ -164,7 +173,7 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
                 {
                     tenantId, organizationId, pending.CustomerId, entraTenantId, pending.DisplayName, clientId,
                     secretName = CertificateSecret(tenantId), pending.Thumbprint, expires = DateTime.SpecifyKind(pending.Expires, DateTimeKind.Utc),
-                    pendingId, policyId = Guid.CreateVersion7(),
+                    pendingId, policyId = Guid.CreateVersion7(), objectId = created?.ApplicationObjectId, keyId = created?.CertificateKeyId,
                 }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         }
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
@@ -172,7 +181,10 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
             throw new TenantException("This Microsoft 365 tenant is already connected to Vaulty. Disconnect it there first.");
         }
         await AuditLog.WriteAsync(session, $"user:{actor}", "tenant.connected", $"tenant:{tenantId}",
-            new { entra_tenant_id = entraTenantId, client_id = clientId }, cancellationToken).ConfigureAwait(false);
+            created is null
+                ? new { entra_tenant_id = entraTenantId, client_id = clientId, method = "script", administrator = (string?)null }
+                : new { entra_tenant_id = entraTenantId, client_id = clientId, method = "browser", administrator = (string?)created.AdministratorName },
+            cancellationToken).ConfigureAwait(false);
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         await secrets.PruneAsync(pending.SecretName, 1, cancellationToken).ConfigureAwait(false);
         return tenantId;
@@ -252,7 +264,8 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
             "SELECT display_name, client_id FROM vaulty.tenants WHERE id = @tenantId", new { tenantId }, session.Transaction,
             cancellationToken: cancellationToken)).ConfigureAwait(false);
         var certificate = TenantCertificate.Create(tenant.DisplayName, clock);
-        var secretName = CertificateSecret(tenantId, ".next");
+        // Every certificate has its own secret name: after a rotation the current one may carry the name a ".next" would get.
+        var secretName = CertificateSecret(tenantId, $".{certificate.Thumbprint.ToLowerInvariant()}");
         await secrets.SetAsync(secretName, certificate.Pfx, $"user:{actor}", cancellationToken).ConfigureAwait(false);
         await session.Connection.ExecuteAsync(new CommandDefinition(
             """
@@ -279,8 +292,8 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
         await session.Connection.ExecuteAsync(new CommandDefinition(
             """
             UPDATE vaulty.tenants SET certificate_secret_name = next_certificate_secret_name, certificate_thumbprint = next_certificate_thumbprint,
-                   certificate_expires_at = next_certificate_expires_at, next_certificate_secret_name = NULL, next_certificate_thumbprint = NULL,
-                   next_certificate_expires_at = NULL
+                   certificate_expires_at = next_certificate_expires_at, certificate_key_id = next_certificate_key_id,
+                   next_certificate_secret_name = NULL, next_certificate_thumbprint = NULL, next_certificate_expires_at = NULL, next_certificate_key_id = NULL
              WHERE id = @tenantId AND next_certificate_secret_name IS NOT NULL
             """, new { tenantId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         await AuditLog.WriteAsync(session, $"user:{actor}", "tenant.certificate_rotated", $"tenant:{tenantId}", null, cancellationToken).ConfigureAwait(false);
@@ -353,7 +366,7 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
             SELECT t.id, t.customer_id, c.name AS customer_name, t.entra_tenant_id, t.display_name, t.default_domain, t.client_id, t.consent_state,
                    t.certificate_expires_at, t.next_certificate_expires_at, t.last_health_check_at, t.health::text AS health,
                    t.granted_permissions::text AS granted_permissions,
-                   (SELECT count(*)::int FROM vaulty.protected_objects o WHERE o.tenant_id = t.id) AS protected_objects
+                   (SELECT count(*)::int FROM vaulty.protected_objects o WHERE o.tenant_id = t.id) AS protected_objects, t.application_object_id
               FROM vaulty.tenants t JOIN vaulty.customers c ON c.id = t.customer_id
              WHERE t.state <> 'deleted' AND (@customerId IS NULL OR t.customer_id = @customerId)
              ORDER BY lower(c.name), lower(t.display_name)
@@ -397,9 +410,10 @@ public sealed class TenantService(NpgsqlDataSource dataSource, ISecretStore secr
         public string Health { get; set; } = "{}";
         public string GrantedPermissions { get; set; } = "[]";
         public int ProtectedObjects { get; set; }
+        public Guid? ApplicationObjectId { get; set; }
 
         public TenantRow ToRow() => new(Id, CustomerId, CustomerName, EntraTenantId, DisplayName, DefaultDomain, ClientId, ConsentState,
-            Utc(CertificateExpiresAt), Utc(NextCertificateExpiresAt), Utc(LastHealthCheckAt), Health, GrantedPermissions, ProtectedObjects);
+            Utc(CertificateExpiresAt), Utc(NextCertificateExpiresAt), Utc(LastHealthCheckAt), Health, GrantedPermissions, ProtectedObjects, ApplicationObjectId);
     }
 }
 

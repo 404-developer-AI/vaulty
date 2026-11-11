@@ -33,6 +33,8 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/settings/audit"] = VaultyPolicies.Permission(Permissions.AuditView),
         ["/settings/storage"] = VaultyPolicies.Permission(Permissions.StorageManage),
         ["/settings/platform"] = VaultyPolicies.Permission(Permissions.SettingsManage),
+        ["/settings/microsoft"] = VaultyPolicies.Permission(Permissions.SettingsManage),
+        ["/connect/microsoft/expired"] = null,
         ["/settings/webhooks"] = VaultyPolicies.Permission(Permissions.SettingsManage),
         ["/jobs"] = VaultyPolicies.Permission(Permissions.JobsView),
         ["/customers"] = VaultyPolicies.Permission(Permissions.CustomersView),
@@ -95,7 +97,9 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         var endpoints = app.Factory.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>().ToList();
         Assert.NotEmpty(endpoints);
         var anonymous = new[] { "/account/login", "/account/login/second-factor", "/account/passkey/request-options", "/account/passkey/login",
-            "/setup", "/error", "/healthz" };
+            "/setup", "/error", "/healthz",
+            // Microsoft redirects here without Vaulty's SameSite=Strict cookie; the one-time state identifies the user.
+            "/connect/microsoft/callback" };
         foreach (var endpoint in endpoints)
         {
             var route = "/" + endpoint.RoutePattern.RawText?.TrimStart('/');
@@ -110,6 +114,19 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
                 Assert.Contains(route, anonymous);
             }
         }
+    }
+
+    [PostgresFact]
+    public async Task The_Microsoft_callback_refuses_an_unknown_state_and_continues_with_a_same_site_navigation()
+    {
+        var response = await app.Client().GetAsync("/connect/microsoft/callback?state=forged&code=stolen");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var html = await response.Content.ReadAsStringAsync();
+        // Not a redirect: a navigation the page itself starts carries the Strict session cookie to the next page.
+        Assert.Contains("http-equiv=\"refresh\" content=\"0;url=/connect/microsoft/expired\"", html, StringComparison.Ordinal);
+        Assert.Contains("name=\"referrer\" content=\"no-referrer\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("stolen", html, StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.Redirect, (await app.Client().GetAsync("/settings/microsoft/certificate.cer")).StatusCode);
     }
 
     [PostgresFact]

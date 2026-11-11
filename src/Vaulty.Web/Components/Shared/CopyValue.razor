@@ -1,0 +1,28 @@
+@* A value to type or paste somewhere else (the Entra admin center), with a copy button. *@
+@inject IJSRuntime JS
+
+<span class="vy-copy">
+    <span class="vy-mono">@Value</span>
+    <MudIconButton Icon="@(_copied ? Icons.Material.Outlined.Check : Icons.Material.Outlined.ContentCopy)" Size="Size.Small"
+                   aria-label="@($"Copy {Label ?? Value}")" OnClick="CopyAsync" />
+</span>
+
+@code {
+    [Parameter, EditorRequired] public string Value { get; set; } = "";
+    [Parameter] public string? Label { get; set; }
+
+    private bool _copied;
+
+    private async Task CopyAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", Value);
+            _copied = true;
+        }
+        catch (JSException)
+        {
+            _copied = false;
+        }
+    }
+}
