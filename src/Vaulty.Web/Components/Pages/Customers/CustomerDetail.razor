@@ -9,6 +9,7 @@
 @inject CurrentAccess Current
 @inject DisplayTime Time
 @inject NavigationManager Navigation
+@inject Vaulty.Infrastructure.Reporting.ColumnLayoutService ColumnLayouts
 @inject Vaulty.Infrastructure.Access.AccessAdministration Administration
 
 <PageTitle>@(_customer?.Name ?? "Customer") · Vaulty</PageTitle>
@@ -83,17 +84,33 @@ else
         else
         {
             <MudSimpleTable Dense="true" Elevation="0">
-                <thead><tr><th>Tenant</th><th>Status</th><th>Consent</th><th>Protected objects</th><th>Last permission check</th></tr></thead>
+                <thead><tr>@foreach (var column in _columns) { @switch (column) { case "tenant": <th>Tenant</th> break; case "status": <th>Status</th> break; case "consent": <th>Consent</th> break; case "objects": <th>Protected objects</th> break; case "checked": <th>Last permission check</th> break; } }</tr></thead>
                 <tbody>
                     @foreach (var t in _tenants)
                     {
                         var status = _status?.Tenants.FirstOrDefault(x => x.Id == t.Id);
                         <tr>
-                            <td><a href="@($"/tenants/{t.Id}")" class="vy-cell-main">@t.DisplayName</a><div class="vy-cell-sub">@(t.DefaultDomain ?? t.EntraTenantId.ToString())</div></td>
-                            <td>@if (status is not null) { <StatusChip Status="status.Status" Reason="@status.Reason" /> }</td>
-                            <td><ConsentChip State="@t.ConsentState" /></td>
-                            <td>@(status is null || status.Counts.Count == 0 ? StatusText.Plural(t.ProtectedObjects, "protected object") : Vaulty.Infrastructure.Notifications.DigestMail.Counts(status.Counts))</td>
-                            <td class="vy-nowrap">@(t.LastHealthCheckAt is { } at ? Time.Relative(at) : "Never")</td>
+                            @foreach (var column in _columns)
+                            {
+                                @switch (column)
+                                {
+                                    case "tenant":
+                                    <td><a href="@($"/tenants/{t.Id}")" class="vy-cell-main">@t.DisplayName</a><div class="vy-cell-sub">@(t.DefaultDomain ?? t.EntraTenantId.ToString())</div></td>
+                                        break;
+                                    case "status":
+                                    <td>@if (status is not null) { <StatusChip Status="status.Status" Reason="@status.Reason" /> }</td>
+                                        break;
+                                    case "consent":
+                                    <td><ConsentChip State="@t.ConsentState" /></td>
+                                        break;
+                                    case "objects":
+                                    <td>@(status is null || status.Counts.Count == 0 ? StatusText.Plural(t.ProtectedObjects, "protected object") : Vaulty.Infrastructure.Notifications.DigestMail.Counts(status.Counts))</td>
+                                        break;
+                                    case "checked":
+                                    <td class="vy-nowrap">@(t.LastHealthCheckAt is { } at ? Time.Relative(at) : "Never")</td>
+                                        break;
+                                }
+                            }
                         </tr>
                     }
                 </tbody>
@@ -136,6 +153,7 @@ else
     private CustomerStatusRow? _status;
     private IReadOnlyList<TenantRow> _tenants = [];
     private bool _canConnect;
+    private IReadOnlyList<string> _columns = Vaulty.Core.Dashboards.ColumnCatalog.Default(Vaulty.Core.Dashboards.ColumnCatalog.Tenants);
     private bool _loaded;
     private IReadOnlyList<Vaulty.Infrastructure.Access.AccessHolder>? _holders;
 
@@ -159,6 +177,7 @@ else
         var access = await Current.GetAsync(user);
         if (!access.Allows(Permissions.CustomersView, CustomerId)) return;
         _canConnect = access.Allows(Permissions.TenantsConnect, CustomerId);
+        _columns = await ColumnLayouts.ForUserAsync(access, Vaulty.Core.Dashboards.ColumnCatalog.Tenants);
         _customer = (await CustomerService.ListAsync(organizationId)).FirstOrDefault(c => c.Id == CustomerId);
         _tenants = (await TenantService.ListAsync(organizationId, CustomerId)).Where(t => access.Scope.SeesTenant(CustomerId, t.Id)).ToList();
         _status = (await Dashboards.LoadAsync(access)).Customers.FirstOrDefault(c => c.Id == CustomerId);

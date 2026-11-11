@@ -1,0 +1,439 @@
+@page "/settings/dashboards/{Id:guid}"
+@attribute [Authorize(Policy = "perm:" + Permissions.DashboardsManage)]
+@implements IAsyncDisposable
+@using Vaulty.Core.Dashboards
+@using Vaulty.Infrastructure.Reporting
+@using Vaulty.Infrastructure.Access
+@inject DashboardDesignService Designs
+@inject AccessAdministration Administration
+@inject Vaulty.Infrastructure.Tenants.CustomerService Customers
+@inject CurrentAccess Current
+@inject IJSRuntime JS
+@inject DisplayTime Time
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>@(_name ?? "Dashboard") · Vaulty</PageTitle>
+
+@if (!_loaded)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_detail is null)
+{
+    <Notice Tone="error" Title="This dashboard does not exist">It may have been deleted. <a href="/settings/dashboards">Back to the dashboards</a>.</Notice>
+}
+else
+{
+    <PageHeader Title="@(_name ?? "Dashboard")" Lede="Drag tiles to place them, drag the corner to resize, or use the arrow keys (Shift for the size). Changes stay a draft until you publish.">
+        <Actions>
+            <MudButton Variant="Variant.Text" OnClick="ShowHistoryAsync" StartIcon="@Icons.Material.Outlined.History">History</MudButton>
+            <MudButton Variant="Variant.Text" OnClick="DiscardAsync" Disabled="@(!_detail.Summary.HasDraft && !_dirty)">Discard draft</MudButton>
+            <MudButton Variant="Variant.Outlined" OnClick="SaveDraftAsync" Disabled="@(!_dirty)">Save draft</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="PublishAsync">Publish</MudButton>
+        </Actions>
+    </PageHeader>
+
+    <Section Title="Name and roles">
+        <div class="vy-grid-2" style="max-width: 960px">
+            <MudTextField @bind-Value="_name" Label="Name" Variant="Variant.Outlined" MaxLength="80" />
+            <MudTextField @bind-Value="_description" Label="Description (optional)" Variant="Variant.Outlined" MaxLength="500" />
+        </div>
+        <div class="mt-2">
+            @foreach (var role in _roles)
+            {
+                <MudCheckBox T="bool" Value="@_roleIds.Contains(role.Id)" ValueChanged="@(on => ToggleRole(role.Id, on))" Label="@role.Name" Class="d-inline-flex mr-4" />
+            }
+        </div>
+        <div class="vy-wizard-footer">
+            <span class="vy-muted" style="font-size: 0.8125rem">Users with one of these roles see this dashboard once it is published, unless a dashboard higher in the order is linked to their role too.</span>
+            <span class="vy-grow"></span>
+            <MudButton Variant="Variant.Outlined" OnClick="SaveDetailsAsync">Save name and roles</MudButton>
+        </div>
+    </Section>
+
+    <div class="d-flex gap-4" style="align-items: flex-start">
+        <div class="vy-dash-palette" @ref="_palette" style="width: 240px; flex: none">
+            <h3 class="mt-0">Tiles</h3>
+            @foreach (var type in DashboardTiles.All)
+            {
+                <div draggable="true" data-tile-type="@type.Key" title="@type.Description">
+                    <strong>@type.Name</strong>
+                    <div class="vy-muted" style="font-size: 0.75rem">Needs @string.Join(", ", type.Permissions.Select(p => Permissions.Get(p).Label))</div>
+                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => AddTile(type.Key, null))">Add</MudButton>
+                </div>
+            }
+            <h3>Preview as</h3>
+            <MudSelect T="Guid?" Value="_previewRole" ValueChanged="@(r => _previewRole = r)" Dense="true" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true"
+                       Placeholder="Everything">
+                @foreach (var role in _roles)
+                {
+                    <MudSelectItem T="Guid?" Value="@role.Id">@role.Name</MudSelectItem>
+                }
+            </MudSelect>
+            <p class="vy-muted" style="font-size: 0.75rem">Tiles the role may not see are marked. A viewer's data is always limited to the viewer's own groups.</p>
+        </div>
+
+        <div class="vy-grow" style="min-width: 0">
+            <div class="vy-dash-fixed"><strong>Needs attention</strong> always stands here, above every dashboard, and cannot be removed.</div>
+            <div class="vy-dash-canvas" @ref="_canvas">
+                <div class="vy-dash-grid" style="min-height: @((DashboardGrid.Rows(_tiles) + 2) * 68)px">
+                    @foreach (var tile in _tiles)
+                    {
+                        var type = DashboardTiles.Find(tile.Type);
+                        var hidden = type is not null && _previewRole is { } role && !DashboardTiles.CanSee(type, p => RoleHas(role, p));
+                        <div class="vy-dash-tile @(tile.Id == _selected ? "selected" : "")" style="@($"--x: {tile.X + 1}; --y: {tile.Y + 1}; --w: {tile.W}; --h: {tile.H}")"
+                             data-tile-id="@tile.Id" data-x="@tile.X" data-y="@tile.Y" data-w="@tile.W" data-h="@tile.H" tabindex="0"
+                             aria-label="@($"{type?.Name ?? tile.Type}, column {tile.X + 1}, row {tile.Y + 1}, {tile.W} by {tile.H}")">
+                            <strong>@(tile.Settings.Title ?? type?.Name ?? tile.Type)</strong>
+                            @if (tile.Settings.Narrows)
+                            {
+                                <div class="vy-muted" style="font-size: 0.75rem">Limited to @ScopeText(tile.Settings)</div>
+                            }
+                            @if (hidden)
+                            {
+                                <div><span class="vy-status neutral">Hidden for this role</span></div>
+                            }
+                            <span data-resize aria-hidden="true"></span>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div style="width: 300px; flex: none">
+            @if (_tiles.FirstOrDefault(t => t.Id == _selected) is { } selected && DashboardTiles.Find(selected.Type) is { } selectedType)
+            {
+                <Section Title="@selectedType.Name" Description="@selectedType.Description">
+                    <MudTextField T="string" Value="@selected.Settings.Title" ValueChanged="@(v => Change(selected, s => s with { Title = Blank(v) }))" Label="Title" Variant="Variant.Outlined" MaxLength="80" />
+                    @if (selectedType.Scoped)
+                    {
+                        <MudSelect T="Guid" Label="Only these customers" MultiSelection="true" SelectedValues="@selected.Settings.CustomerIds" Variant="Variant.Outlined" Class="mt-2"
+                                   SelectedValuesChanged="@(v => Change(selected, s => s with { CustomerIds = v.ToList() }))" ToStringFunc="@CustomerName">
+                            @foreach (var customer in _customers)
+                            {
+                                <MudSelectItem T="Guid" Value="@customer.Id">@customer.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                        <MudTextField T="string" Value="@selected.Settings.Tag" ValueChanged="@(v => Change(selected, s => s with { Tag = Blank(v) }))" Label="Or customers with tag" Variant="Variant.Outlined" Class="mt-2" />
+                    }
+                    @if (selectedType.Key == DashboardTiles.Jobs)
+                    {
+                        <MudNumericField T="int?" Value="@selected.Settings.Limit" ValueChanged="@(v => Change(selected, s => s with { Limit = v }))" Label="Rows" Min="1" Max="200" Variant="Variant.Outlined" Class="mt-2" />
+                    }
+                    @if (selectedType.Key == DashboardTiles.Note)
+                    {
+                        <MudTextField T="string" Value="@selected.Settings.Text" ValueChanged="@(v => Change(selected, s => s with { Text = Blank(v) }))" Label="Text" Lines="5" Variant="Variant.Outlined" Class="mt-2" MaxLength="2000" />
+                    }
+                    <div class="vy-wizard-footer">
+                        <span class="vy-grow"></span>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => RemoveTile(selected.Id))">Remove tile</MudButton>
+                    </div>
+                </Section>
+            }
+            else
+            {
+                <p class="vy-muted">Select a tile to change its title and which customers it shows.</p>
+            }
+            @if (_problems.Count > 0)
+            {
+                <Notice Tone="error" Title="This layout cannot be saved">@string.Join(" ", _problems)</Notice>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private DashboardDetail? _detail;
+    private bool _loaded;
+    private Guid _organizationId;
+    private string? _name;
+    private string? _description;
+    private HashSet<Guid> _roleIds = [];
+    private IReadOnlyList<RoleDetail> _roles = [];
+    private IReadOnlyList<Vaulty.Infrastructure.Tenants.CustomerRow> _customers = [];
+    private IReadOnlyList<DashboardTile> _tiles = [];
+    private IReadOnlyList<DashboardTile>? _beforeDrag;
+    private readonly Stack<IReadOnlyList<DashboardTile>> _undo = new();
+    private readonly Stack<IReadOnlyList<DashboardTile>> _redo = new();
+    private bool _pullUp = true;
+    private string? _selected;
+    private bool _dirty;
+    private Guid? _previewRole;
+    private IReadOnlyList<string> _problems = [];
+    private ElementReference _canvas;
+    private ElementReference _palette;
+    private DotNetObjectReference<DashboardDesigner>? _self;
+    private IJSObjectReference? _module;
+    private IJSObjectReference? _grid;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _organizationId = VaultyWebSetup.OrganizationId((await AuthenticationState).User) ?? Guid.Empty;
+        await Time.LoadAsync();
+        _roles = await Administration.RolesAsync(_organizationId);
+        _customers = await Customers.ListAsync(_organizationId);
+        await LoadAsync();
+        _loaded = true;
+    }
+
+    private async Task LoadAsync()
+    {
+        _detail = await Designs.GetAsync(_organizationId, Id);
+        if (_detail is null) return;
+        (_name, _description) = (_detail.Summary.Name, _detail.Summary.Description);
+        _roleIds = [.. _detail.Summary.RoleIds];
+        var working = _detail.Working;
+        _pullUp = working.PullUp;
+        _tiles = working.Tiles;
+        _dirty = false;
+        _undo.Clear();
+        _redo.Clear();
+        _problems = [];
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_detail is null || _grid is not null || !RendererInfo.IsInteractive) return;
+        _self = DotNetObjectReference.Create(this);
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "/js/dashboard-grid.mjs");
+        _grid = await _module.InvokeAsync<IJSObjectReference>("attach", _canvas, _palette, _self);
+    }
+
+    private bool RoleHas(Guid roleId, string permission) => _roles.FirstOrDefault(r => r.Id == roleId)?.Permissions.Contains(permission) == true;
+
+    private string CustomerName(Guid id) => _customers.FirstOrDefault(c => c.Id == id)?.Name ?? "customer";
+
+    private string ScopeText(TileSettings settings) =>
+        string.Join(", ", settings.CustomerIds.Select(CustomerName).Concat(settings.Tag is { } tag ? [$"tag {tag}"] : []));
+
+    private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private void ToggleRole(Guid id, bool on)
+    {
+        if (on) _roleIds.Add(id);
+        else _roleIds.Remove(id);
+    }
+
+    private void Apply(IReadOnlyList<DashboardTile> tiles, bool record = true)
+    {
+        if (record)
+        {
+            _undo.Push(_tiles);
+            _redo.Clear();
+        }
+        _tiles = tiles;
+        _dirty = true;
+        _problems = DashboardRules.Validate(new DashboardLayout { PullUp = _pullUp, Tiles = _tiles });
+    }
+
+    private void AddTile(string type, GridRect? at)
+    {
+        if (DashboardTiles.Find(type) is null || _tiles.Count >= DashboardGrid.MaxTiles) return;
+        var tile = new DashboardTile { Id = DashboardGrid.NewTileId(_tiles), Type = type };
+        Apply(DashboardGrid.Add(_tiles, tile, _pullUp, at));
+        _selected = tile.Id;
+    }
+
+    private void Change(DashboardTile tile, Func<TileSettings, TileSettings> change) =>
+        Apply(_tiles.Select(t => t.Id == tile.Id ? t with { Settings = change(t.Settings) } : t).ToList());
+
+    // ---- called by the grid script ----------------------------------------------------------------------------------------
+
+    [JSInvokable]
+    public Task PreviewPlace(string id, int x, int y, int w, int h, bool resizing)
+    {
+        _beforeDrag ??= _tiles;
+        _tiles = DashboardGrid.Move(_beforeDrag, id, new GridRect(x, y, w, h), _pullUp);
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task CommitPlace(string id, int x, int y, int w, int h)
+    {
+        var start = _beforeDrag ?? _tiles;
+        _beforeDrag = null;
+        _tiles = start;
+        Apply(DashboardGrid.Move(start, id, new GridRect(x, y, w, h), _pullUp));
+        _selected = id;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task CancelPlace()
+    {
+        if (_beforeDrag is not null) _tiles = _beforeDrag;
+        _beforeDrag = null;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task SelectTile(string id)
+    {
+        _selected = id;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task KeyPlace(string id, int dx, int dy, bool resize)
+    {
+        if (_tiles.FirstOrDefault(t => t.Id == id) is not { } tile) return Task.CompletedTask;
+        var target = resize ? tile.Rect with { W = tile.W + dx, H = tile.H + dy } : tile.Rect with { X = tile.X + dx, Y = tile.Y + dy };
+        Apply(DashboardGrid.Move(_tiles, id, target, _pullUp));
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task RemoveTile(string id)
+    {
+        var rest = _tiles.Where(t => t.Id != id).ToList();
+        Apply(_pullUp ? DashboardGrid.Compact(rest) : rest);
+        if (_selected == id) _selected = null;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task DropType(string type, int x, int y)
+    {
+        AddTile(type, new GridRect(x, y, 1, 1));
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task Undo()
+    {
+        if (_undo.TryPop(out var previous))
+        {
+            _redo.Push(_tiles);
+            Apply(previous, record: false);
+            StateHasChanged();
+        }
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task Redo()
+    {
+        if (_redo.TryPop(out var next))
+        {
+            _undo.Push(_tiles);
+            Apply(next, record: false);
+            StateHasChanged();
+        }
+        return Task.CompletedTask;
+    }
+
+    // ---- saving -------------------------------------------------------------------------------------------------------
+
+    private async Task<UserAccess> ActorAsync()
+    {
+        Current.Invalidate();
+        return await Current.GetAsync((await AuthenticationState).User);
+    }
+
+    private async Task<bool> RunAsync(Func<Task> action, string done)
+    {
+        try
+        {
+            await action();
+            Snackbar.Add(done, Severity.Success);
+            return true;
+        }
+        catch (DesignException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+            return false;
+        }
+    }
+
+    private Task SaveDetailsAsync() => RunAsync(async () =>
+    {
+        await Designs.UpdateAsync(await ActorAsync(), Id, _detail!.Summary.Version, _name ?? "", _description, _roleIds.ToList());
+        await ReloadKeepingTilesAsync();
+    }, "Saved.");
+
+    private async Task SaveDraftAsync()
+    {
+        if (await RunAsync(async () =>
+            {
+                await Designs.SaveDraftAsync(await ActorAsync(), Id, _detail!.Summary.Version, new DashboardLayout { PullUp = _pullUp, Tiles = _tiles });
+            }, "Draft saved. Publish it to show it."))
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task PublishAsync()
+    {
+        if (_dirty && !await RunAsync(async () =>
+                await Designs.SaveDraftAsync(await ActorAsync(), Id, _detail!.Summary.Version, new DashboardLayout { PullUp = _pullUp, Tiles = _tiles }), "Draft saved."))
+        {
+            return;
+        }
+        await LoadAsync();
+        if (!_detail!.Summary.HasDraft)
+        {
+            Snackbar.Add("There is no change to publish.", Severity.Info);
+            return;
+        }
+        if (await RunAsync(async () => await Designs.PublishAsync(await ActorAsync(), Id, _detail.Summary.Version), "Published. Users with its roles see it now."))
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task DiscardAsync()
+    {
+        if (!await Dialogs.ConfirmAsync("Discard the draft?", "The dashboard goes back to what is published.", "Discard draft", danger: true)) return;
+        if (_detail!.Summary.HasDraft)
+        {
+            await RunAsync(async () => await Designs.DiscardDraftAsync(await ActorAsync(), Id, _detail.Summary.Version), "Draft discarded.");
+        }
+        await LoadAsync();
+    }
+
+    private async Task ReloadKeepingTilesAsync()
+    {
+        var tiles = _tiles;
+        var dirty = _dirty;
+        _detail = await Designs.GetAsync(_organizationId, Id);
+        (_tiles, _dirty) = (tiles, dirty);
+    }
+
+    private async Task ShowHistoryAsync()
+    {
+        var versions = await Designs.VersionsAsync(_organizationId, Id);
+        var parameters = new DialogParameters<DashboardHistoryDialog> { { d => d.Versions, versions } };
+        var dialog = await Dialogs.ShowAsync<DashboardHistoryDialog>("Published versions", parameters, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        if (await dialog.Result is not { Canceled: false, Data: int version }) return;
+        if (await RunAsync(async () => await Designs.RestoreVersionAsync(await ActorAsync(), Id, _detail!.Summary.Version, version),
+                $"Version {version} is now the draft. Publish it to make it current again."))
+        {
+            await LoadAsync();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_grid is not null) await _grid.InvokeVoidAsync("dispose");
+            if (_grid is not null) await _grid.DisposeAsync();
+            if (_module is not null) await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        _self?.Dispose();
+    }
+}

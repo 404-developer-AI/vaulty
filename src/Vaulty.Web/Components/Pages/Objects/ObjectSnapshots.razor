@@ -10,6 +10,7 @@
 @inject DashboardService Dashboards
 @inject IWorkflowStarter Workflows
 @inject CurrentAccess Current
+@inject Vaulty.Infrastructure.Reporting.ColumnLayoutService ColumnLayouts
 @inject DisplayTime Time
 @inject ISnackbar Snackbar
 
@@ -104,33 +105,47 @@ else
         else
         {
             <MudSimpleTable Dense="true" Elevation="0">
-                <thead><tr><th>Snapshot</th><th>Status</th><th>Items</th><th>Verified</th><th><span class="vy-sr-only">Actions</span></th></tr></thead>
+                <thead><tr>@foreach (var column in _columns) { @switch (column) { case "snapshot": <th>Snapshot</th> break; case "status": <th>Status</th> break; case "items": <th>Items</th> break; case "verified": <th>Verified</th> break; } }<th><span class="vy-sr-only">Actions</span></th></tr></thead>
                 <tbody>
                     @foreach (var snapshot in _snapshots.Take(_showAll ? int.MaxValue : 20))
                     {
                         <tr>
-                            <td class="vy-nowrap"><a href="@($"/objects/{ObjectId}/snapshots/{snapshot.Id}")" class="vy-cell-main">@Time.Absolute(snapshot.StartedAt)</a></td>
-                            <td>
-                                @if (snapshot.State == "partial")
+                            @foreach (var column in _columns)
+                            {
+                                @switch (column)
                                 {
-                                    <span class="vy-status partial">Partial: @snapshot.Exceptions missing</span>
+                                    case "snapshot":
+                                    <td class="vy-nowrap"><a href="@($"/objects/{ObjectId}/snapshots/{snapshot.Id}")" class="vy-cell-main">@Time.Absolute(snapshot.StartedAt)</a></td>
+                                        break;
+                                    case "status":
+                                    <td>
+                                        @if (snapshot.State == "partial")
+                                        {
+                                            <span class="vy-status partial">Partial: @snapshot.Exceptions missing</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="vy-status succeeded">Succeeded</span>
+                                        }
+                                    </td>
+                                        break;
+                                    case "items":
+                                    <td>@ObjectLabels.Counts(snapshot.Counts)</td>
+                                        break;
+                                    case "verified":
+                                    <td class="vy-nowrap">
+                                        @if (snapshot.VerifiedAt is { } v)
+                                        {
+                                            <span title="Re-read from storage and matched its hashes"><MudIcon Icon="@Icons.Material.Outlined.VerifiedUser" Style="font-size: 16px; vertical-align: -3px; color: var(--vy-primary)" /> @Time.Relative(v)</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="vy-muted">Not yet</span>
+                                        }
+                                    </td>
+                                        break;
                                 }
-                                else
-                                {
-                                    <span class="vy-status succeeded">Succeeded</span>
-                                }
-                            </td>
-                            <td>@ObjectLabels.Counts(snapshot.Counts)</td>
-                            <td class="vy-nowrap">
-                                @if (snapshot.VerifiedAt is { } v)
-                                {
-                                    <span title="Re-read from storage and matched its hashes"><MudIcon Icon="@Icons.Material.Outlined.VerifiedUser" Style="font-size: 16px; vertical-align: -3px; color: var(--vy-primary)" /> @Time.Relative(v)</span>
-                                }
-                                else
-                                {
-                                    <span class="vy-muted">Not yet</span>
-                                }
-                            </td>
+                            }
                             <td class="vy-actions-cell"><MudButton Size="Size.Small" Variant="Variant.Text" Href="@($"/objects/{ObjectId}/snapshots/{snapshot.Id}")">Browse</MudButton></td>
                         </tr>
                     }
@@ -177,6 +192,7 @@ else
     private bool _canRun;
     private bool _busy;
     private bool _showAll;
+    private IReadOnlyList<string> _columns = Vaulty.Core.Dashboards.ColumnCatalog.Default(Vaulty.Core.Dashboards.ColumnCatalog.Snapshots);
     private bool _loaded;
 
     protected override async Task OnParametersSetAsync()
@@ -195,6 +211,7 @@ else
     {
         await Time.LoadAsync();
         _access = await Current.GetAsync();
+        _columns = await ColumnLayouts.ForUserAsync(_access, Vaulty.Core.Dashboards.ColumnCatalog.Snapshots);
         _object = await Browser.ObjectAsync(_access, ObjectId);
         if (_object is null) return;
         _canRun = _access.Allows(Permissions.BackupsRun, _object.CustomerId);

@@ -7,6 +7,20 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- Dashboards per role (Settings > Dashboards). A user sees the first published dashboard in the order that is linked to
+  one of their roles, or the default; "Needs attention" always stands above it and is never a tile. Tiles: protection
+  summary, open alerts, customers and tenants, recent jobs and a note, each needing its own permission and each
+  optionally narrowed to some customers or a tag; the data is the viewer's own, read in the viewer's session. The
+  designer places tiles on a 12-column grid by dragging, resizing or with the keyboard, with undo; changes stay a draft
+  until published, the last 20 published versions are kept and can come back as the draft, and a dashboard can be
+  previewed as a role, exported and imported (JSON, at most 256 KB). A change made meanwhile by someone else is refused.
+- Column layouts per role (Settings > Column layouts) for the lists of customers, tenants, protected objects, snapshots
+  and jobs: which columns show and in which order. The name and status of a row always show, and a column that needs a
+  permission shows only to viewers who hold it.
+- New permissions "Manage dashboards" (`dashboards.manage`) and "Manage column layouts" (`columns.manage`), held by the
+  built-in Organization admin role. Every change of a dashboard or column layout is in the audit log.
+- Only a user who sees every customer can add a customer; a new customer is in no group yet.
+
 - Roles decide what a user may do, groups decide where. A group is every customer (minus what it excludes) or the
   customers, single tenants and customer tags it includes; excludes win within a group, a user sees the union of their
   groups, and a user without a group sees no customer. A tag rule follows the tag, also for customers added later. The

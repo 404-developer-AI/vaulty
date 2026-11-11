@@ -10,6 +10,7 @@
 @inject CurrentAccess Current
 @inject DisplayTime Time
 @inject TimeProvider Clock
+@inject Vaulty.Infrastructure.Reporting.ColumnLayoutService ColumnLayouts
 @inject IDialogService Dialogs
 @inject ISnackbar Snackbar
 
@@ -55,75 +56,101 @@
 
     <MudTable Items="_jobs" Dense="true" Hover="true" Elevation="0" Loading="_loading" LoadingProgressColor="Color.Primary" Breakpoint="Breakpoint.None" HorizontalScrollbar="true">
         <HeaderContent>
-            <MudTh>Type</MudTh>
-            <MudTh>Status</MudTh>
-            <MudTh>Target</MudTh>
-            <MudTh>Started</MudTh>
-            <MudTh>Finished</MudTh>
-            <MudTh>Result</MudTh>
-            <MudTh>Request ID</MudTh>
+            @foreach (var column in _columns)
+            {
+                @switch (column)
+                {
+                    case "type": <MudTh>Type</MudTh> break;
+                    case "status": <MudTh>Status</MudTh> break;
+                    case "target": <MudTh>Target</MudTh> break;
+                    case "started": <MudTh>Started</MudTh> break;
+                    case "finished": <MudTh>Finished</MudTh> break;
+                    case "result": <MudTh>Result</MudTh> break;
+                    case "request_id": <MudTh>Request ID</MudTh> break;
+                }
+            }
             <MudTh><span class="vy-sr-only">Actions</span></MudTh>
         </HeaderContent>
         <RowTemplate>
-            <MudTd>@StatusText.JobKind(context.Kind)</MudTd>
-            <MudTd><span class="vy-status @StatusText.JobTone(context.State)">@StatusText.JobLabel(context.State)</span></MudTd>
-            <MudTd>
-                @if (context.ObjectId is { } objectId && context.ObjectName is not null)
+            @foreach (var column in _columns)
+            {
+                @switch (column)
                 {
-                    <a href="@($"/objects/{objectId}")">@context.ObjectName</a>
-                    @if (context.TenantName is not null)
-                    {
-                        <div class="vy-cell-sub">@context.TenantName</div>
-                    }
-                }
-                else if (context.TenantId is { } tenantId && context.TenantName is not null)
-                {
-                    <a href="@($"/tenants/{tenantId}")">@context.TenantName</a>
-                }
-            </MudTd>
-            <MudTd Class="vy-nowrap">@Time.Relative(context.StartedAt ?? context.CreatedAt)</MudTd>
-            <MudTd Class="vy-nowrap">@Time.Relative(context.FinishedAt)</MudTd>
-            <MudTd Style="min-width: 320px">
-                @if (context.State == "running" && context.Kind == "backup")
-                {
-                    var now = Clock.GetUtcNow();
-                    var progress = context.Progress(now);
-                    <div class="vy-progress">
-                        @if (progress is { } p)
+                    case "type":
+                    <MudTd>@StatusText.JobKind(context.Kind)</MudTd>
+                        break;
+                    case "status":
+                    <MudTd><span class="vy-status @StatusText.JobTone(context.State)">@StatusText.JobLabel(context.State)</span></MudTd>
+                        break;
+                    case "target":
+                    <MudTd>
+                        @if (context.ObjectId is { } objectId && context.ObjectName is not null)
                         {
-                            <div class="vy-progress-bar">
-                                <MudProgressLinear Value="@(p.Fraction * 100)" Color="Color.Primary" Rounded="true" Size="Size.Large" aria-label="Progress" />
-                                <strong class="vy-progress-percent">@((int)(p.Fraction * 100))%</strong>
-                            </div>
-                            <div>@DoneText(context)</div>
-                            <div class="vy-muted">
-                                @if (p.Remaining is { } left)
+                            <a href="@($"/objects/{objectId}")">@context.ObjectName</a>
+                            @if (context.TenantName is not null)
+                            {
+                                <div class="vy-cell-sub">@context.TenantName</div>
+                            }
+                        }
+                        else if (context.TenantId is { } tenantId && context.TenantName is not null)
+                        {
+                            <a href="@($"/tenants/{tenantId}")">@context.TenantName</a>
+                        }
+                    </MudTd>
+                        break;
+                    case "started":
+                    <MudTd Class="vy-nowrap">@Time.Relative(context.StartedAt ?? context.CreatedAt)</MudTd>
+                        break;
+                    case "finished":
+                    <MudTd Class="vy-nowrap">@Time.Relative(context.FinishedAt)</MudTd>
+                        break;
+                    case "result":
+                    <MudTd Style="min-width: 320px">
+                        @if (context.State == "running" && context.Kind == "backup")
+                        {
+                            var now = Clock.GetUtcNow();
+                            var progress = context.Progress(now);
+                            <div class="vy-progress">
+                                @if (progress is { } p)
                                 {
-                                    <text>@(left.TotalMinutes < 1 ? "Less than a minute" : $"About {Duration(left)}") left · done around @Time.Ahead(now + left)</text>
+                                    <div class="vy-progress-bar">
+                                        <MudProgressLinear Value="@(p.Fraction * 100)" Color="Color.Primary" Rounded="true" Size="Size.Large" aria-label="Progress" />
+                                        <strong class="vy-progress-percent">@((int)(p.Fraction * 100))%</strong>
+                                    </div>
+                                    <div>@DoneText(context)</div>
+                                    <div class="vy-muted">
+                                        @if (p.Remaining is { } left)
+                                        {
+                                            <text>@(left.TotalMinutes < 1 ? "Less than a minute" : $"About {Duration(left)}") left · done around @Time.Ahead(now + left)</text>
+                                        }
+                                        else
+                                        {
+                                            <text>Estimating the time left…</text>
+                                        }
+                                    </div>
                                 }
                                 else
                                 {
-                                    <text>Estimating the time left…</text>
+                                    @* An incremental run learns its changes as it goes, and a run started before sizes were recorded has none:
+                                       there is no total to measure against, so no guess. *@
+                                    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Rounded="true" Size="Size.Medium" aria-label="Progress" />
+                                    <div>@ItemsText(context.ItemsSoFar ?? 0) items processed@(context.BytesSoFar is > 0 ? $" · {Bytes(context.BytesSoFar.Value)}" : "")</div>
+                                    <div class="vy-muted">Total not known for this run, so no time estimate.</div>
                                 }
                             </div>
                         }
-                        else
+                        @Counts(context.ResultCounts)
+                        @if (!string.IsNullOrEmpty(context.Error))
                         {
-                            @* An incremental run learns its changes as it goes, and a run started before sizes were recorded has none:
-                               there is no total to measure against, so no guess. *@
-                            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Rounded="true" Size="Size.Medium" aria-label="Progress" />
-                            <div>@ItemsText(context.ItemsSoFar ?? 0) items processed@(context.BytesSoFar is > 0 ? $" · {Bytes(context.BytesSoFar.Value)}" : "")</div>
-                            <div class="vy-muted">Total not known for this run, so no time estimate.</div>
+                            <div class="vy-state-reason" style="color: var(--vy-error-text)">@context.Error</div>
                         }
-                    </div>
+                    </MudTd>
+                        break;
+                    case "request_id":
+                    <MudTd><code class="vy-request-id" title="@context.WorkflowId">@context.Id</code></MudTd>
+                        break;
                 }
-                @Counts(context.ResultCounts)
-                @if (!string.IsNullOrEmpty(context.Error))
-                {
-                    <div class="vy-state-reason" style="color: var(--vy-error-text)">@context.Error</div>
-                }
-            </MudTd>
-            <MudTd><code class="vy-request-id" title="@context.WorkflowId">@context.Id</code></MudTd>
+            }
             <MudTd Class="vy-actions-cell">
                 @if (context.Kind is "restore" or "export" && context.ObjectId is not null)
                 {
@@ -169,6 +196,7 @@
     private Guid? _tenant;
     private bool _busy;
     private bool _loading = true;
+    private IReadOnlyList<string> _columns = Vaulty.Core.Dashboards.ColumnCatalog.Default(Vaulty.Core.Dashboards.ColumnCatalog.Jobs);
     private string? _error;
     private PeriodicTimer? _refresh;
     private Task? _refreshing;
@@ -181,6 +209,7 @@
         if (KindQuery is not null && Kinds.Contains(KindQuery)) _kind = KindQuery;
         if (StateQuery is not null && States.Contains(StateQuery)) _state = StateQuery;
         var access = await Current.GetAsync();
+        _columns = await ColumnLayouts.ForUserAsync(access, Vaulty.Core.Dashboards.ColumnCatalog.Jobs);
         _tenants = (await Tenants.ListAsync(access.OrganizationId)).Where(t => access.AllowsTenant(Permissions.CustomersView, t.CustomerId, t.Id))
             .OrderBy(t => t.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
         await LoadAsync(reset: true);

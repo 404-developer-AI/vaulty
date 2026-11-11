@@ -10,6 +10,10 @@
 @inject CurrentAccess Current
 @inject DisplayTime Time
 @inject ISnackbar Snackbar
+@inject DashboardDesignService Designs
+@inject JobsService JobsService
+@inject Vaulty.Infrastructure.Tenants.CustomerService Customers
+@using Vaulty.Core.Dashboards
 
 <PageTitle>Dashboard · Vaulty</PageTitle>
 
@@ -47,20 +51,6 @@ else if (_dashboard.Customers.Count == 0)
 }
 else
 {
-    var totals = _dashboard.Totals;
-    var counted = totals.Where(t => t.Key != ProtectionStatus.Excluded).Sum(t => t.Value);
-    var attentionCustomers = _dashboard.Customers.Count(c => NeedsAttention(c.Status));
-    <div class="vy-stats" aria-label="Protection summary">
-        <StatTile Label="Protected" Tone="protected" Value="@($"{N(totals.GetValueOrDefault(ProtectionStatus.Protected))} of {N(counted)}")"
-                  Caption="Protected objects with a fresh snapshot" />
-        <StatTile Label="Failed" Tone="failed" Value="@N(totals.GetValueOrDefault(ProtectionStatus.Failed))" Caption="No current snapshot; act now"
-                  Href="@(totals.GetValueOrDefault(ProtectionStatus.Failed) > 0 ? "#attention" : null)" />
-        <StatTile Label="Partial" Tone="partial" Value="@N(totals.GetValueOrDefault(ProtectionStatus.Partial))" Caption="Snapshot misses items, each with a reason"
-                  Href="@(totals.GetValueOrDefault(ProtectionStatus.Partial) > 0 ? "#attention" : null)" />
-        <StatTile Label="Customers needing attention" Tone="@(attentionCustomers > 0 ? "partial" : "protected")"
-                  Value="@($"{N(attentionCustomers)} of {N(_dashboard.Customers.Count)}")" Caption="A customer takes the worst state of its tenants" />
-    </div>
-
     <div id="attention"></div>
     <Section Title="Needs attention" Flush="@(_attention.Count > 0)">
         <DescriptionContent>
@@ -116,135 +106,201 @@ else
         </ChildContent>
     </Section>
 
-    @if (_dashboard.OpenAlerts.Count > 0)
-    {
-        <Section Title="Open alerts" Flush="true">
-            <DescriptionContent>Alerts stay open until the problem is gone or you resolve them; a resolved alert comes back if the problem happens again.</DescriptionContent>
-            <ChildContent>
-                <MudSimpleTable Dense="true" Elevation="0">
-                    <thead><tr><th>Severity</th><th>Alert</th><th>Raised</th><th class="vy-actions-cell"><span class="vy-sr-only">Actions</span></th></tr></thead>
-                    <tbody>
-                        @foreach (var alert in _dashboard.OpenAlerts.Take(_showAllAlerts ? 200 : 8))
-                        {
-                            <tr>
-                                <td><Chip Tone="@StatusText.AlertTone(alert.Severity)" Text="@StatusText.AlertLabel(alert.Severity)" /></td>
-                                <td style="min-width: 320px">@alert.Message</td>
-                                <td class="vy-nowrap vy-muted">@Time.Relative(alert.CreatedAt)</td>
-                                <td class="vy-actions-cell">
-                                    @if (AlertTarget(alert) is { } target)
-                                    {
-                                        <MudButton Size="Size.Small" Variant="Variant.Text" Href="@target.Href">@target.Label</MudButton>
-                                    }
-                                    @if (CanResolve(alert))
-                                    {
-                                        <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => ResolveAsync(alert))">Resolve</MudButton>
-                                    }
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </MudSimpleTable>
-                @if (_dashboard.OpenAlerts.Count > 8 && !_showAllAlerts)
+    <div class="vy-dash-grid">
+        @foreach (var (tile, type) in _tiles)
+        {
+            var d = Scoped(tile.Settings);
+            var totals = d.Totals;
+            var counted = totals.Where(t => t.Key != ProtectionStatus.Excluded).Sum(t => t.Value);
+            var attentionCustomers = d.Customers.Count(c => NeedsAttention(c.Status));
+            <div class="vy-dash-tile" style="@TileStyle(tile)" data-tile="@type.Key">
+                @switch (type.Key)
                 {
-                    <div class="pa-3"><MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _showAllAlerts = true)">Show all @_dashboard.OpenAlerts.Count alerts</MudButton></div>
-                }
-            </ChildContent>
-        </Section>
-    }
-
-    <Section Title="Customers" Flush="true">
-        <DescriptionContent>A tenant takes the worst state of its protected objects, a customer the worst of its tenants. Customers that need attention are open.</DescriptionContent>
-        <Actions>
-            <div class="vy-seg" role="group" aria-label="Which customers to show">
-                <button type="button" aria-pressed="@(_onlyAttention ? "false" : "true")" @onclick="@(() => _onlyAttention = false)">All @_dashboard.Customers.Count</button>
-                <button type="button" aria-pressed="@(_onlyAttention ? "true" : "false")" @onclick="@(() => _onlyAttention = true)">Needs attention @attentionCustomers</button>
-            </div>
-            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="ExpandAll">Expand all</MudButton>
-            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="CollapseAll">Collapse all</MudButton>
-        </Actions>
-        <ChildContent>
-            @{ var shown = _dashboard.Customers.Where(c => !_onlyAttention || NeedsAttention(c.Status)).ToList(); }
-            @if (shown.Count == 0)
-            {
-                <EmptyState Title="No customer needs attention" Icon="@Icons.Material.Outlined.VerifiedUser" Good="true" Compact="true" />
-            }
-            <ul class="vy-rollup">
-                @foreach (var customer in shown)
-                {
-                    var open = _open.Contains(customer.Id);
-                    <li>
-                        <div class="vy-rollup-row">
-                            <button type="button" class="vy-rollup-toggle" aria-expanded="@(open ? "true" : "false")" aria-label="@($"{(open ? "Collapse" : "Expand")} {customer.Name}")"
-                                    @onclick="@(() => Toggle(customer.Id))">
-                                <MudIcon Icon="@(open ? Icons.Material.Outlined.ExpandMore : Icons.Material.Outlined.ChevronRight)" Size="Size.Small" />
-                            </button>
-                            <div class="d-flex align-center gap-3" style="min-width: 0">
-                                <StatusChip Status="customer.Status" />
-                                <a href="@($"/customers/{customer.Id}")" class="vy-cell-main">@customer.Code · @customer.Name</a>
+                    case DashboardTiles.Summary:
+                            <div class="vy-stats" aria-label="Protection summary">
+                                <StatTile Label="Protected" Tone="protected" Value="@($"{N(totals.GetValueOrDefault(ProtectionStatus.Protected))} of {N(counted)}")"
+                                          Caption="Protected objects with a fresh snapshot" />
+                                <StatTile Label="Failed" Tone="failed" Value="@N(totals.GetValueOrDefault(ProtectionStatus.Failed))" Caption="No current snapshot; act now"
+                                          Href="@(totals.GetValueOrDefault(ProtectionStatus.Failed) > 0 ? "#attention" : null)" />
+                                <StatTile Label="Partial" Tone="partial" Value="@N(totals.GetValueOrDefault(ProtectionStatus.Partial))" Caption="Snapshot misses items, each with a reason"
+                                          Href="@(totals.GetValueOrDefault(ProtectionStatus.Partial) > 0 ? "#attention" : null)" />
+                                <StatTile Label="Customers needing attention" Tone="@(attentionCustomers > 0 ? "partial" : "protected")"
+                                          Value="@($"{N(attentionCustomers)} of {N(d.Customers.Count)}")" Caption="A customer takes the worst state of its tenants" />
                             </div>
-                            <span class="vy-muted vy-hide-narrow">@StatusText.Plural(customer.Tenants.Count, "tenant")</span>
-                            <span class="vy-muted vy-hide-narrow">@CountText(customer.Counts)</span>
-                            <span class="vy-actions-cell vy-hide-narrow"><MudButton Size="Size.Small" Variant="Variant.Text" Href="@($"/customers/{customer.Id}/report")" StartIcon="@Icons.Material.Outlined.Description">Report</MudButton></span>
-                        </div>
-                        @if (open)
+                        break;
+                    case DashboardTiles.Alerts:
+                        @if (d.OpenAlerts.Count == 0)
                         {
-                            @foreach (var tenant in customer.Tenants)
-                            {
-                                var tenantOpen = _open.Contains(tenant.Id);
-                                <div class="vy-rollup-row tenant">
-                                    <button type="button" class="vy-rollup-toggle" aria-expanded="@(tenantOpen ? "true" : "false")" aria-label="@($"{(tenantOpen ? "Collapse" : "Expand")} {tenant.Name}")"
-                                            @onclick="@(() => Toggle(tenant.Id))">
-                                        <MudIcon Icon="@(tenantOpen ? Icons.Material.Outlined.ExpandMore : Icons.Material.Outlined.ChevronRight)" Size="Size.Small" />
-                                    </button>
-                                    <div class="d-flex align-center gap-3" style="min-width: 0">
-                                        <StatusChip Status="tenant.Status" Reason="@tenant.Reason" />
-                                        <a href="@($"/tenants/{tenant.Id}")">@tenant.Name</a>
-                                    </div>
-                                    <span class="vy-muted vy-hide-narrow">@StatusText.Plural(tenant.Objects.Count, "protected object")</span>
-                                    <span class="vy-muted vy-hide-narrow">@CountText(tenant.Counts)</span>
-                                    <span class="vy-hide-narrow"></span>
-                                </div>
-                                @if (tenantOpen)
-                                {
-                                    <div class="vy-rollup-objects">
-                                        @if (tenant.Objects.Count == 0)
-                                        {
-                                            <EmptyState Title="No protected objects yet" Compact="true">
-                                                <ChildContent>Open the tenant to check its permissions and find its mailboxes and OneDrives.</ChildContent>
-                                                <Actions><MudButton Size="Size.Small" Variant="Variant.Outlined" Href="@($"/tenants/{tenant.Id}")">Open the tenant</MudButton></Actions>
-                                            </EmptyState>
-                                        }
-                                        else
-                                        {
-                                            <MudSimpleTable Dense="true" Elevation="0">
-                                                <thead><tr><th>Protected object</th><th>Status</th><th>Latest snapshot</th><th class="vy-num">Items</th></tr></thead>
-                                                <tbody>
-                                                    @foreach (var o in tenant.Objects.OrderByDescending(o => Rank(o.Status)).Take(Expanded(tenant.Id) ? int.MaxValue : 10))
-                                                    {
-                                                        <tr>
-                                                            <td><a href="@($"/objects/{o.Id}")">@o.Name</a><div class="vy-cell-sub">@StatusText.ObjectKind(o.Kind, o.SubKind)</div></td>
-                                                            <td><StatusChip Status="o.Status" Reason="@o.Reason" ShowReason="@(o.Status is ProtectionStatus.Failed)"
-                                                                            Text="@(o.Status == ProtectionStatus.Partial ? $"Partial: {o.Missing} missing" : null)" /></td>
-                                                            <td class="vy-nowrap">@(o.LastSnapshotAt is { } at ? Time.Relative(at) : "None yet")</td>
-                                                            <td class="vy-num">@(o.Items is { } n ? N(n) : "")</td>
-                                                        </tr>
-                                                    }
-                                                </tbody>
-                                            </MudSimpleTable>
-                                            @if (tenant.Objects.Count > 10 && !Expanded(tenant.Id))
-                                            {
-                                                <MudButton Size="Size.Small" Variant="Variant.Text" Class="mt-1" OnClick="@(() => _expanded.Add(tenant.Id))">Show all @tenant.Objects.Count protected objects</MudButton>
-                                            }
-                                        }
-                                    </div>
-                                }
-                            }
+                            <Section Title="@(tile.Settings.Title ?? "Open alerts")"><EmptyState Title="No open alerts" Icon="@Icons.Material.Outlined.NotificationsNone" Good="true" Compact="true" /></Section>
                         }
-                    </li>
+                        else
+                        {
+                            <Section Title="@(tile.Settings.Title ?? "Open alerts")" Flush="true">
+                                <DescriptionContent>Alerts stay open until the problem is gone or you resolve them; a resolved alert comes back if the problem happens again.</DescriptionContent>
+                                <ChildContent>
+                                    <MudSimpleTable Dense="true" Elevation="0">
+                                        <thead><tr><th>Severity</th><th>Alert</th><th>Raised</th><th class="vy-actions-cell"><span class="vy-sr-only">Actions</span></th></tr></thead>
+                                        <tbody>
+                                            @foreach (var alert in d.OpenAlerts.Take(_showAllAlerts ? 200 : 8))
+                                            {
+                                                <tr>
+                                                    <td><Chip Tone="@StatusText.AlertTone(alert.Severity)" Text="@StatusText.AlertLabel(alert.Severity)" /></td>
+                                                    <td style="min-width: 320px">@alert.Message</td>
+                                                    <td class="vy-nowrap vy-muted">@Time.Relative(alert.CreatedAt)</td>
+                                                    <td class="vy-actions-cell">
+                                                        @if (AlertTarget(alert) is { } target)
+                                                        {
+                                                            <MudButton Size="Size.Small" Variant="Variant.Text" Href="@target.Href">@target.Label</MudButton>
+                                                        }
+                                                        @if (CanResolve(alert))
+                                                        {
+                                                            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => ResolveAsync(alert))">Resolve</MudButton>
+                                                        }
+                                                    </td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </MudSimpleTable>
+                                    @if (d.OpenAlerts.Count > 8 && !_showAllAlerts)
+                                    {
+                                        <div class="pa-3"><MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _showAllAlerts = true)">Show all @d.OpenAlerts.Count alerts</MudButton></div>
+                                    }
+                                </ChildContent>
+                            </Section>
+                        }
+                        break;
+                    case DashboardTiles.Rollup:
+                        <Section Title="@(tile.Settings.Title ?? "Customers")" Flush="true">
+                            <DescriptionContent>A tenant takes the worst state of its protected objects, a customer the worst of its tenants. Customers that need attention are open.</DescriptionContent>
+                            <Actions>
+                                <div class="vy-seg" role="group" aria-label="Which customers to show">
+                                    <button type="button" aria-pressed="@(_onlyAttention ? "false" : "true")" @onclick="@(() => _onlyAttention = false)">All @d.Customers.Count</button>
+                                    <button type="button" aria-pressed="@(_onlyAttention ? "true" : "false")" @onclick="@(() => _onlyAttention = true)">Needs attention @attentionCustomers</button>
+                                </div>
+                                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="ExpandAll">Expand all</MudButton>
+                                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="CollapseAll">Collapse all</MudButton>
+                            </Actions>
+                            <ChildContent>
+                                @{ var shown = d.Customers.Where(c => !_onlyAttention || NeedsAttention(c.Status)).ToList(); }
+                                @if (shown.Count == 0)
+                                {
+                                    <EmptyState Title="No customer needs attention" Icon="@Icons.Material.Outlined.VerifiedUser" Good="true" Compact="true" />
+                                }
+                                <ul class="vy-rollup">
+                                    @foreach (var customer in shown)
+                                    {
+                                        var open = _open.Contains(customer.Id);
+                                        <li>
+                                            <div class="vy-rollup-row">
+                                                <button type="button" class="vy-rollup-toggle" aria-expanded="@(open ? "true" : "false")" aria-label="@($"{(open ? "Collapse" : "Expand")} {customer.Name}")"
+                                                        @onclick="@(() => Toggle(customer.Id))">
+                                                    <MudIcon Icon="@(open ? Icons.Material.Outlined.ExpandMore : Icons.Material.Outlined.ChevronRight)" Size="Size.Small" />
+                                                </button>
+                                                <div class="d-flex align-center gap-3" style="min-width: 0">
+                                                    <StatusChip Status="customer.Status" />
+                                                    <a href="@($"/customers/{customer.Id}")" class="vy-cell-main">@customer.Code · @customer.Name</a>
+                                                </div>
+                                                <span class="vy-muted vy-hide-narrow">@StatusText.Plural(customer.Tenants.Count, "tenant")</span>
+                                                <span class="vy-muted vy-hide-narrow">@CountText(customer.Counts)</span>
+                                                <span class="vy-actions-cell vy-hide-narrow"><MudButton Size="Size.Small" Variant="Variant.Text" Href="@($"/customers/{customer.Id}/report")" StartIcon="@Icons.Material.Outlined.Description">Report</MudButton></span>
+                                            </div>
+                                            @if (open)
+                                            {
+                                                @foreach (var tenant in customer.Tenants)
+                                                {
+                                                    var tenantOpen = _open.Contains(tenant.Id);
+                                                    <div class="vy-rollup-row tenant">
+                                                        <button type="button" class="vy-rollup-toggle" aria-expanded="@(tenantOpen ? "true" : "false")" aria-label="@($"{(tenantOpen ? "Collapse" : "Expand")} {tenant.Name}")"
+                                                                @onclick="@(() => Toggle(tenant.Id))">
+                                                            <MudIcon Icon="@(tenantOpen ? Icons.Material.Outlined.ExpandMore : Icons.Material.Outlined.ChevronRight)" Size="Size.Small" />
+                                                        </button>
+                                                        <div class="d-flex align-center gap-3" style="min-width: 0">
+                                                            <StatusChip Status="tenant.Status" Reason="@tenant.Reason" />
+                                                            <a href="@($"/tenants/{tenant.Id}")">@tenant.Name</a>
+                                                        </div>
+                                                        <span class="vy-muted vy-hide-narrow">@StatusText.Plural(tenant.Objects.Count, "protected object")</span>
+                                                        <span class="vy-muted vy-hide-narrow">@CountText(tenant.Counts)</span>
+                                                        <span class="vy-hide-narrow"></span>
+                                                    </div>
+                                                    @if (tenantOpen)
+                                                    {
+                                                        <div class="vy-rollup-objects">
+                                                            @if (tenant.Objects.Count == 0)
+                                                            {
+                                                                <EmptyState Title="No protected objects yet" Compact="true">
+                                                                    <ChildContent>Open the tenant to check its permissions and find its mailboxes and OneDrives.</ChildContent>
+                                                                    <Actions><MudButton Size="Size.Small" Variant="Variant.Outlined" Href="@($"/tenants/{tenant.Id}")">Open the tenant</MudButton></Actions>
+                                                                </EmptyState>
+                                                            }
+                                                            else
+                                                            {
+                                                                <MudSimpleTable Dense="true" Elevation="0">
+                                                                    <thead><tr><th>Protected object</th><th>Status</th><th>Latest snapshot</th><th class="vy-num">Items</th></tr></thead>
+                                                                    <tbody>
+                                                                        @foreach (var o in tenant.Objects.OrderByDescending(o => Rank(o.Status)).Take(Expanded(tenant.Id) ? int.MaxValue : 10))
+                                                                        {
+                                                                            <tr>
+                                                                                <td><a href="@($"/objects/{o.Id}")">@o.Name</a><div class="vy-cell-sub">@StatusText.ObjectKind(o.Kind, o.SubKind)</div></td>
+                                                                                <td><StatusChip Status="o.Status" Reason="@o.Reason" ShowReason="@(o.Status is ProtectionStatus.Failed)"
+                                                                                                Text="@(o.Status == ProtectionStatus.Partial ? $"Partial: {o.Missing} missing" : null)" /></td>
+                                                                                <td class="vy-nowrap">@(o.LastSnapshotAt is { } at ? Time.Relative(at) : "None yet")</td>
+                                                                                <td class="vy-num">@(o.Items is { } n ? N(n) : "")</td>
+                                                                            </tr>
+                                                                        }
+                                                                    </tbody>
+                                                                </MudSimpleTable>
+                                                                @if (tenant.Objects.Count > 10 && !Expanded(tenant.Id))
+                                                                {
+                                                                    <MudButton Size="Size.Small" Variant="Variant.Text" Class="mt-1" OnClick="@(() => _expanded.Add(tenant.Id))">Show all @tenant.Objects.Count protected objects</MudButton>
+                                                                }
+                                                            }
+                                                        </div>
+                                                    }
+                                                }
+                                            }
+                                        </li>
+                                    }
+                                </ul>
+                            </ChildContent>
+                        </Section>
+                        break;
+                    case DashboardTiles.Jobs:
+                        <Section Title="@(tile.Settings.Title ?? "Recent jobs")" Flush="true">
+                            <ChildContent>
+                                @{ var jobs = ScopedJobs(tile.Settings); }
+                                @if (jobs.Count == 0)
+                                {
+                                    <EmptyState Title="No jobs yet" Compact="true" />
+                                }
+                                else
+                                {
+                                    <MudSimpleTable Dense="true" Elevation="0">
+                                        <thead><tr><th>Job</th><th>Status</th><th>Target</th><th>Started</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var job in jobs)
+                                            {
+                                                <tr>
+                                                    <td>@StatusText.JobKind(job.Kind)</td>
+                                                    <td><Chip Tone="@StatusText.JobTone(job.State)" Text="@StatusText.JobLabel(job.State)" /></td>
+                                                    <td>@(job.ObjectName ?? job.TenantName)</td>
+                                                    <td class="vy-nowrap vy-muted">@Time.Relative(job.StartedAt ?? job.CreatedAt)</td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </MudSimpleTable>
+                                    <div class="pa-3"><MudButton Size="Size.Small" Variant="Variant.Text" Href="/jobs">All jobs</MudButton></div>
+                                }
+                            </ChildContent>
+                        </Section>
+                        break;
+                    case DashboardTiles.Note:
+                        <Section Title="@tile.Settings.Title"><p class="mb-0" style="white-space: pre-line">@tile.Settings.Text</p></Section>
+                        break;
                 }
-            </ul>
-        </ChildContent>
-    </Section>
+            </div>
+        }
+    </div>
+
 }
 
 @code {
@@ -252,6 +308,40 @@ else
         Guid CustomerId, string CustomerName, string TenantName, string Href, string ActionLabel, string ActionHref, ObjectStatusRow? BackupObject);
 
     private Dashboard? _dashboard;
+    private IReadOnlyList<(DashboardTile Tile, TileType Type)> _tiles = [];
+    private Dictionary<Guid, string[]> _tags = [];
+    private IReadOnlyList<JobRow> _jobs = [];
+
+    /// <summary>
+    /// The dashboard's data narrowed to a tile's customers or tag. It only narrows: the data is the viewer's own, read in
+    /// the viewer's session, so a tile can never show what the viewer may not see.
+    /// </summary>
+    private Dashboard Scoped(TileSettings settings)
+    {
+        if (_dashboard is null || !settings.Narrows) return _dashboard!;
+        var customers = _dashboard.Customers.Where(c => InTile(settings, c.Id)).ToList();
+        var tenants = customers.SelectMany(c => c.Tenants).Select(t => t.Id).ToHashSet();
+        var objects = customers.SelectMany(c => c.Tenants).SelectMany(t => t.Objects).Select(o => o.Id).ToHashSet();
+        var totals = customers.SelectMany(c => c.Counts).GroupBy(c => c.Key).ToDictionary(g => g.Key, g => g.Sum(x => x.Value));
+        return new Dashboard(customers, totals, _dashboard.OpenAlerts.Where(a => a.TenantId is { } t && tenants.Contains(t) || a.ObjectId is { } o && objects.Contains(o)).ToList());
+    }
+
+    private bool InTile(TileSettings settings, Guid customerId) =>
+        settings.CustomerIds.Contains(customerId) ||
+        settings.Tag is { Length: > 0 } tag && _tags.TryGetValue(customerId, out var tags) && tags.Contains(tag, StringComparer.OrdinalIgnoreCase);
+
+    private IReadOnlyList<JobRow> ScopedJobs(TileSettings settings)
+    {
+        var jobs = _jobs.AsEnumerable();
+        if (settings.Narrows && _dashboard is not null)
+        {
+            var tenants = _dashboard.Customers.Where(c => InTile(settings, c.Id)).SelectMany(c => c.Tenants).Select(t => t.Id).ToHashSet();
+            jobs = jobs.Where(j => j.TenantId is { } t && tenants.Contains(t));
+        }
+        return jobs.Take(settings.Limit ?? 8).ToList();
+    }
+
+    private static string TileStyle(DashboardTile tile) => $"--x: {tile.X + 1}; --y: {tile.Y + 1}; --w: {tile.W}; --h: {tile.H}";
     private Vaulty.Infrastructure.Access.UserAccess? _access;
     private List<AttentionItem> _attention = [];
     private readonly HashSet<Guid> _open = [];
@@ -308,6 +398,16 @@ else
             await Time.LoadAsync();
             _access = await Current.GetAsync();
             _dashboard = await Dashboards.LoadAsync(_access);
+            var effective = await Designs.ForUserAsync(_access);
+            var access = _access;
+            _tiles = DashboardRules.Visible(effective.Layout, p => access.Allows(p));
+            if (_tiles.Any(t => t.Tile.Settings.Tag is { Length: > 0 }))
+            {
+                _tags = (await Customers.ListAsync(_access.OrganizationId)).ToDictionary(c => c.Id, c => c.Tags);
+            }
+            _jobs = _tiles.Any(t => t.Type.Key == DashboardTiles.Jobs)
+                ? await JobsService.ListAsync(_access, null, null, null)
+                : [];
             _attention = BuildAttention(_dashboard);
             _loadedAt = DateTimeOffset.UtcNow;
             _error = null;

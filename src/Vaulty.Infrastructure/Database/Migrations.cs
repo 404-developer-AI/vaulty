@@ -231,3 +231,10 @@ public sealed class AccessGroupsMigration : SqlMigration
 {
     protected override string ScriptName => "0019_access_groups";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261111000020_Dashboards")]
+public sealed class DashboardsMigration : SqlMigration
+{
+    protected override string ScriptName => "0020_dashboards";
+}

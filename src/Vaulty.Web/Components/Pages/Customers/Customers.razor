@@ -8,6 +8,7 @@
 @inject CurrentAccess Current
 @inject IDialogService Dialogs
 @inject NavigationManager Navigation
+@inject ColumnLayoutService ColumnLayouts
 
 <PageTitle>Customers · Vaulty</PageTitle>
 
@@ -36,27 +37,43 @@
         </div>
     </Filters>
     <HeaderContent>
-        <MudTh><MudTableSortLabel T="Row" SortBy="@(r => Rank(r.Status))" InitialDirection="SortDirection.Descending">Status</MudTableSortLabel></MudTh>
-        <MudTh><MudTableSortLabel T="Row" SortBy="@(r => r.Customer.Name)">Customer</MudTableSortLabel></MudTh>
-        <MudTh>Tags</MudTh>
-        <MudTh><MudTableSortLabel T="Row" SortBy="@(r => r.Customer.Tenants)">Tenants</MudTableSortLabel></MudTh>
-        <MudTh>Protected objects</MudTh>
+        @foreach (var column in _columns)
+        {
+            @switch (column)
+            {
+                case "status": <MudTh><MudTableSortLabel T="Row" SortBy="@(r => Rank(r.Status))" InitialDirection="SortDirection.Descending">Status</MudTableSortLabel></MudTh> break;
+                case "customer": <MudTh><MudTableSortLabel T="Row" SortBy="@(r => r.Customer.Name)">Customer</MudTableSortLabel></MudTh> break;
+                case "tags": <MudTh>Tags</MudTh> break;
+                case "tenants": <MudTh><MudTableSortLabel T="Row" SortBy="@(r => r.Customer.Tenants)">Tenants</MudTableSortLabel></MudTh> break;
+                case "objects": <MudTh>Protected objects</MudTh> break;
+            }
+        }
         <MudTh><span class="vy-sr-only">Actions</span></MudTh>
     </HeaderContent>
     <RowTemplate>
-        <MudTd><StatusChip Status="context.Status" /></MudTd>
-        <MudTd>
-            <a href="@($"/customers/{context.Customer.Id}")" class="vy-cell-main" @onclick:stopPropagation="true">@context.Customer.Name</a>
-            <div class="vy-cell-sub">@context.Customer.Code</div>
-        </MudTd>
-        <MudTd>
-            @foreach (var tag in context.Customer.Tags)
+        @foreach (var column in _columns)
+        {
+            @switch (column)
             {
-                <MudChip T="string" Size="Size.Small">@tag</MudChip>
+                case "status": <MudTd><StatusChip Status="context.Status" /></MudTd> break;
+                case "customer":
+                    <MudTd>
+                        <a href="@($"/customers/{context.Customer.Id}")" class="vy-cell-main" @onclick:stopPropagation="true">@context.Customer.Name</a>
+                        <div class="vy-cell-sub">@context.Customer.Code</div>
+                    </MudTd>
+                    break;
+                case "tags":
+                    <MudTd>
+                        @foreach (var tag in context.Customer.Tags)
+                        {
+                            <MudChip T="string" Size="Size.Small">@tag</MudChip>
+                        }
+                    </MudTd>
+                    break;
+                case "tenants": <MudTd>@context.Customer.Tenants</MudTd> break;
+                case "objects": <MudTd><span class="vy-muted">@context.Counts</span></MudTd> break;
             }
-        </MudTd>
-        <MudTd>@context.Customer.Tenants</MudTd>
-        <MudTd><span class="vy-muted">@context.Counts</span></MudTd>
+        }
         <MudTd Class="vy-actions-cell">
             <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Description" Href="@($"/customers/{context.Customer.Id}/report")"
                        @onclick:stopPropagation="true">Report</MudButton>
@@ -85,6 +102,7 @@
     [SupplyParameterFromQuery(Name = "add")] public int? Add { get; set; }
 
     private List<Row> _rows = [];
+    private IReadOnlyList<string> _columns = Vaulty.Core.Dashboards.ColumnCatalog.Default(Vaulty.Core.Dashboards.ColumnCatalog.Customers);
     private bool _canManage;
     private bool _loading = true;
     private string? _error;
@@ -118,7 +136,9 @@
         try
         {
             var access = await Current.GetAsync((await AuthenticationState).User);
-            _canManage = access.Allows(Permissions.CustomersManage);
+            // A new customer is in no group yet, so only someone who sees every customer adds one (and still sees it).
+            _canManage = access.Allows(Permissions.CustomersManage) && access.Scope.All;
+            _columns = await ColumnLayouts.ForUserAsync(access, Vaulty.Core.Dashboards.ColumnCatalog.Customers);
             var scope = access.Customers(Permissions.CustomersView);
             var all = await CustomerService.ListAsync(_organizationId);
             var dashboard = await Dashboards.LoadAsync(access);

@@ -16,6 +16,7 @@
 @inject IWorkflowStarter Workflows
 @inject CurrentAccess Current
 @inject NavigationManager Navigation
+@inject Vaulty.Infrastructure.Reporting.ColumnLayoutService ColumnLayouts
 @inject TimeProvider Clock
 @inject ISnackbar Snackbar
 @inject IDialogService Dialogs
@@ -169,73 +170,95 @@ else
 
                 <MudTable Items="Filtered" Hover="true" Elevation="0" Dense="true" T="ProtectedObjectRow" Breakpoint="Breakpoint.None" HorizontalScrollbar="true">
                     <HeaderContent>
-                        <MudTh>Back up</MudTh>
-                        <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => o.DisplayName)">Protected object</MudTableSortLabel></MudTh>
-                        <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => KindLabel(o))">Type</MudTableSortLabel></MudTh>
-                        <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => StatusRank(o))" InitialDirection="SortDirection.Descending">Status</MudTableSortLabel></MudTh>
-                        <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => o.LastBackupAt ?? DateTimeOffset.MinValue)">Last backup</MudTableSortLabel></MudTh>
+                        @foreach (var column in _columns)
+                        {
+                            @switch (column)
+                            {
+                                case "backup": <MudTh>Back up</MudTh> break;
+                                case "object": <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => o.DisplayName)">Protected object</MudTableSortLabel></MudTh> break;
+                                case "type": <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => KindLabel(o))">Type</MudTableSortLabel></MudTh> break;
+                                case "status": <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => StatusRank(o))" InitialDirection="SortDirection.Descending">Status</MudTableSortLabel></MudTh> break;
+                                case "last_backup": <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => o.LastBackupAt ?? DateTimeOffset.MinValue)">Last backup</MudTableSortLabel></MudTh> break;
+                            }
+                        }
                         <MudTh><span class="vy-sr-only">Actions</span></MudTh>
                     </HeaderContent>
                     <RowTemplate>
-                        <MudTd>
-                            @if (context.State is "active" or "excluded" or "paused")
+                        @foreach (var column in _columns)
+                        {
+                            @switch (column)
                             {
-                                <MudSwitch T="bool" Value="@(context.State != "excluded")" ValueChanged="@(v => SetSelectionAsync([context.Id], v))" Color="Color.Primary"
-                                           Disabled="@(!_canManagePolicy || _busy)" aria-label="@($"Back up {context.DisplayName}")" />
-                            }
-                        </MudTd>
-                        <MudTd>
-                            @if (_canBrowse)
-                            {
-                                <a href="@($"/objects/{context.Id}")" class="vy-cell-main">@context.DisplayName</a>
-                            }
-                            else
-                            {
-                                <span class="vy-cell-main">@context.DisplayName</span>
-                            }
-                            @if (Upn(context) is { } upn && !upn.Equals(context.DisplayName, StringComparison.OrdinalIgnoreCase))
-                            {
-                                <div class="vy-cell-sub">@upn</div>
-                            }
-                            @if (_held.Contains(context.Id))
-                            {
-                                <div><span class="vy-tag mt-1"><MudIcon Icon="@Icons.Material.Outlined.Gavel" Style="font-size: 14px" /> On legal hold</span></div>
-                            }
-                        </MudTd>
-                        <MudTd>@KindLabel(context)</MudTd>
-                        <MudTd>
-                            @switch (context.State)
-                            {
-                                case "source_deleted":
-                                    <span class="vy-status neutral" title="The source no longer exists in Microsoft 365; snapshots are kept until their retention ends.">Source deleted @Time.Absolute(context.SourceDeletedAt)</span>
-                                    break;
-                                case "not_protected":
-                                    <span class="vy-status neutral">Not protected yet</span>
-                                    break;
-                                case "paused":
-                                    <span class="vy-status neutral">Paused</span>
-                                    break;
-                                case "excluded":
-                                    <div class="vy-state">
-                                        <span class="vy-status neutral" title="Not selected for backup">Excluded</span>
-                                        @if (context.DataRemovedFrom(_retentionDays) is { } removed)
-                                        {
-                                            <span class="vy-state-reason" title="Every snapshot ends with its retention; the data goes once its Object Lock has ended. Select it again to keep backing it up.">
-                                                Data removed from @Time.Absolute(removed)
-                                            </span>
-                                        }
-                                    </div>
-                                    break;
-                                default:
-                                    @if (_health?.Objects.FirstOrDefault(o => o.Id == context.Id) is { } status)
+                                case "backup":
+                                <MudTd>
+                                    @if (context.State is "active" or "excluded" or "paused")
                                     {
-                                        <StatusChip Status="status.Status" Reason="@status.Reason" ShowReason="@(status.Status is ProtectionStatus.Failed)"
-                                                    Text="@(status.Status == ProtectionStatus.Partial ? $"Partial: {status.Missing} missing" : null)" />
+                                        <MudSwitch T="bool" Value="@(context.State != "excluded")" ValueChanged="@(v => SetSelectionAsync([context.Id], v))" Color="Color.Primary"
+                                                   Disabled="@(!_canManagePolicy || _busy)" aria-label="@($"Back up {context.DisplayName}")" />
                                     }
+                                </MudTd>
+                                    break;
+                                case "object":
+                                <MudTd>
+                                    @if (_canBrowse)
+                                    {
+                                        <a href="@($"/objects/{context.Id}")" class="vy-cell-main">@context.DisplayName</a>
+                                    }
+                                    else
+                                    {
+                                        <span class="vy-cell-main">@context.DisplayName</span>
+                                    }
+                                    @if (Upn(context) is { } upn && !upn.Equals(context.DisplayName, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        <div class="vy-cell-sub">@upn</div>
+                                    }
+                                    @if (_held.Contains(context.Id))
+                                    {
+                                        <div><span class="vy-tag mt-1"><MudIcon Icon="@Icons.Material.Outlined.Gavel" Style="font-size: 14px" /> On legal hold</span></div>
+                                    }
+                                </MudTd>
+                                    break;
+                                case "type":
+                                <MudTd>@KindLabel(context)</MudTd>
+                                    break;
+                                case "status":
+                                <MudTd>
+                                    @switch (context.State)
+                                    {
+                                        case "source_deleted":
+                                            <span class="vy-status neutral" title="The source no longer exists in Microsoft 365; snapshots are kept until their retention ends.">Source deleted @Time.Absolute(context.SourceDeletedAt)</span>
+                                            break;
+                                        case "not_protected":
+                                            <span class="vy-status neutral">Not protected yet</span>
+                                            break;
+                                        case "paused":
+                                            <span class="vy-status neutral">Paused</span>
+                                            break;
+                                        case "excluded":
+                                            <div class="vy-state">
+                                                <span class="vy-status neutral" title="Not selected for backup">Excluded</span>
+                                                @if (context.DataRemovedFrom(_retentionDays) is { } removed)
+                                                {
+                                                    <span class="vy-state-reason" title="Every snapshot ends with its retention; the data goes once its Object Lock has ended. Select it again to keep backing it up.">
+                                                        Data removed from @Time.Absolute(removed)
+                                                    </span>
+                                                }
+                                            </div>
+                                            break;
+                                        default:
+                                            @if (_health?.Objects.FirstOrDefault(o => o.Id == context.Id) is { } status)
+                                            {
+                                                <StatusChip Status="status.Status" Reason="@status.Reason" ShowReason="@(status.Status is ProtectionStatus.Failed)"
+                                                            Text="@(status.Status == ProtectionStatus.Partial ? $"Partial: {status.Missing} missing" : null)" />
+                                            }
+                                            break;
+                                    }
+                                </MudTd>
+                                    break;
+                                case "last_backup":
+                                <MudTd Class="vy-nowrap">@(context.LastBackupAt is { } at ? Time.Relative(at) : "Never")</MudTd>
                                     break;
                             }
-                        </MudTd>
-                        <MudTd Class="vy-nowrap">@(context.LastBackupAt is { } at ? Time.Relative(at) : "Never")</MudTd>
+                        }
                         <MudTd Class="vy-actions-cell">
                             @if (_canRun && context.State == "active" && Granted)
                             {
@@ -474,6 +497,7 @@ else
     private bool _resumed;
     private bool _canConnect;
     private bool _canRun;
+    private IReadOnlyList<string> _columns = Vaulty.Core.Dashboards.ColumnCatalog.Default(Vaulty.Core.Dashboards.ColumnCatalog.Objects);
     private bool _canBrowse;
     private bool _canManagePolicy;
     private bool _canChangeRetention;
@@ -585,6 +609,7 @@ else
         _canChangeRetention = access.AllowsTenant(Permissions.RetentionManage, tenant.CustomerId, tenant.Id);
         _canHold = access.AllowsTenant(Permissions.LegalHoldManage, tenant.CustomerId, tenant.Id);
         _canDelete = access.AllowsTenant(Permissions.TenantsDelete, tenant.CustomerId, tenant.Id);
+        _columns = await ColumnLayouts.ForUserAsync(access, Vaulty.Core.Dashboards.ColumnCatalog.Objects);
         _objects = await TenantService.ProtectedObjectsAsync(_organizationId, TenantId);
         _deletion = await Deletion.StateAsync(access, TenantId);
         _protectNew = await Selection.ProtectsNewObjectsAsync(access, TenantId);

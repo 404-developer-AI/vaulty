@@ -1,0 +1,119 @@
+@page "/settings/columns"
+@attribute [Authorize(Policy = "perm:" + Permissions.ColumnsManage)]
+@using Vaulty.Core.Dashboards
+@using Vaulty.Infrastructure.Reporting
+@using Vaulty.Infrastructure.Access
+@inject ColumnLayoutService Layouts
+@inject AccessAdministration Administration
+@inject CurrentAccess Current
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Column layouts · Vaulty</PageTitle>
+
+<PageHeader Title="Column layouts"
+            Lede="Which columns a list shows, per role. A user sees the first layout of a list in this order that is linked to one of their roles, or the default columns. The name and status of each row always show." />
+
+@foreach (var (list, entry) in ColumnCatalog.Lists)
+{
+    var layouts = _layouts.Where(l => l.List == list).ToList();
+    <Section Title="@entry.Name" Flush="@(layouts.Count > 0)">
+        <Actions>
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Add" OnClick="@(() => EditAsync(list, null))">New layout</MudButton>
+        </Actions>
+        <ChildContent>
+            @if (layouts.Count == 0)
+            {
+                <p class="vy-muted mb-0">Everyone sees the default columns: @string.Join(", ", entry.Columns.Select(c => c.Name)).</p>
+            }
+            else
+            {
+                <MudSimpleTable Dense="true" Elevation="0">
+                    <thead><tr><th>Order</th><th>Layout</th><th>Columns</th><th>Roles</th><th><span class="vy-sr-only">Actions</span></th></tr></thead>
+                    <tbody>
+                        @foreach (var item in layouts)
+                        {
+                            <tr>
+                                <td>
+                                    <MudIconButton Icon="@Icons.Material.Outlined.ArrowUpward" Size="Size.Small" aria-label="Move up" OnClick="@(() => MoveAsync(item, -1))" />
+                                    <MudIconButton Icon="@Icons.Material.Outlined.ArrowDownward" Size="Size.Small" aria-label="Move down" OnClick="@(() => MoveAsync(item, 1))" />
+                                </td>
+                                <td>@item.Name</td>
+                                <td>@string.Join(", ", item.Columns.Select(c => ColumnCatalog.Find(list, c)?.Name ?? c))</td>
+                                <td>@(item.RoleIds.Count == 0 ? "No role" : string.Join(", ", item.RoleIds.Select(r => _roles.FirstOrDefault(x => x.Id == r)?.Name ?? "role")))</td>
+                                <td>
+                                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => EditAsync(list, item))">Edit</MudButton>
+                                    <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => DeleteAsync(item))">Delete</MudButton>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            }
+        </ChildContent>
+    </Section>
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private IReadOnlyList<ColumnLayoutRow> _layouts = [];
+    private IReadOnlyList<RoleDetail> _roles = [];
+    private Guid _organizationId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _organizationId = VaultyWebSetup.OrganizationId((await AuthenticationState).User) ?? Guid.Empty;
+        _roles = await Administration.RolesAsync(_organizationId);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync() => _layouts = await Layouts.ListAsync(_organizationId);
+
+    private async Task<UserAccess> ActorAsync()
+    {
+        Current.Invalidate();
+        return await Current.GetAsync((await AuthenticationState).User);
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+            await LoadAsync();
+        }
+        catch (DesignException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task EditAsync(string list, ColumnLayoutRow? layout)
+    {
+        var parameters = new DialogParameters<ColumnLayoutDialog>
+        {
+            { d => d.List, list }, { d => d.Name, layout?.Name }, { d => d.Columns, layout?.Columns }, { d => d.Roles, _roles }, { d => d.RoleIds, layout?.RoleIds ?? [] },
+        };
+        var dialog = await Dialogs.ShowAsync<ColumnLayoutDialog>(layout is null ? "New column layout" : $"Edit {layout.Name}", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        if (await dialog.Result is not { Canceled: false, Data: ColumnLayoutDialog.LayoutDraft draft }) return;
+        await RunAsync(async () =>
+        {
+            if (layout is null) await Layouts.CreateAsync(await ActorAsync(), list, draft.Name, draft.Columns, draft.Roles);
+            else await Layouts.UpdateAsync(await ActorAsync(), layout.Id, layout.Version, draft.Name, draft.Columns, draft.Roles);
+        });
+    }
+
+    private Task MoveAsync(ColumnLayoutRow layout, int direction) => RunAsync(async () => await Layouts.MoveAsync(await ActorAsync(), layout.Id, direction));
+
+    private async Task DeleteAsync(ColumnLayoutRow layout)
+    {
+        if (!await Dialogs.ConfirmAsync($"Delete the layout {layout.Name}?", "Its users see the next layout linked to their roles, or the default columns.", "Delete layout",
+                danger: true))
+        {
+            return;
+        }
+        await RunAsync(async () => await Layouts.DeleteAsync(await ActorAsync(), layout.Id));
+    }
+}

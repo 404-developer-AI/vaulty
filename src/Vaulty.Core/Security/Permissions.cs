@@ -62,6 +62,8 @@ public static class Permissions
     public const string SignInManage = "signin.manage";
     public const string GroupsManage = "groups.manage";
     public const string AccessView = "access.view";
+    public const string DashboardsManage = "dashboards.manage";
+    public const string ColumnsManage = "columns.manage";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
     [
@@ -115,6 +117,9 @@ public static class Permissions
             "Create groups of customers and tenants and choose who is in them; groups decide which customers a user sees.", [],
             RequiresMfa: true, RequiresStepUp: true),
         new(AccessView, AdministrationGroup, "View access", "See what each user may do and see, and who has access to a customer.", []),
+        new(DashboardsManage, AdministrationGroup, "Manage dashboards",
+            "Design dashboards and choose which roles see them. A dashboard never shows more than its viewer may see.", []),
+        new(ColumnsManage, AdministrationGroup, "Manage column layouts", "Choose which columns lists show for which roles.", []),
         new(SignInManage, AdministrationGroup, "Manage sign-in",
             "Set up sign-in with Microsoft, link users to their Microsoft account and choose who handles the second factor.", [],
             RequiresMfa: true, RequiresStepUp: true),

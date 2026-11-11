@@ -1,0 +1,36 @@
+@* The published versions of a dashboard; choosing one puts it into the draft. *@
+@using Vaulty.Infrastructure.Reporting
+@inject DisplayTime Time
+
+<MudDialog>
+    <DialogContent>
+        @if (Versions.Count == 0)
+        {
+            <p class="vy-muted">Not published yet.</p>
+        }
+        else
+        {
+            <MudSimpleTable Dense="true" Elevation="0">
+                <thead><tr><th>Version</th><th>Published</th><th>Tiles</th><th><span class="vy-sr-only">Actions</span></th></tr></thead>
+                <tbody>
+                    @foreach (var version in Versions)
+                    {
+                        <tr>
+                            <td>@version.Version</td>
+                            <td>@Time.Absolute(version.PublishedAt)</td>
+                            <td>@version.Tiles</td>
+                            <td><MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => Dialog.Close(DialogResult.Ok(version.Version)))">Put in the draft</MudButton></td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+            <p class="vy-muted mb-0" style="font-size: 0.8125rem">The last @Vaulty.Core.Dashboards.DashboardRules.MaxVersions versions are kept.</p>
+        }
+    </DialogContent>
+    <DialogActions><MudButton OnClick="@(() => Dialog.Cancel())">Close</MudButton></DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public IReadOnlyList<DashboardVersionRow> Versions { get; set; } = [];
+}

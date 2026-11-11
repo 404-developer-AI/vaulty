@@ -385,3 +385,19 @@ button.vy-stat { cursor: pointer; width: 100%; }
 .vy-check-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 0.875rem; }
 .vy-check-list li { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: start; }
 .vy-entra-steps li { margin-bottom: 10px; }
+
+/* Dashboards: tiles on a 12-column grid. Rows grow with their content when viewing; the designer uses fixed rows. */
+.vy-dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); grid-auto-rows: minmax(48px, auto); gap: 12px; align-items: start; }
+.vy-dash-tile { grid-column: var(--x) / span var(--w); grid-row: var(--y) / span var(--h); min-width: 0; }
+.vy-dash-tile > .vy-section, .vy-dash-tile > section { margin-bottom: 0; }
+@media (max-width: 1023.98px) { .vy-dash-tile { grid-column: 1 / -1; grid-row: auto; } }
+.vy-dash-canvas .vy-dash-grid { grid-auto-rows: 56px; align-items: stretch; position: relative; }
+.vy-dash-canvas .vy-dash-tile { border: 1px dashed var(--vy-border); border-radius: var(--vy-radius); background: var(--vy-surface); padding: 8px 10px; overflow: hidden;
+    cursor: grab; position: relative; outline: none; touch-action: none; }
+.vy-dash-canvas .vy-dash-tile.selected, .vy-dash-canvas .vy-dash-tile:focus-visible { border: 2px solid var(--vy-primary); }
+.vy-dash-canvas .vy-dash-tile.dragging { opacity: 0.85; z-index: 2; cursor: grabbing; }
+.vy-dash-canvas [data-resize] { position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px; cursor: nwse-resize;
+    border-right: 2px solid var(--vy-text-muted); border-bottom: 2px solid var(--vy-text-muted); }
+.vy-dash-palette [data-tile-type] { display: block; padding: 8px 10px; border: 1px solid var(--vy-border); border-radius: var(--vy-radius); margin-bottom: 8px; cursor: grab;
+    background: var(--vy-surface); }
+.vy-dash-fixed { border: 1px solid var(--vy-border); border-radius: var(--vy-radius); padding: 10px 12px; margin-bottom: 12px; background: var(--vy-info-tint); }

@@ -1,0 +1,157 @@
+@page "/settings/dashboards"
+@attribute [Authorize(Policy = "perm:" + Permissions.DashboardsManage)]
+@using Vaulty.Infrastructure.Reporting
+@using Vaulty.Infrastructure.Access
+@inject DashboardDesignService Designs
+@inject AccessAdministration Administration
+@inject CurrentAccess Current
+@inject NavigationManager Navigation
+@inject DisplayTime Time
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Dashboards · Vaulty</PageTitle>
+
+<PageHeader Title="Dashboards"
+            Lede="A user sees the first published dashboard in this order that is linked to one of their roles, or the default. A dashboard never shows more than its viewer may see, and &quot;Needs attention&quot; always stands above it.">
+    <Actions>
+        <InputFile OnChange="ImportAsync" accept=".json,application/json" class="vy-sr-only" id="dashboard-import" />
+        <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Upload" HtmlTag="label" for="dashboard-import">Import</MudButton>
+        <MudButton Variant="Variant.Outlined" OnClick="@(() => CreateAsync(copyDefault: true))">Copy the default</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Add" OnClick="@(() => CreateAsync(copyDefault: false))">New dashboard</MudButton>
+    </Actions>
+</PageHeader>
+
+<MudTable Items="_dashboards" Hover="true" Elevation="0" Dense="true" Breakpoint="Breakpoint.None" HorizontalScrollbar="true" Loading="!_loaded">
+    <HeaderContent>
+        <MudTh>Order</MudTh>
+        <MudTh>Dashboard</MudTh>
+        <MudTh>Roles</MudTh>
+        <MudTh>Published</MudTh>
+        <MudTh><span class="vy-sr-only">Actions</span></MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>
+            <MudIconButton Icon="@Icons.Material.Outlined.ArrowUpward" Size="Size.Small" aria-label="Move up" OnClick="@(() => MoveAsync(context, -1))" />
+            <MudIconButton Icon="@Icons.Material.Outlined.ArrowDownward" Size="Size.Small" aria-label="Move down" OnClick="@(() => MoveAsync(context, 1))" />
+        </MudTd>
+        <MudTd>
+            <a href="@($"/settings/dashboards/{context.Id}")" class="vy-cell-main">@context.Name</a>
+            @if (context.Description is { } description)
+            {
+                <div class="vy-cell-sub">@description</div>
+            }
+        </MudTd>
+        <MudTd>@(context.RoleIds.Count == 0 ? "No role" : string.Join(", ", context.RoleIds.Select(r => _roles.FirstOrDefault(x => x.Id == r)?.Name ?? "role")))</MudTd>
+        <MudTd>
+            @if (context.PublishedVersion == 0)
+            {
+                <span class="vy-status neutral">Not published</span>
+            }
+            else
+            {
+                <span>Version @context.PublishedVersion, @Time.Relative(context.PublishedAt)</span>
+            }
+            @if (context.HasDraft)
+            {
+                <span class="vy-status partial ml-1">Draft</span>
+            }
+        </MudTd>
+        <MudTd>
+            <MudButton Size="Size.Small" Variant="Variant.Text" Href="@($"/settings/dashboards/{context.Id}")">Edit</MudButton>
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => CopyAsync(context))">Copy</MudButton>
+            <MudButton Size="Size.Small" Variant="Variant.Text" Href="@($"/settings/dashboards/{context.Id}/export")" Target="_blank">Export</MudButton>
+            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => DeleteAsync(context))">Delete</MudButton>
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <EmptyState Title="Everyone sees the default dashboard" Compact="true">Make a dashboard of your own, or copy the default and change it.</EmptyState>
+    </NoRecordsContent>
+</MudTable>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private IReadOnlyList<DashboardSummary> _dashboards = [];
+    private IReadOnlyList<RoleDetail> _roles = [];
+    private bool _loaded;
+    private Guid _organizationId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _organizationId = VaultyWebSetup.OrganizationId((await AuthenticationState).User) ?? Guid.Empty;
+        await Time.LoadAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _dashboards = await Designs.ListAsync(_organizationId);
+        _roles = await Administration.RolesAsync(_organizationId);
+        _loaded = true;
+    }
+
+    private async Task<UserAccess> ActorAsync()
+    {
+        Current.Invalidate();
+        return await Current.GetAsync((await AuthenticationState).User);
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+            await LoadAsync();
+        }
+        catch (DesignException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private string UniqueName(string name)
+    {
+        var unique = name;
+        for (var n = 2; _dashboards.Any(d => string.Equals(d.Name, unique, StringComparison.OrdinalIgnoreCase)); n++) unique = $"{name} ({n})";
+        return unique;
+    }
+
+    private Task CreateAsync(bool copyDefault) => RunAsync(async () =>
+    {
+        var id = await Designs.CreateAsync(await ActorAsync(), UniqueName(copyDefault ? "Copy of the default" : "New dashboard"), null, [], null, copyDefault);
+        Navigation.NavigateTo($"/settings/dashboards/{id}");
+    });
+
+    private Task CopyAsync(DashboardSummary source) => RunAsync(async () =>
+        await Designs.CreateAsync(await ActorAsync(), UniqueName($"{source.Name} (copy)"), source.Description, [], source.Id, false));
+
+    private Task MoveAsync(DashboardSummary dashboard, int direction) => RunAsync(async () => await Designs.MoveAsync(await ActorAsync(), dashboard.Id, direction));
+
+    private async Task DeleteAsync(DashboardSummary dashboard)
+    {
+        if (!await Dialogs.ConfirmAsync($"Delete the dashboard {dashboard.Name}?", "Users who saw it see the next dashboard linked to their roles, or the default.",
+                "Delete dashboard", danger: true))
+        {
+            return;
+        }
+        await RunAsync(async () => await Designs.DeleteAsync(await ActorAsync(), dashboard.Id));
+    }
+
+    private async Task ImportAsync(InputFileChangeEventArgs e)
+    {
+        if (e.File.Size > Vaulty.Core.Dashboards.DashboardRules.MaxImportBytes)
+        {
+            Snackbar.Add("The file is larger than 256 KB.", Severity.Warning);
+            return;
+        }
+        using var reader = new StreamReader(e.File.OpenReadStream(Vaulty.Core.Dashboards.DashboardRules.MaxImportBytes));
+        var json = await reader.ReadToEndAsync();
+        await RunAsync(async () =>
+        {
+            var id = await Designs.ImportAsync(await ActorAsync(), json);
+            Snackbar.Add("Imported as a draft, linked to no role yet.", Severity.Success);
+            Navigation.NavigateTo($"/settings/dashboards/{id}");
+        });
+    }
+}

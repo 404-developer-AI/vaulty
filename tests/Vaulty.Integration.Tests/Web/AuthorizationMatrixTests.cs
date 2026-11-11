@@ -32,6 +32,9 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/settings/sign-in"] = VaultyPolicies.Permission(Permissions.SignInManage),
         ["/settings/roles"] = VaultyPolicies.Permission(Permissions.RolesManage),
         ["/settings/groups"] = VaultyPolicies.Permission(Permissions.GroupsManage),
+        ["/settings/dashboards"] = VaultyPolicies.Permission(Permissions.DashboardsManage),
+        ["/settings/dashboards/{Id:guid}"] = VaultyPolicies.Permission(Permissions.DashboardsManage),
+        ["/settings/columns"] = VaultyPolicies.Permission(Permissions.ColumnsManage),
         ["/"] = null,
         ["/settings/users"] = VaultyPolicies.Permission(Permissions.UsersManage),
         ["/settings/audit"] = VaultyPolicies.Permission(Permissions.AuditView),
@@ -53,7 +56,8 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
     };
 
     private static string Concrete(string route) => route.Replace("{CustomerId:guid}", Guid.NewGuid().ToString()).Replace("{TenantId:guid}", Guid.NewGuid().ToString())
-        .Replace("{ObjectId:guid}", Guid.NewGuid().ToString()).Replace("{SnapshotId:guid}", Guid.NewGuid().ToString()).Replace("{RestoreId:guid}", Guid.NewGuid().ToString());
+        .Replace("{ObjectId:guid}", Guid.NewGuid().ToString()).Replace("{SnapshotId:guid}", Guid.NewGuid().ToString()).Replace("{RestoreId:guid}", Guid.NewGuid().ToString())
+        .Replace("{Id:guid}", Guid.NewGuid().ToString());
 
     [Fact]
     public void Every_page_declares_exactly_the_expected_authorization()

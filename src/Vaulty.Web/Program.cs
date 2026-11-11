@@ -67,6 +67,8 @@ builder.Services.AddSingleton<Vaulty.Infrastructure.Retention.TenantDeletion>();
 builder.Services.AddSingleton<BackupSelection>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Retention.LegalHold>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Reporting.DashboardService>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Reporting.DashboardDesignService>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Reporting.ColumnLayoutService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Notifications.AlertService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Notifications.JobsService>();
 builder.Services.AddSingleton(new Vaulty.Infrastructure.Notifications.WebhookOptions());
@@ -116,6 +118,7 @@ Vaulty.Web.Browse.PreviewEndpoints.MapPreviewEndpoints(app);
 Vaulty.Web.Browse.ExportEndpoints.MapExportEndpoints(app);
 Vaulty.Web.Account.MicrosoftConnectEndpoints.MapMicrosoftConnectEndpoints(app);
 app.MapMicrosoftSignInEndpoints();
+app.MapDesignEndpoints();
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode(o => o.ContentSecurityFrameAncestorsPolicy = null);
 

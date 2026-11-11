@@ -1,0 +1,75 @@
+@* The columns of one list for some roles: which optional columns show and in which order. Name and status always show. *@
+@using Vaulty.Core.Dashboards
+@using Vaulty.Infrastructure.Access
+
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="_name" Label="Name" Variant="Variant.Outlined" MaxLength="80" AutoFocus="true" />
+        <h3 class="mt-4 mb-1">Columns, in this order</h3>
+        @for (var i = 0; i < _columns.Count; i++)
+        {
+            var index = i;
+            var column = ColumnCatalog.Find(List, _columns[index].Key)!;
+            <div class="d-flex align-center gap-2">
+                <MudCheckBox T="bool" Value="@(_columns[index].On || column.Required)" Disabled="column.Required" ValueChanged="@(on => _columns[index] = (_columns[index].Key, on))"
+                             Label="@($"{column.Name}{(column.Required ? " (always)" : "")}")" />
+                <span class="vy-grow"></span>
+                <MudIconButton Icon="@Icons.Material.Outlined.ArrowUpward" Size="Size.Small" aria-label="Move up" Disabled="@(index == 0)" OnClick="@(() => Swap(index, index - 1))" />
+                <MudIconButton Icon="@Icons.Material.Outlined.ArrowDownward" Size="Size.Small" aria-label="Move down" Disabled="@(index == _columns.Count - 1)" OnClick="@(() => Swap(index, index + 1))" />
+            </div>
+        }
+        <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="Reset">Default columns</MudButton>
+        <h3 class="mt-4 mb-1">Roles</h3>
+        @foreach (var role in Roles)
+        {
+            <MudCheckBox T="bool" Value="@_roles.Contains(role.Id)" ValueChanged="@(on => { if (on) _roles.Add(role.Id); else _roles.Remove(role.Id); })" Label="@role.Name" />
+        }
+        @if (_error is not null)
+        {
+            <Notice Tone="error" Class="mt-2">@_error</Notice>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    public sealed record LayoutDraft(string Name, IReadOnlyList<string> Columns, IReadOnlyCollection<Guid> Roles);
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public string List { get; set; } = ColumnCatalog.Customers;
+    [Parameter] public string? Name { get; set; }
+    [Parameter] public IReadOnlyList<string>? Columns { get; set; }
+    [Parameter] public IReadOnlyList<RoleDetail> Roles { get; set; } = [];
+    [Parameter] public IReadOnlyCollection<Guid> RoleIds { get; set; } = [];
+
+    private string? _name;
+    private List<(string Key, bool On)> _columns = [];
+    private HashSet<Guid> _roles = [];
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _name = Name;
+        _roles = [.. RoleIds];
+        var chosen = Columns ?? ColumnCatalog.Default(List);
+        _columns = [.. chosen.Select(k => (k, true)), .. ColumnCatalog.Lists[List].Columns.Select(c => c.Key).Where(k => !chosen.Contains(k)).Select(k => (k, false))];
+    }
+
+    private void Swap(int a, int b) => (_columns[a], _columns[b]) = (_columns[b], _columns[a]);
+
+    private void Reset() => _columns = [.. ColumnCatalog.Default(List).Select(k => (k, true))];
+
+    private void Save()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Enter a name.";
+            return;
+        }
+        var columns = _columns.Where(c => c.On || ColumnCatalog.Find(List, c.Key)!.Required).Select(c => c.Key).ToList();
+        Dialog.Close(DialogResult.Ok(new LayoutDraft(_name.Trim(), columns, _roles.ToList())));
+    }
+}
