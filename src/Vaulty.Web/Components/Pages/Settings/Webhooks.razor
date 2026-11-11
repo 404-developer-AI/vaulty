@@ -6,36 +6,42 @@
 @inject CurrentAccess Current
 @inject DisplayTime Time
 @inject ISnackbar Snackbar
+@inject IDialogService Dialogs
 
 <PageTitle>Webhooks · Vaulty</PageTitle>
 
-<h1 class="vy-page-title">Webhooks</h1>
-<p class="vy-page-lede">Vaulty posts a signed JSON message to your endpoint when something happens. Verify the <code>Vaulty-Signature</code> header with the
-    secret: HMAC-SHA256 over the timestamp, a dot and the raw body. Reject messages older than five minutes and repeated <code>Vaulty-Delivery</code> IDs.</p>
-
-<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-    <MudText Typo="Typo.h6">Add a webhook</MudText>
-    <MudGrid Spacing="2">
-        <MudItem xs="12" md="3"><MudTextField @bind-Value="_name" Label="Name" /></MudItem>
-        <MudItem xs="12" md="6"><MudTextField @bind-Value="_url" Label="URL" HelperText="https only, for example https://hooks.example.com/vaulty" /></MudItem>
-    </MudGrid>
+<PageHeader Title="Webhooks">
+    <LedeContent>Vaulty posts a signed JSON message to your endpoint when something happens. Verify the <code>Vaulty-Signature</code> header with the
+        secret: HMAC-SHA256 over the timestamp, a dot and the raw body. Reject messages older than five minutes and repeated <code>Vaulty-Delivery</code> IDs.</LedeContent>
+</PageHeader>
+<Section Title="Add a webhook">
+    <div class="vy-grid-2" style="max-width: 820px">
+        <MudTextField @bind-Value="_name" Label="Name" Variant="Variant.Outlined" />
+        <MudTextField @bind-Value="_url" Label="URL" Variant="Variant.Outlined" HelperText="https only, for example https://hooks.example.com/vaulty" />
+    </div>
+    <div class="mt-3 vy-wizard-h">Events</div>
     <div class="mt-2">
         @foreach (var (kind, description) in NotificationKinds.All)
         {
             <MudCheckBox T="bool" Value="@_events.Contains(kind)" ValueChanged="@(v => Toggle(kind, v))" Label="@($"{kind} · {description}")" Dense="true" />
         }
     </div>
-    <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" OnClick="CreateAsync">Add webhook</MudButton>
+    <div class="vy-wizard-footer"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CreateAsync">Add webhook</MudButton></div>
     @if (_secret is not null)
     {
-        <MudAlert Severity="Severity.Info" Class="mt-3">Signing secret, shown once. Store it in the receiver now.</MudAlert>
+        <Notice Tone="info" Class="mt-3" Title="Signing secret, shown once">Store it in the receiver now; Vaulty cannot show it again.</Notice>
         <pre class="vy-secret mt-2">@_secret</pre>
     }
-</MudPaper>
-
+</Section>
+@if (_hooks.Count == 0)
+{
+    <Section>
+        <EmptyState Title="No webhooks yet" Icon="@Icons.Material.Outlined.Webhook" Compact="true">Add one above to receive events such as a failed backup in your PSA or chat tool.</EmptyState>
+    </Section>
+}
 @foreach (var hook in _hooks)
 {
-    <MudPaper Class="pa-4 mb-3" Elevation="0" Outlined="true">
+    <Section>
         <div class="vy-row-head">
             <span class="vy-status @(hook.Enabled ? "protected" : "neutral")">@(hook.Enabled ? "Enabled" : "Disabled")</span>
             <strong>@hook.Name</strong>
@@ -66,9 +72,8 @@
                 </tbody>
             </MudSimpleTable>
         }
-    </MudPaper>
+    </Section>
 }
-
 @code {
     private IReadOnlyList<WebhookRow> _hooks = [];
     private readonly Dictionary<Guid, IReadOnlyList<DeliveryRow>> _deliveries = [];
@@ -132,6 +137,10 @@
 
     private async Task DeleteAsync(WebhookRow hook)
     {
+        if (!await Dialogs.ConfirmAsync($"Delete the webhook {hook.Name}?", "Vaulty stops sending events to it at once. Its delivery history is removed.", "Delete webhook", danger: true))
+        {
+            return;
+        }
         await WebhookService.DeleteAsync(await Current.GetAsync(), hook.Id);
         await LoadAsync();
     }

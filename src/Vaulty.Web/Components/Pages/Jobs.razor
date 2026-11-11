@@ -15,105 +15,152 @@
 
 <PageTitle>Jobs · Vaulty</PageTitle>
 
-<h1 class="vy-page-title">Jobs</h1>
-<p class="vy-page-lede">Every discovery, backup, restore, export, verification and clean-up, newest first. Quote the request ID when you contact support.</p>
+<PageHeader Title="Jobs" Lede="Every discovery, backup, restore, export, verification and clean-up, newest first. Running jobs update by themselves. Quote the request ID when you contact support." />
 
-<MudGrid Spacing="2" Class="mb-2">
-    <MudItem xs="12" sm="6" md="3">
-        <MudTextField T="string" @bind-Value="_search" Label="Search" Placeholder="Object, tenant or request ID" Clearable="true"
-                      OnBlur="@(() => LoadAsync(reset: true))" OnKeyUp="@(async e => { if (e.Key == "Enter") await LoadAsync(reset: true); })"
-                      OnClearButtonClick="@(() => LoadAsync(reset: true))" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" />
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudSelect T="Guid?" Label="Tenant" Value="_tenant" ValueChanged="@(async v => { _tenant = v; await LoadAsync(reset: true); })" Clearable="true"
-                   ToStringFunc="@(id => _tenants.FirstOrDefault(t => t.Id == id)?.DisplayName ?? "")">
-            @foreach (var t in _tenants) { <MudSelectItem T="Guid?" Value="@t.Id">@t.DisplayName</MudSelectItem> }
-        </MudSelect>
-    </MudItem>
-    <MudItem xs="12" sm="4" md="3">
-        <MudSelect T="string" Label="Status" Value="_state" ValueChanged="@(async v => { _state = v; await LoadAsync(reset: true); })" Clearable="true">
-            @foreach (var s in States) { <MudSelectItem Value="@s">@StateText(s)</MudSelectItem> }
-        </MudSelect>
-    </MudItem>
-    <MudItem xs="12" sm="4" md="3">
-        <MudSelect T="string" Label="Type" Value="_kind" ValueChanged="@(async v => { _kind = v; await LoadAsync(reset: true); })" Clearable="true">
-            @foreach (var k in Kinds) { <MudSelectItem Value="@k">@KindText(k)</MudSelectItem> }
-        </MudSelect>
-    </MudItem>
-</MudGrid>
+<Section Flush="true">
+    <div class="vy-table-toolbar" style="padding: 4px 20px 0">
+        <div class="vy-table-search">
+            <MudTextField T="string" @bind-Value="_search" Placeholder="Object, tenant or request ID" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense"
+                          OnBlur="@(() => LoadAsync(reset: true))" OnKeyUp="@(async e => { if (e.Key == "Enter") await LoadAsync(reset: true); })"
+                          OnClearButtonClick="@(() => LoadAsync(reset: true))" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" aria-label="Search jobs" />
+        </div>
+        <div class="vy-table-filter">
+            <MudSelect T="Guid?" Label="Tenant" Value="_tenant" ValueChanged="@(async v => { _tenant = v; await LoadAsync(reset: true); })" Clearable="true"
+                       Variant="Variant.Outlined" Margin="Margin.Dense" ToStringFunc="@(id => _tenants.FirstOrDefault(t => t.Id == id)?.DisplayName ?? "")">
+                @foreach (var t in _tenants) { <MudSelectItem T="Guid?" Value="@t.Id">@t.DisplayName</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div class="vy-table-filter">
+            <MudSelect T="string" Label="Status" Value="_state" ValueChanged="@(async v => { _state = v; await LoadAsync(reset: true); })" Clearable="true"
+                       Variant="Variant.Outlined" Margin="Margin.Dense">
+                @foreach (var s in States) { <MudSelectItem Value="@s">@StatusText.JobLabel(s)</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div class="vy-table-filter">
+            <MudSelect T="string" Label="Type" Value="_kind" ValueChanged="@(async v => { _kind = v; await LoadAsync(reset: true); })" Clearable="true"
+                       Variant="Variant.Outlined" Margin="Margin.Dense">
+                @foreach (var k in Kinds) { <MudSelectItem Value="@k">@StatusText.JobKind(k)</MudSelectItem> }
+            </MudSelect>
+        </div>
+        @if (Filtered)
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="ClearAsync">Clear filters</MudButton>
+        }
+    </div>
 
-<MudTable Items="_jobs" Dense="true" Hover="true" Elevation="0" Outlined="true">
-    <HeaderContent>
-        <MudTh>Type</MudTh>
-        <MudTh>Status</MudTh>
-        <MudTh>Target</MudTh>
-        <MudTh>Started</MudTh>
-        <MudTh>Finished</MudTh>
-        <MudTh>Result</MudTh>
-        <MudTh>Request ID</MudTh>
-        <MudTh></MudTh>
-    </HeaderContent>
-    <RowTemplate>
-        <MudTd>@KindText(context.Kind)</MudTd>
-        <MudTd><span class="vy-status @StateClass(context.State)">@StateText(context.State)</span></MudTd>
-        <MudTd>@(context.ObjectName ?? context.TenantName ?? "")</MudTd>
-        <MudTd>@Time.Relative(context.StartedAt ?? context.CreatedAt)</MudTd>
-        <MudTd>@Time.Relative(context.FinishedAt)</MudTd>
-        <MudTd Style="min-width: 320px">
-            @if (context.State == "running" && context.Kind == "backup")
-            {
-                var now = Clock.GetUtcNow();
-                var progress = context.Progress(now);
-                <div class="vy-progress">
-                    @if (progress is { } p)
+    @if (_error is not null)
+    {
+        <div style="padding: 0 20px"><Notice Tone="error" Title="The jobs could not be loaded" OnRetry="@(() => LoadAsync(reset: true))">@_error</Notice></div>
+    }
+
+    <MudTable Items="_jobs" Dense="true" Hover="true" Elevation="0" Loading="_loading" LoadingProgressColor="Color.Primary" Breakpoint="Breakpoint.None" HorizontalScrollbar="true">
+        <HeaderContent>
+            <MudTh>Type</MudTh>
+            <MudTh>Status</MudTh>
+            <MudTh>Target</MudTh>
+            <MudTh>Started</MudTh>
+            <MudTh>Finished</MudTh>
+            <MudTh>Result</MudTh>
+            <MudTh>Request ID</MudTh>
+            <MudTh><span class="vy-sr-only">Actions</span></MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>@StatusText.JobKind(context.Kind)</MudTd>
+            <MudTd><span class="vy-status @StatusText.JobTone(context.State)">@StatusText.JobLabel(context.State)</span></MudTd>
+            <MudTd>
+                @if (context.ObjectId is { } objectId && context.ObjectName is not null)
+                {
+                    <a href="@($"/objects/{objectId}")">@context.ObjectName</a>
+                    @if (context.TenantName is not null)
                     {
-                        <div class="vy-progress-bar">
-                            <MudProgressLinear Value="@(p.Fraction * 100)" Color="Color.Primary" Rounded="true" Size="Size.Large" />
-                            <strong class="vy-progress-percent">@((int)(p.Fraction * 100))%</strong>
-                        </div>
-                        <div>@DoneText(context)</div>
-                        <div class="vy-muted">
-                            @if (p.Remaining is { } left)
-                            {
-                                <text>@(left.TotalMinutes < 1 ? "Less than a minute" : $"About {Duration(left)}") left · done around @Time.Ahead(now + left)</text>
-                            }
-                            else
-                            {
-                                <text>Estimating the time left…</text>
-                            }
-                        </div>
+                        <div class="vy-cell-sub">@context.TenantName</div>
                     }
-                    else
-                    {
-                        @* An incremental run learns its changes as it goes, and a run started before sizes were recorded has none:
-                           there is no total to measure against, so no guess. *@
-                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Rounded="true" Size="Size.Medium" />
-                        <div>@ItemsText(context.ItemsSoFar ?? 0) items processed@(context.BytesSoFar is > 0 ? $" · {Bytes(context.BytesSoFar.Value)}" : "")</div>
-                        <div class="vy-muted">Total not known for this run, so no time estimate.</div>
-                    }
-                </div>
-            }
-            @Counts(context.ResultCounts)
-            @if (!string.IsNullOrEmpty(context.Error)) { <div class="vy-muted">@context.Error</div> }
-        </MudTd>
-        <MudTd><code class="vy-request-id" title="@context.WorkflowId">@context.Id</code></MudTd>
-        <MudTd>
-            @if (context.Kind is "backup" or "discovery" && context.State is "queued" or "running")
+                }
+                else if (context.TenantId is { } tenantId && context.TenantName is not null)
+                {
+                    <a href="@($"/tenants/{tenantId}")">@context.TenantName</a>
+                }
+            </MudTd>
+            <MudTd Class="vy-nowrap">@Time.Relative(context.StartedAt ?? context.CreatedAt)</MudTd>
+            <MudTd Class="vy-nowrap">@Time.Relative(context.FinishedAt)</MudTd>
+            <MudTd Style="min-width: 320px">
+                @if (context.State == "running" && context.Kind == "backup")
+                {
+                    var now = Clock.GetUtcNow();
+                    var progress = context.Progress(now);
+                    <div class="vy-progress">
+                        @if (progress is { } p)
+                        {
+                            <div class="vy-progress-bar">
+                                <MudProgressLinear Value="@(p.Fraction * 100)" Color="Color.Primary" Rounded="true" Size="Size.Large" aria-label="Progress" />
+                                <strong class="vy-progress-percent">@((int)(p.Fraction * 100))%</strong>
+                            </div>
+                            <div>@DoneText(context)</div>
+                            <div class="vy-muted">
+                                @if (p.Remaining is { } left)
+                                {
+                                    <text>@(left.TotalMinutes < 1 ? "Less than a minute" : $"About {Duration(left)}") left · done around @Time.Ahead(now + left)</text>
+                                }
+                                else
+                                {
+                                    <text>Estimating the time left…</text>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            @* An incremental run learns its changes as it goes, and a run started before sizes were recorded has none:
+                               there is no total to measure against, so no guess. *@
+                            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Rounded="true" Size="Size.Medium" aria-label="Progress" />
+                            <div>@ItemsText(context.ItemsSoFar ?? 0) items processed@(context.BytesSoFar is > 0 ? $" · {Bytes(context.BytesSoFar.Value)}" : "")</div>
+                            <div class="vy-muted">Total not known for this run, so no time estimate.</div>
+                        }
+                    </div>
+                }
+                @Counts(context.ResultCounts)
+                @if (!string.IsNullOrEmpty(context.Error))
+                {
+                    <div class="vy-state-reason" style="color: var(--vy-error-text)">@context.Error</div>
+                }
+            </MudTd>
+            <MudTd><code class="vy-request-id" title="@context.WorkflowId">@context.Id</code></MudTd>
+            <MudTd Class="vy-actions-cell">
+                @if (context.Kind is "restore" or "export" && context.ObjectId is not null)
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Href="@($"/objects/{context.ObjectId}")">Report</MudButton>
+                }
+                @if (context.Kind is "backup" or "discovery" && context.State is "queued" or "running")
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" Disabled="_busy" OnClick="@(() => CancelAsync(context))">Cancel</MudButton>
+                }
+            </MudTd>
+        </RowTemplate>
+        <NoRecordsContent>
+            @if (Filtered)
             {
-                <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" Disabled="_busy" OnClick="@(() => CancelAsync(context))">Cancel</MudButton>
+                <EmptyState Title="No jobs match the filters" Icon="@Icons.Material.Outlined.SearchOff" Compact="true">
+                    <Actions><MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="ClearAsync">Clear filters</MudButton></Actions>
+                </EmptyState>
             }
-        </MudTd>
-    </RowTemplate>
-    <NoRecordsContent><span class="vy-muted">No jobs yet.</span></NoRecordsContent>
-</MudTable>
-@if (_jobs.Count >= JobsService.PageSize)
-{
-    <MudButton Class="mt-2" Variant="Variant.Text" OnClick="@(() => LoadAsync(reset: false))">Older jobs</MudButton>
-}
+            else
+            {
+                <EmptyState Title="No jobs yet" Icon="@Icons.Material.Outlined.History" Compact="true">Jobs appear here as soon as a tenant is connected and its first discovery starts.</EmptyState>
+            }
+        </NoRecordsContent>
+    </MudTable>
+    @if (_jobs.Count >= JobsService.PageSize)
+    {
+        <div class="pa-3"><MudButton Variant="Variant.Text" OnClick="@(() => LoadAsync(reset: false))">Older jobs</MudButton></div>
+    }
+</Section>
 
 @code {
     private static readonly string[] States = ["queued", "running", "succeeded", "partial", "failed", "cancelled"];
     private static readonly string[] Kinds = ["discovery", "backup", "restore", "export", "verification", "garbage_collection"];
+
+    [SupplyParameterFromQuery(Name = "kind")] public string? KindQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "state")] public string? StateQuery { get; set; }
+
     private List<JobRow> _jobs = [];
     private IReadOnlyList<TenantRow> _tenants = [];
     private string? _state;
@@ -121,12 +168,18 @@
     private string? _search;
     private Guid? _tenant;
     private bool _busy;
+    private bool _loading = true;
+    private string? _error;
     private PeriodicTimer? _refresh;
     private Task? _refreshing;
+
+    private bool Filtered => _state is not null || _kind is not null || _tenant is not null || !string.IsNullOrWhiteSpace(_search);
 
     protected override async Task OnInitializedAsync()
     {
         await Time.LoadAsync();
+        if (KindQuery is not null && Kinds.Contains(KindQuery)) _kind = KindQuery;
+        if (StateQuery is not null && States.Contains(StateQuery)) _state = StateQuery;
         var access = await Current.GetAsync();
         _tenants = (await Tenants.ListAsync(access.OrganizationId)).Where(t => access.Allows(Permissions.CustomersView, t.CustomerId))
             .OrderBy(t => t.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
@@ -160,19 +213,37 @@
         if (_refreshing is not null) await _refreshing;
     }
 
+    private async Task ClearAsync()
+    {
+        (_state, _kind, _tenant, _search) = (null, null, null, null);
+        await LoadAsync(reset: true);
+    }
+
     private async Task LoadAsync(bool reset)
     {
         var before = reset || _jobs.Count == 0 ? (DateTimeOffset?)null : _jobs[^1].CreatedAt;
-        var page = await JobsService.ListAsync(await Current.GetAsync(), _state, _kind, before, _search, _tenant);
-        _jobs = reset ? page.ToList() : [.. _jobs, .. page];
+        try
+        {
+            var page = await JobsService.ListAsync(await Current.GetAsync(), _state, _kind, before, _search, _tenant);
+            _jobs = reset ? page.ToList() : [.. _jobs, .. page];
+            _error = null;
+        }
+        catch (Exception ex) when (ex is Npgsql.NpgsqlException or TimeoutException)
+        {
+            _error = "Vaulty could not read the jobs from its database. Try again in a moment.";
+        }
+        finally
+        {
+            _loading = false;
+        }
     }
 
     private async Task CancelAsync(JobRow job)
     {
-        var confirmed = await Dialogs.ShowMessageBoxAsync("Cancel this job?",
-            $"The {KindText(job.Kind).ToLowerInvariant()} of {job.ObjectName ?? job.TenantName} stops. Nothing already stored is lost, and its next planned run starts as usual.",
-            yesText: "Cancel the job", cancelText: "Keep it running");
-        if (confirmed != true) return;
+        var confirmed = await Dialogs.ConfirmAsync("Cancel this job?",
+            $"The {StatusText.JobKind(job.Kind).ToLowerInvariant()} of {job.ObjectName ?? job.TenantName} stops. Nothing already stored is lost, and its next planned run starts as usual.",
+            "Cancel the job", danger: true, cancelText: "Keep it running");
+        if (!confirmed) return;
         _busy = true;
         try
         {
@@ -208,35 +279,6 @@
         >= 1L << 30 => $"{bytes / (double)(1L << 30):0.0} GB",
         >= 1L << 20 => $"{bytes / (double)(1L << 20):0.0} MB",
         _ => $"{bytes / 1024.0:0} KB",
-    };
-
-    private static string StateClass(string state) => state switch
-    {
-        "succeeded" => "succeeded",
-        "partial" => "partial",
-        "failed" => "failed",
-        "running" or "queued" => "running",
-        _ => "neutral",
-    };
-
-    private static string StateText(string state) => state switch
-    {
-        "queued" => "Queued",
-        "running" => "Running",
-        "succeeded" => "Succeeded",
-        "partial" => "Partial",
-        "failed" => "Failed",
-        _ => "Cancelled",
-    };
-
-    private static string KindText(string kind) => kind switch
-    {
-        "discovery" => "Discovery",
-        "backup" => "Backup",
-        "restore" => "Restore",
-        "export" => "Export",
-        "verification" => "Verification",
-        _ => "Clean-up",
     };
 
     private static string Counts(string json)

@@ -10,40 +10,40 @@
 @inject TimeProvider Clock
 @inject ISnackbar Snackbar
 
-<PageTitle>Settings · Vaulty</PageTitle>
+<PageTitle>E-mail and display · Vaulty</PageTitle>
 
-<h1 class="vy-page-title">Settings</h1>
-<p class="vy-page-lede">E-mail for alerts and digests, how times are shown, and the defaults for new webhooks.</p>
+<PageHeader Title="E-mail and display" Lede="E-mail for alerts and digests, how times are shown, and the defaults for new webhooks. Saving asks you to confirm it's you." />
 
-<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-    <MudText Typo="Typo.h6">E-mail (SMTP)</MudText>
-    <MudGrid Spacing="2">
-        <MudItem xs="12" md="4"><MudTextField @bind-Value="_host" Label="Server" /></MudItem>
-        <MudItem xs="6" md="2"><MudNumericField @bind-Value="_port" Label="Port" /></MudItem>
-        <MudItem xs="6" md="2">
-            <MudSelect T="string" @bind-Value="_security" Label="Security">
+<Section Title="E-mail (SMTP)" Description="Vaulty sends alerts and the daily digest through this server. Export links are never sent by e-mail.">
+    <div class="vy-grid-2" style="max-width: 820px">
+        <MudTextField @bind-Value="_host" Label="Server" Variant="Variant.Outlined" Placeholder="smtp.example.com" />
+        <div class="d-flex gap-3">
+            <MudNumericField @bind-Value="_port" Label="Port" Variant="Variant.Outlined" Style="max-width: 140px" />
+            <MudSelect T="string" @bind-Value="_security" Label="Security" Variant="Variant.Outlined">
                 <MudSelectItem Value="@("starttls")">STARTTLS</MudSelectItem>
                 <MudSelectItem Value="@("ssl")">TLS</MudSelectItem>
             </MudSelect>
-        </MudItem>
-        <MudItem xs="12" md="4"><MudTextField @bind-Value="_userName" Label="User name" /></MudItem>
-        <MudItem xs="12" md="4"><MudTextField @bind-Value="_password" Label="Password" InputType="InputType.Password" HelperText="Leave empty to keep the stored password" /></MudItem>
-        <MudItem xs="12" md="4"><MudTextField @bind-Value="_fromAddress" Label="Sender address" /></MudItem>
-        <MudItem xs="12" md="4"><MudTextField @bind-Value="_fromName" Label="Sender name" /></MudItem>
-    </MudGrid>
-    <MudButton Class="mt-3" Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveSmtpAsync">Save</MudButton>
-    <MudTextField Class="mt-3" @bind-Value="_testTo" Label="Send a test message to" />
-    <MudButton Class="mt-2" Variant="Variant.Outlined" OnClick="TestMailAsync">Send test message</MudButton>
-</MudPaper>
+        </div>
+        <MudTextField @bind-Value="_userName" Label="User name" Variant="Variant.Outlined" />
+        <MudTextField @bind-Value="_password" Label="Password" InputType="InputType.Password" Variant="Variant.Outlined" HelperText="Leave empty to keep the stored password" />
+        <MudTextField @bind-Value="_fromAddress" Label="Sender address" Variant="Variant.Outlined" Placeholder="vaulty@example.com" />
+        <MudTextField @bind-Value="_fromName" Label="Sender name" Variant="Variant.Outlined" />
+    </div>
+    <div class="vy-wizard-footer">
+        <div style="flex: 0 1 320px"><MudTextField @bind-Value="_testTo" Label="Send a test message to" Variant="Variant.Outlined" Margin="Margin.Dense" /></div>
+        <MudButton Variant="Variant.Outlined" OnClick="TestMailAsync" Disabled="@string.IsNullOrWhiteSpace(_testTo)">Send test message</MudButton>
+        <span class="vy-grow"></span>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveSmtpAsync">Save e-mail settings</MudButton>
+    </div>
+</Section>
 
-<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-    <MudText Typo="Typo.h6">Display and webhooks</MudText>
-    <MudGrid Spacing="2">
-        <MudItem xs="12" md="4"><MudTextField @bind-Value="_timeZone" Label="Time zone" HelperText="For example Europe/Brussels" /></MudItem>
-        <MudItem xs="12" md="4"><MudNumericField @bind-Value="_webhookTimeout" Label="Webhook timeout (seconds)" Min="1" Max="60" /></MudItem>
-    </MudGrid>
-    <MudButton Class="mt-3" Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveDisplayAsync">Save</MudButton>
-</MudPaper>
+<Section Title="Display and webhooks">
+    <div class="vy-grid-2" style="max-width: 820px">
+        <MudTextField @bind-Value="_timeZone" Label="Time zone" Variant="Variant.Outlined" HelperText="Every time in Vaulty is shown in this zone, for example Europe/Brussels" />
+        <MudNumericField @bind-Value="_webhookTimeout" Label="Webhook timeout (seconds)" Min="1" Max="60" Variant="Variant.Outlined" />
+    </div>
+    <div class="vy-wizard-footer"><span class="vy-grow"></span><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveDisplayAsync">Save</MudButton></div>
+</Section>
 
 @code {
     [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
@@ -120,6 +120,6 @@
             return;
         }
         await Settings.SetAsync(DisplaySettings.SettingKey, DisplaySettings.Default with { TimeZone = _timeZone, WebhookTimeoutSeconds = _webhookTimeout }, _actor);
-        Snackbar.Add("Saved.", Severity.Success);
+        Snackbar.Add("Display settings saved. Times show in the new zone from the next page you open.", Severity.Success);
     }
 }

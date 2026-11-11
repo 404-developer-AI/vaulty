@@ -10,31 +10,39 @@
 @inject NavigationManager Navigation
 @inject TimeProvider Clock
 @inject ISnackbar Snackbar
+@inject IDialogService Dialogs
 
 <PageTitle>Users and roles · Vaulty</PageTitle>
 
-<h1 class="vy-page-title">Users and roles</h1>
-<p class="vy-page-lede">
-    Roles give permissions, for every customer or for one. Roles that allow restores, exports or administration need a passkey or
-    authenticator app on the account. Changes ask you to confirm it's you.
-</p>
-
-<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-    <MudText Typo="Typo.h6">Add a user</MudText>
-    <MudGrid Spacing="2">
-        <MudItem xs="12" md="4"><MudTextField @bind-Value="_newEmail" Label="E-mail address" /></MudItem>
-        <MudItem xs="12" md="3"><MudTextField @bind-Value="_newName" Label="Name" /></MudItem>
-        <MudItem xs="12" md="3"><MudTextField @bind-Value="_newPassword" Label="Initial password" InputType="InputType.Password" HelperText="At least 12 characters" /></MudItem>
-        <MudItem xs="12" md="2" Class="d-flex align-center"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="AddUserAsync">Add user</MudButton></MudItem>
-    </MudGrid>
-</MudPaper>
-
-<MudTable Items="_users" Hover="true" Elevation="0" Outlined="true" Dense="true">
+<PageHeader Title="Users and roles"
+            Lede="Roles give permissions, for every customer or for one. Roles that allow restores, exports or administration need a passkey or authenticator app on the account. Changes ask you to confirm it's you.">
+    <Actions>
+        @if (!_adding)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.PersonAdd" OnClick="@(() => _adding = true)">Add a user</MudButton>
+        }
+    </Actions>
+</PageHeader>
+@if (_adding)
+{
+    <Section Title="Add a user" Description="The user signs in with this password once and must add a passkey or authenticator app before anything else.">
+        <div class="vy-grid-2" style="max-width: 820px">
+            <MudTextField @bind-Value="_newEmail" Label="E-mail address" Variant="Variant.Outlined" InputType="InputType.Email" AutoFocus="true" />
+            <MudTextField @bind-Value="_newName" Label="Name" Variant="Variant.Outlined" />
+            <MudTextField @bind-Value="_newPassword" Label="Initial password" InputType="InputType.Password" Variant="Variant.Outlined" HelperText="At least 12 characters" />
+        </div>
+        <div class="vy-wizard-footer">
+            <MudButton Variant="Variant.Text" OnClick="@(() => _adding = false)">Cancel</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="AddUserAsync">Add user</MudButton>
+        </div>
+    </Section>
+}
+<MudTable Items="_users" Hover="true" Elevation="0" Dense="true" Breakpoint="Breakpoint.None" HorizontalScrollbar="true">
     <HeaderContent>
         <MudTh>User</MudTh>
         <MudTh>Second factor</MudTh>
         <MudTh>Roles</MudTh>
-        <MudTh>Add role</MudTh>
+        <MudTh><span class="vy-sr-only">Add a role</span></MudTh>
     </HeaderContent>
     <RowTemplate>
         <MudTd>
@@ -44,7 +52,7 @@
         <MudTd>
             @if (context.HasMfa)
             {
-                <span class="vy-status protected">Set up</span>
+                <span class="vy-status succeeded">Set up</span>
             }
             else
             {
@@ -62,7 +70,7 @@
         <MudTd>
             @if (_canManageRoles)
             {
-                <MudSelect T="Guid" Dense="true" Label="Role" Value="Guid.Empty" ToStringFunc="@RoleName" ValueChanged="@(role => AssignAsync(context, role))">
+                <MudSelect T="Guid" Dense="true" Label="Add a role" Variant="Variant.Outlined" Margin="Margin.Dense" Value="Guid.Empty" ToStringFunc="@RoleName" ValueChanged="@(role => AssignAsync(context, role))">
                     @foreach (var role in _roles)
                     {
                         <MudSelectItem Value="@role.Id">@role.Name</MudSelectItem>
@@ -86,6 +94,7 @@
     private string? _newEmail;
     private string? _newName;
     private string? _newPassword;
+    private bool _adding;
     private Guid _organizationId;
     private Guid _userId;
 
@@ -154,6 +163,7 @@
         }
         await AccessService.RecordAsync(_organizationId, $"user:{_userId}", "user.created", $"user:{user.Id}");
         _newEmail = _newName = _newPassword = null;
+        _adding = false;
         Snackbar.Add($"{email} can now sign in and must add a second factor first.", Severity.Success);
         await LoadAsync();
     }
@@ -175,6 +185,13 @@
 
     private async Task RemoveAsync(AssignmentRow assignment)
     {
+        var user = _users.FirstOrDefault(u => u.Id == assignment.UserId);
+        if (!await Dialogs.ConfirmAsync($"Remove the role {assignment.RoleName}?",
+                $"{user?.DisplayName ?? user?.UserName ?? "The user"} loses the permissions of this role{(assignment.CustomerName is { } c ? $" for {c}" : "")} at once.",
+                "Remove role", danger: true, stepUp: !VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)))
+        {
+            return;
+        }
         if (!await ConfirmedAsync()) return;
         await AccessService.RemoveRoleAsync(_organizationId, _userId, assignment.UserId, assignment.RoleId, assignment.CustomerId);
         await LoadAsync();
