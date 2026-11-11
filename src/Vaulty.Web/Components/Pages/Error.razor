@@ -3,6 +3,10 @@
 
 <PageTitle>Something went wrong · Vaulty</PageTitle>
 
-<h1 class="vy-page-title">Something went wrong</h1>
-<p class="vy-page-lede">This page could not be shown. Try again in a moment; if it keeps happening, the host administrator finds the details in the Vaulty logs.</p>
-<p><a href="/">Back to the start page</a></p>
+<PageHeader Title="Something went wrong" />
+<Section>
+    <EmptyState Title="This page could not be shown" Icon="@Icons.Material.Outlined.ErrorOutline">
+        <ChildContent>Nothing was changed. Try again in a moment; if it keeps happening, the host administrator finds the details in the Vaulty logs.</ChildContent>
+        <Actions><a class="vy-button" style="width: auto; text-decoration: none" href="/">Back to the dashboard</a></Actions>
+    </EmptyState>
+</Section>

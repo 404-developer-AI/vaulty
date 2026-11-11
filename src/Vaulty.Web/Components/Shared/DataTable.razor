@@ -1,0 +1,121 @@
+@typeparam T
+@* The one list component: search, filters, sortable columns (MudTableSortLabel in the header), a count of what is shown,
+   and a loading, error, empty and no-match state. Filtering happens in the browser session on the rows already loaded. *@
+<div class="vy-datatable">
+    @if (Searchable || Filters is not null || ToolbarActions is not null)
+    {
+        <div class="vy-table-toolbar">
+            @if (Searchable)
+            {
+                <div class="vy-table-search">
+                    <MudTextField T="string" Value="@_query" ValueChanged="@OnQuery" Immediate="true" DebounceInterval="200" Clearable="true"
+                                  Placeholder="@SearchPlaceholder" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" aria-label="@SearchPlaceholder" />
+                </div>
+            }
+            @Filters
+            @if (!Loading && Error is null && Items is not null)
+            {
+                <span class="vy-table-count" aria-live="polite">@CountText</span>
+            }
+            @if (ToolbarActions is not null)
+            {
+                <div class="vy-table-toolbar-end">@ToolbarActions</div>
+            }
+        </div>
+    }
+    @if (Error is not null)
+    {
+        <Notice Tone="error" Title="@ErrorTitle" OnRetry="OnRetry">@Error</Notice>
+    }
+    else
+    {
+        <MudTable T="T" Items="@Visible" Loading="@Loading" LoadingProgressColor="Color.Primary" Hover="true" Dense="true" Elevation="0"
+                  Breakpoint="Breakpoint.None" HorizontalScrollbar="true" RowClassFunc="@RowClass" OnRowClick="@RowClicked" Class="@TableClass">
+            <HeaderContent>@HeaderContent</HeaderContent>
+            <RowTemplate>@RowTemplate(context)</RowTemplate>
+            <NoRecordsContent>
+                @if (Filtered)
+                {
+                    <EmptyState Title="Nothing matches" Icon="@Icons.Material.Outlined.SearchOff" Compact="true">
+                        <ChildContent>No @Noun match the search or filters.</ChildContent>
+                        <Actions>
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="ClearAsync">Clear search and filters</MudButton>
+                        </Actions>
+                    </EmptyState>
+                }
+                else
+                {
+                    @EmptyContent
+                }
+            </NoRecordsContent>
+            <LoadingContent><span class="vy-muted">Loading @Noun…</span></LoadingContent>
+        </MudTable>
+    }
+</div>
+
+@code {
+    [Parameter] public IEnumerable<T>? Items { get; set; }
+    [Parameter, EditorRequired] public RenderFragment HeaderContent { get; set; } = default!;
+    [Parameter, EditorRequired] public RenderFragment<T> RowTemplate { get; set; } = default!;
+    [Parameter] public RenderFragment? EmptyContent { get; set; }
+    [Parameter] public RenderFragment? Filters { get; set; }
+    [Parameter] public RenderFragment? ToolbarActions { get; set; }
+    [Parameter] public bool Searchable { get; set; } = true;
+    [Parameter] public string SearchPlaceholder { get; set; } = "Search";
+    /// <summary>The words of a search, matched against a row.</summary>
+    [Parameter] public Func<T, string, bool>? SearchFilter { get; set; }
+    /// <summary>The page's own filters (selects above the table); true keeps the row.</summary>
+    [Parameter] public Func<T, bool>? Filter { get; set; }
+    /// <summary>True while the page's own filters are set, so an empty result says "nothing matches", not "nothing yet".</summary>
+    [Parameter] public bool FiltersActive { get; set; }
+    [Parameter] public EventCallback OnClearFilters { get; set; }
+    [Parameter] public bool Loading { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public string ErrorTitle { get; set; } = "This list could not be loaded";
+    [Parameter] public EventCallback OnRetry { get; set; }
+    /// <summary>Plural noun for counts and messages: "customers", "protected objects".</summary>
+    [Parameter] public string Noun { get; set; } = "items";
+    [Parameter] public EventCallback<T> OnRowClick { get; set; }
+    [Parameter] public Func<T, bool>? Selected { get; set; }
+    [Parameter] public string? TableClass { get; set; }
+
+    private string? _query;
+
+    private bool Filtered => !string.IsNullOrWhiteSpace(_query) || FiltersActive;
+
+    private IEnumerable<T> Visible => (Items ?? []).Where(row =>
+        (Filter is null || Filter(row)) && (string.IsNullOrWhiteSpace(_query) || SearchFilter is null || SearchFilter(row, _query.Trim())));
+
+    private string CountText
+    {
+        get
+        {
+            var all = Items?.Count() ?? 0;
+            var shown = Visible.Count();
+            return shown == all ? $"{N(all)} {Noun}" : $"{N(shown)} of {N(all)} {Noun}";
+        }
+    }
+
+    private static string N(int value) => value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+
+    private void OnQuery(string? value) => _query = value;
+
+    private async Task ClearAsync()
+    {
+        _query = null;
+        if (OnClearFilters.HasDelegate) await OnClearFilters.InvokeAsync();
+    }
+
+    private string RowClass(T row, int index) =>
+        (OnRowClick.HasDelegate ? "vy-row-click " : "") + (Selected?.Invoke(row) == true ? "vy-row-selected" : "");
+
+    private async Task RowClicked(TableRowClickEventArgs<T> e)
+    {
+        if (OnRowClick.HasDelegate && e.Item is not null) await OnRowClick.InvokeAsync(e.Item);
+    }
+
+    /// <summary>A case-insensitive match of the search against any of the given values.</summary>
+    public static bool Matches(string query, params string?[] values) =>
+        values.Any(v => v is not null && v.Contains(query, StringComparison.OrdinalIgnoreCase));
+}

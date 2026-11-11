@@ -7,6 +7,26 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- A redesigned web interface built on one set of shared components (page header with breadcrumbs, sections, status
+  chips that say what happened, data tables with search, filters, sorting and loading, empty and error states,
+  confirmation dialogs that announce "Confirm it's you", wizard steps). Text is 14px, every chip meets WCAG AA
+  contrast, focus is always visible and the menu folds away on smaller screens.
+- A search field in the top bar of every page (press `/` or Ctrl+K) that finds customers, tenants and mailboxes or
+  OneDrives at once and searches messages and files on Enter. The search page groups names and items.
+- The dashboard starts with what needs attention: exact counts, one row per problem (a tenant that lost consent, a
+  failed or partial protected object) with what happened, what to do and a direct action, open alerts with a link to
+  the affected tenant or object, then the customer, tenant and object rollup with only what needs attention open.
+- Restore and export as a four-step wizard (what, snapshot, where to, confirm) with a restore folder as the default, a
+  summary before anything starts and the limits where they apply. After "Confirm it's you" the restore starts without
+  choosing again. The restore page states the outcome in one sentence and can show only failed or skipped items.
+- A protected object lists the items its latest partial snapshot misses, grouped by reason, with what to do.
+- Connecting a tenant is a guided page with steps; what was entered survives "Confirm it's you", and the tenant page
+  shows a set-up checklist afterwards. The tenant page has tabs for protected objects, policy, connection, and legal
+  hold and deletion; policy frequency and retention are chosen in plain words.
+- A printable protection report per customer (print or save as PDF) to send to the customer.
+- Confirmation before excluding objects, releasing a legal hold, shortening retention, deleting a tenant (type its
+  name), deleting a webhook, removing a role and cancelling a job or restore.
+
 - A job reconciler in the worker compares open backup and discovery jobs with the workflow engine every two minutes. A
   job whose workflow ended without recording it (terminated, timed out, removed) is closed with its staged snapshot,
   and raises a backup alert when it failed. A workflow whose task keeps failing is marked stuck on the jobs page and

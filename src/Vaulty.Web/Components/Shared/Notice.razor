@@ -1,0 +1,39 @@
+@* An inline message on a page: error (could not load or do something), warning, info, success or neutral. *@
+<div class="vy-notice @Tone @Class" role="@(Tone is "error" or "warning" ? "alert" : "status")">
+    <MudIcon Icon="@IconFor" Size="Size.Small" />
+    <div class="vy-notice-body">
+        @if (Title is not null)
+        {
+            <div class="vy-notice-title">@Title</div>
+        }
+        @ChildContent
+        @if (Actions is not null || OnRetry.HasDelegate)
+        {
+            <div class="vy-notice-actions">
+                @Actions
+                @if (OnRetry.HasDelegate)
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="OnRetry">Try again</MudButton>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>error, warning, info, success or neutral.</summary>
+    [Parameter] public string Tone { get; set; } = "info";
+    [Parameter] public string? Title { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+    [Parameter] public string? Class { get; set; }
+
+    private string IconFor => Tone switch
+    {
+        "error" => Icons.Material.Outlined.ErrorOutline,
+        "warning" => Icons.Material.Outlined.WarningAmber,
+        "success" => Icons.Material.Outlined.CheckCircle,
+        _ => Icons.Material.Outlined.Info,
+    };
+}

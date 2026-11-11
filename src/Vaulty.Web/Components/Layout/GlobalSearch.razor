@@ -1,0 +1,62 @@
+@inject QuickSearch Search
+@inject NavigationManager Navigation
+@* The search field in the top bar of every page. "/" or Ctrl+K puts the cursor in it (js/app.js); Enter without a choice
+   searches messages and files. *@
+<div class="vy-topbar-search" id="vy-global-search" role="search">
+    <MudAutocomplete T="SearchSuggestion" @ref="_box" Value="_value" ValueChanged="OpenAsync" SearchFunc="SuggestAsync" ToStringFunc="@(s => s?.Title ?? "")"
+                     Placeholder="Search customers, tenants, mailboxes and files" Variant="Variant.Outlined" Margin="Margin.Dense" DebounceInterval="150"
+                     MinCharacters="1" MaxItems="10" ResetValueOnEmptyText="true" CoerceText="false" CoerceValue="false" SelectValueOnTab="false"
+                     Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" ShowProgressIndicator="true" Dense="true" SelectOnActivation="false"
+                     OnKeyUp="KeyUpAsync" aria-label="Search customers, tenants, mailboxes and files" Clearable="true" OnClearButtonClick="@(() => _text = null)"
+                     TextChanged="@(t => _text = t)">
+        <ItemTemplate Context="s">
+            <div class="d-flex align-center gap-3" style="min-width: 0">
+                <MudIcon Icon="@IconFor(s.Kind)" Size="Size.Small" Style="color: var(--vy-text-secondary)" />
+                <div style="min-width: 0; flex: 1">
+                    <div class="vy-cell-main">@s.Title</div>
+                    <div class="vy-cell-sub">@s.Subtitle</div>
+                </div>
+                @if (s.Status is { } status)
+                {
+                    <StatusChip Status="status" />
+                }
+            </div>
+        </ItemTemplate>
+        <NoItemsTemplate><span class="vy-muted pa-2">Nothing found. Press Enter to search messages and files.</span></NoItemsTemplate>
+    </MudAutocomplete>
+</div>
+
+@code {
+    private MudAutocomplete<SearchSuggestion>? _box;
+    private SearchSuggestion? _value;
+    private string? _text;
+
+    private async Task<IEnumerable<SearchSuggestion>> SuggestAsync(string? text, CancellationToken cancellationToken) =>
+        await Search.SuggestAsync(text, cancellationToken: cancellationToken);
+
+    private async Task OpenAsync(SearchSuggestion? suggestion)
+    {
+        if (suggestion is null) return;
+        _value = null;
+        _text = null;
+        if (_box is not null) await _box.ClearAsync();
+        Navigation.NavigateTo(suggestion.Href);
+    }
+
+    private async Task KeyUpAsync(KeyboardEventArgs e)
+    {
+        // Enter while no suggestion is highlighted searches items for the typed words.
+        if (e.Key != "Enter" || string.IsNullOrWhiteSpace(_text) || (_box?.Open ?? false)) return;
+        var text = _text.Trim();
+        if (_box is not null) await _box.ClearAsync();
+        Navigation.NavigateTo($"/search?q={Uri.EscapeDataString(text)}");
+    }
+
+    private static string IconFor(SuggestionKind kind) => kind switch
+    {
+        SuggestionKind.Customer => Icons.Material.Outlined.Business,
+        SuggestionKind.Tenant => Icons.Material.Outlined.Domain,
+        SuggestionKind.ProtectedObject => Icons.Material.Outlined.Inbox,
+        _ => Icons.Material.Outlined.ManageSearch,
+    };
+}

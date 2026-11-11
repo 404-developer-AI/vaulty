@@ -1,0 +1,58 @@
+@* Confirmation of an action that is hard to undo: what happens, the consequences, and, when the action asks for it,
+   that "Confirm it's you" follows. A destructive action can ask to type a name first. *@
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            @if (Danger)
+            {
+                <MudIcon Icon="@Icons.Material.Outlined.WarningAmber" Style="color: var(--vy-error)" />
+            }
+            <span>@Title</span>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div style="max-width: 520px">
+            <p class="mt-0">@Message</p>
+            @if (Details is { Count: > 0 })
+            {
+                <ul class="mt-2 mb-0 pl-5">
+                    @foreach (var line in Details)
+                    {
+                        <li>@line</li>
+                    }
+                </ul>
+            }
+            @if (StepUp)
+            {
+                <Notice Tone="neutral">Next, confirm it's you with your passkey or authenticator app.</Notice>
+            }
+            @if (TypeToConfirm is not null)
+            {
+                <MudTextField T="string" @bind-Value="_typed" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-3"
+                              Label="@($"Type {TypeToConfirm} to confirm")" AutoFocus="true" />
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="@(() => Dialog.Cancel())">@CancelText</MudButton>
+        <MudButton Variant="Variant.Filled" Color="@(Danger ? Color.Error : Color.Primary)" Disabled="@(!CanConfirm)"
+                   OnClick="@(() => Dialog.Close(DialogResult.Ok(true)))">@ConfirmText</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string Message { get; set; } = "";
+    [Parameter] public IReadOnlyList<string>? Details { get; set; }
+    [Parameter] public string ConfirmText { get; set; } = "Confirm";
+    [Parameter] public string CancelText { get; set; } = "Cancel";
+    [Parameter] public bool Danger { get; set; }
+    [Parameter] public bool StepUp { get; set; }
+    [Parameter] public string? TypeToConfirm { get; set; }
+
+    private string? _typed;
+
+    private bool CanConfirm => TypeToConfirm is null || string.Equals(_typed?.Trim(), TypeToConfirm, StringComparison.Ordinal);
+}

@@ -1,0 +1,38 @@
+@* The step indicator of a wizard. Steps before the current one can be opened again; later steps cannot be skipped to. *@
+<ol class="vy-steps" aria-label="@Label">
+    @for (var i = 0; i < Steps.Count; i++)
+    {
+        var index = i;
+        var done = index < Active;
+        <li class="vy-step @(done ? "done" : "")" aria-current="@(index == Active ? "step" : null)">
+            @if (done && OnStep.HasDelegate)
+            {
+                <button type="button" @onclick="@(() => OnStep.InvokeAsync(index))">
+                    <span class="vy-step-num" aria-hidden="true"><MudIcon Icon="@Icons.Material.Outlined.Check" Style="font-size: 16px" /></span>
+                    <span>@Steps[index]<span class="vy-sr-only"> (done, open again)</span></span>
+                </button>
+            }
+            else
+            {
+                <span class="vy-step-num" aria-hidden="true">
+                    @if (done)
+                    {
+                        <MudIcon Icon="@Icons.Material.Outlined.Check" Style="font-size: 16px" />
+                    }
+                    else
+                    {
+                        @(index + 1)
+                    }
+                </span>
+                <span>@Steps[index]</span>
+            }
+        </li>
+    }
+</ol>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<string> Steps { get; set; } = [];
+    [Parameter] public int Active { get; set; }
+    [Parameter] public EventCallback<int> OnStep { get; set; }
+    [Parameter] public string Label { get; set; } = "Steps";
+}

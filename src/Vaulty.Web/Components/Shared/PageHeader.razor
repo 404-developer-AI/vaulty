@@ -1,0 +1,48 @@
+@* The top of every page: where you are (breadcrumbs), what this is (title, status, one line of context) and what you can do here. *@
+@if (Crumbs is { Count: > 0 })
+{
+    <nav aria-label="Breadcrumb" class="vy-crumbs">
+        <ol>
+            @foreach (var crumb in Crumbs)
+            {
+                @if (crumb.Href is { } href)
+                {
+                    <li><a href="@href">@crumb.Label</a></li>
+                }
+                else
+                {
+                    <li aria-current="page">@crumb.Label</li>
+                }
+            }
+        </ol>
+    </nav>
+}
+<div class="vy-page-head">
+    <div class="vy-page-head-text">
+        <div class="vy-page-title-row">
+            <h1 class="vy-page-title" tabindex="-1">@Title</h1>
+            @Status
+        </div>
+        @if (LedeContent is not null)
+        {
+            <p class="vy-page-lede">@LedeContent</p>
+        }
+        else if (!string.IsNullOrEmpty(Lede))
+        {
+            <p class="vy-page-lede">@Lede</p>
+        }
+    </div>
+    @if (Actions is not null)
+    {
+        <div class="vy-page-actions">@Actions</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string? Lede { get; set; }
+    [Parameter] public RenderFragment? LedeContent { get; set; }
+    [Parameter] public RenderFragment? Status { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+    [Parameter] public IReadOnlyList<Crumb>? Crumbs { get; set; }
+}

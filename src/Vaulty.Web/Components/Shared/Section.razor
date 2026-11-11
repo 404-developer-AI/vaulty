@@ -1,0 +1,39 @@
+@* A card with a heading: the one container for a group of content on a page. Flush puts a table edge to edge. *@
+<section class="vy-section @Class" aria-labelledby="@(Title is null ? null : _id)">
+    @if (Title is not null || Actions is not null)
+    {
+        <header class="vy-section-head">
+            <div>
+                @if (Title is not null)
+                {
+                    <h2 id="@_id">@Title</h2>
+                }
+                @if (DescriptionContent is not null)
+                {
+                    <p>@DescriptionContent</p>
+                }
+                else if (!string.IsNullOrEmpty(Description))
+                {
+                    <p>@Description</p>
+                }
+            </div>
+            @if (Actions is not null)
+            {
+                <div class="vy-section-actions">@Actions</div>
+            }
+        </header>
+    }
+    <div class="vy-section-body @(Flush ? "flush" : "")">@ChildContent</div>
+</section>
+
+@code {
+    private readonly string _id = "s" + Guid.NewGuid().ToString("N")[..8];
+
+    [Parameter] public string? Title { get; set; }
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public RenderFragment? DescriptionContent { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public bool Flush { get; set; }
+    [Parameter] public string? Class { get; set; }
+}

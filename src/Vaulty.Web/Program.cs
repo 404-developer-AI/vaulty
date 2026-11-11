@@ -39,6 +39,7 @@ builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.IRepositoryReaderFact
     sp.GetRequiredService<Vaulty.Infrastructure.Backup.TenantKeyProvider>()));
 builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.SnapshotBrowser>();
 builder.Services.AddScoped<Vaulty.Web.DisplayTime>();
+builder.Services.AddScoped<Vaulty.Web.Search.QuickSearch>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Restore.RestoreService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Retention.TenantDeletion>();
 builder.Services.AddSingleton<BackupSelection>();

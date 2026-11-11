@@ -1,9 +1,21 @@
 @using Vaulty.Core.Domain
-@* The one place a protection state becomes a chip: partial is amber, failed red, neutral states gray, never green otherwise. *@
-<span class="vy-status @Protection.CssClass(Status)" data-status="@Status.ToString().ToLowerInvariant()" title="@Reason">@(Text ?? Protection.Label(Status))</span>
+@* The one place a protection state becomes a chip: partial is amber, failed red, neutral states gray, never green otherwise.
+   With ShowReason the reason is written under the chip, so the status says what happened and not only a colour. *@
+@if (ShowReason && !string.IsNullOrEmpty(Reason))
+{
+    <div class="vy-state">
+        <span class="vy-status @Protection.CssClass(Status)" data-status="@Status.ToString().ToLowerInvariant()">@(Text ?? Protection.Label(Status))</span>
+        <span class="vy-state-reason">@Reason</span>
+    </div>
+}
+else
+{
+    <span class="vy-status @Protection.CssClass(Status)" data-status="@Status.ToString().ToLowerInvariant()" title="@Reason">@(Text ?? Protection.Label(Status))</span>
+}
 
 @code {
     [Parameter, EditorRequired] public ProtectionStatus Status { get; set; }
     [Parameter] public string? Text { get; set; }
     [Parameter] public string? Reason { get; set; }
+    [Parameter] public bool ShowReason { get; set; }
 }

@@ -1,0 +1,9 @@
+@* A status chip for any state that is not a protection status (jobs, restores, snapshots, deliveries). Use Tones for the tone. *@
+<span class="vy-status @Tone" title="@Title">@Text</span>
+
+@code {
+    /// <summary>protected, running, partial, failed, neutral or info.</summary>
+    [Parameter, EditorRequired] public string Tone { get; set; } = "neutral";
+    [Parameter, EditorRequired] public string Text { get; set; } = "";
+    [Parameter] public string? Title { get; set; }
+}

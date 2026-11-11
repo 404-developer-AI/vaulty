@@ -3,5 +3,10 @@
 
 <PageTitle>Access denied · Vaulty</PageTitle>
 
-<h1 class="vy-page-title">You do not have access to this page</h1>
-<p class="vy-page-lede">Ask an organization admin for a role that includes it.</p>
+<PageHeader Title="You do not have access to this page" />
+<Section>
+    <EmptyState Title="Your role does not include this page" Icon="@Icons.Material.Outlined.Lock">
+        <ChildContent>Ask an organization admin for a role that includes it. Everything you can open is in the menu on the left.</ChildContent>
+        <Actions><MudButton Variant="Variant.Outlined" Href="/">Back to the dashboard</MudButton></Actions>
+    </EmptyState>
+</Section>

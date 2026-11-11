@@ -1,0 +1,25 @@
+@* What a list shows when it has nothing: what that means and the next step, never a dead end. *@
+<div class="vy-empty @(Compact ? "compact" : "")" role="status">
+    @if (Icon is not null)
+    {
+        <span class="vy-empty-icon @(Good ? "good" : "")"><MudIcon Icon="@Icon" /></span>
+    }
+    <div class="vy-empty-title">@Title</div>
+    @if (ChildContent is not null)
+    {
+        <div class="vy-empty-text">@ChildContent</div>
+    }
+    @if (Actions is not null)
+    {
+        <div class="vy-empty-actions">@Actions</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string? Icon { get; set; }
+    [Parameter] public bool Good { get; set; }
+    [Parameter] public bool Compact { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+}

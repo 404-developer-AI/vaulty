@@ -9,7 +9,17 @@
     </Found>
     <NotFound>
         <LayoutView Layout="typeof(MainLayout)">
-            <p class="vy-muted">This page does not exist.</p>
+            <PageTitle>Page not found · Vaulty</PageTitle>
+            <PageHeader Title="Page not found" />
+            <Section>
+                <EmptyState Title="This page does not exist" Icon="@Icons.Material.Outlined.SearchOff">
+                    <ChildContent>The link may be old, or the item it pointed to has ended with its retention. Search for what you need instead.</ChildContent>
+                    <Actions>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" Href="/">Dashboard</MudButton>
+                        <MudButton Variant="Variant.Outlined" Href="/search">Search and restore</MudButton>
+                    </Actions>
+                </EmptyState>
+            </Section>
         </LayoutView>
     </NotFound>
 </Router>

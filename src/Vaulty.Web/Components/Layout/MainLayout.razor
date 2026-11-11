@@ -6,50 +6,77 @@
 <MudDialogProvider />
 <MudSnackbarProvider />
 
+<a class="vy-skip" href="#main">Skip to content</a>
 <MudLayout>
-    <MudDrawer Open="true" Variant="DrawerVariant.Persistent" Elevation="0" Class="vy-drawer">
-        <div class="vy-brand">
+    <MudDrawer @bind-Open="_open" Variant="DrawerVariant.Responsive" Breakpoint="Breakpoint.Lg" Elevation="0" Class="vy-drawer" aria-label="Main navigation">
+        <a class="vy-brand" href="/">
             <span class="vy-mark"><MudIcon Icon="@Icons.Material.Outlined.Shield" Size="Size.Small" /></span>
-            <div>
-                <div>Vaulty</div>
-                <div class="vy-eyebrow">Vaulty · by Steaan</div>
-            </div>
-        </div>
+            <span>
+                <span style="display: block">Vaulty</span>
+                <span class="vy-eyebrow">Vaulty · by Steaan</span>
+            </span>
+        </a>
         <MudNavMenu>
             <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Outlined.SpaceDashboard">Dashboard</MudNavLink>
-            @foreach (var link in _links)
+            @foreach (var link in _work)
             {
                 <MudNavLink Href="@link.Href" Icon="@link.Icon">@link.Label</MudNavLink>
             }
+            @if (_settings.Count > 0)
+            {
+                <div class="vy-nav-group" role="presentation">Settings</div>
+                @foreach (var link in _settings)
+                {
+                    <MudNavLink Href="@link.Href" Icon="@link.Icon">@link.Label</MudNavLink>
+                }
+            }
         </MudNavMenu>
-        <div class="vy-drawer-footer">
-            <form method="post" action="/account/logout" data-enhance="false">
-                <AntiforgeryToken />
-                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Logout">Sign out</MudButton>
-            </form>
-        </div>
+        <div class="vy-drawer-footer">Keep every Microsoft 365 tenant restorable.</div>
     </MudDrawer>
     <MudMainContent>
-        <div class="content-area">@Body</div>
+        <header class="vy-topbar">
+            <MudIconButton Class="vy-menu-button" Icon="@Icons.Material.Outlined.Menu" OnClick="@(() => _open = !_open)" aria-label="Open the menu" />
+            @if (_canSearch)
+            {
+                <GlobalSearch />
+                <span class="vy-muted vy-hide-narrow" style="font-size: 0.75rem; white-space: nowrap" aria-hidden="true">Press <span class="vy-kbd">/</span> to search</span>
+            }
+            <span class="vy-topbar-spacer"></span>
+            <div class="vy-topbar-user">
+                <MudIcon Icon="@Icons.Material.Outlined.AccountCircle" Size="Size.Small" />
+                <span class="vy-user-name">@_userName</span>
+                <form method="post" action="/account/logout" data-enhance="false">
+                    <AntiforgeryToken />
+                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Outlined.Logout">Sign out</MudButton>
+                </form>
+            </div>
+        </header>
+        <main id="main" class="content-area">@Body</main>
     </MudMainContent>
 </MudLayout>
 
 @code {
-    private sealed record NavItem(string Href, string Icon, string Label, string Permission);
+    [CascadingParameter] private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private sealed record NavItem(string Href, string Icon, string Label, string Permission, bool Setting);
 
     private static readonly NavItem[] AllLinks =
     [
-        new("/customers", Icons.Material.Outlined.Business, "Customers", Permissions.CustomersView),
-        new("/search", Icons.Material.Outlined.Search, "Search", Permissions.SnapshotsBrowse),
-        new("/jobs", Icons.Material.Outlined.History, "Jobs", Permissions.JobsView),
-        new("/settings/storage", Icons.Material.Outlined.Lock, "Storage", Permissions.StorageManage),
-        new("/settings/platform", Icons.Material.Outlined.Settings, "Settings", Permissions.SettingsManage),
-        new("/settings/webhooks", Icons.Material.Outlined.Webhook, "Webhooks", Permissions.SettingsManage),
-        new("/settings/users", Icons.Material.Outlined.Group, "Users and roles", Permissions.UsersManage),
-        new("/settings/audit", Icons.Material.Outlined.Policy, "Audit log", Permissions.AuditView),
+        new("/customers", Icons.Material.Outlined.Business, "Customers", Permissions.CustomersView, false),
+        new("/search", Icons.Material.Outlined.ManageSearch, "Search and restore", Permissions.SnapshotsBrowse, false),
+        new("/jobs", Icons.Material.Outlined.History, "Jobs", Permissions.JobsView, false),
+        new("/settings/storage", Icons.Material.Outlined.Lock, "Storage", Permissions.StorageManage, true),
+        new("/settings/platform", Icons.Material.Outlined.Settings, "E-mail and display", Permissions.SettingsManage, true),
+        new("/settings/webhooks", Icons.Material.Outlined.Webhook, "Webhooks", Permissions.SettingsManage, true),
+        new("/settings/users", Icons.Material.Outlined.Group, "Users and roles", Permissions.UsersManage, true),
+        new("/settings/audit", Icons.Material.Outlined.Policy, "Audit log", Permissions.AuditView, true),
     ];
 
-    private IReadOnlyList<NavItem> _links = [];
+    private bool _open = true;
+    private IReadOnlyList<NavItem> _work = [];
+    private IReadOnlyList<NavItem> _settings = [];
+    private bool _canSearch;
+    private string? _userName;
 
     // The prerendered page and the interactive circuit each initialize the layout. Without carrying the result over, the
     // interactive render starts with an empty menu until permissions are loaded again. Only which links to show is
@@ -61,8 +88,13 @@
         if (VisibleLinks is null)
         {
             var access = await Access.GetAsync();
-            VisibleLinks = AllLinks.Where(l => access.Allows(l.Permission)).Select(l => l.Href).ToArray();
+            VisibleLinks = AllLinks.Where(l => access.Allows(l.Permission)).Select(l => l.Href)
+                .Concat(access.Allows(Permissions.CustomersView) ? ["search:quick"] : []).ToArray();
         }
-        _links = AllLinks.Where(l => VisibleLinks.Contains(l.Href, StringComparer.Ordinal)).ToList();
+        var visible = AllLinks.Where(l => VisibleLinks.Contains(l.Href, StringComparer.Ordinal)).ToList();
+        _work = visible.Where(l => !l.Setting).ToList();
+        _settings = visible.Where(l => l.Setting).ToList();
+        _canSearch = VisibleLinks.Contains("search:quick", StringComparer.Ordinal);
+        if (AuthenticationState is not null) _userName = (await AuthenticationState).User.Identity?.Name;
     }
 }

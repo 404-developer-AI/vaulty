@@ -1,0 +1,40 @@
+@* One exact number with its meaning. A tile with OnClick filters the page; with Href it opens a page. *@
+@if (Href is not null)
+{
+    <a class="vy-stat" href="@Href">@Body</a>
+}
+else if (OnClick.HasDelegate)
+{
+    <button type="button" class="vy-stat" aria-pressed="@(Pressed ? "true" : "false")" @onclick="OnClick">@Body</button>
+}
+else
+{
+    <div class="vy-stat">@Body</div>
+}
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public string Value { get; set; } = "";
+    [Parameter] public string? Caption { get; set; }
+    /// <summary>protected, partial, failed or neutral: the colour of the dot.</summary>
+    [Parameter] public string? Tone { get; set; }
+    [Parameter] public string? Href { get; set; }
+    [Parameter] public EventCallback OnClick { get; set; }
+    [Parameter] public bool Pressed { get; set; }
+
+    private RenderFragment Body => __builder =>
+    {
+        <span class="vy-stat-label">
+            @if (Tone is not null)
+            {
+                <span class="vy-stat-dot @Tone" aria-hidden="true"></span>
+            }
+            @Label
+        </span>
+        <div class="vy-stat-value">@Value</div>
+        @if (Caption is not null)
+        {
+            <div class="vy-stat-caption">@Caption</div>
+        }
+    };
+}
