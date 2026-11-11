@@ -45,7 +45,7 @@ public sealed partial class StatusViewTests(WebAppFixture app) : IClassFixture<W
         var tenantPage = await PageAsync(client, $"/tenants/{tenant}");
         Assert.Equal("partial", ChipAfter(tenantPage, "Finance mailbox"));
         Assert.Equal("protected", ChipAfter(tenantPage, "Sales mailbox"));
-        Assert.Equal("partial", ChipAfter(tenantPage, "<td>Status</td>"));
+        Assert.Equal("partial", ChipAfter(tenantPage, "class=\"vy-page-title\""));
 
         var snapshots = await PageAsync(client, $"/objects/{partial}");
         Assert.Contains("vy-status partial", snapshots, StringComparison.Ordinal);

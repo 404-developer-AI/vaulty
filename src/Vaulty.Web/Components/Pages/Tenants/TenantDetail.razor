@@ -29,262 +29,406 @@
 }
 else if (_tenant is null)
 {
-    <p class="vy-muted">This tenant does not exist or you have no access to it.</p>
+    <PageHeader Title="Tenant not found" Crumbs="@([new Crumb("Customers", "/customers"), new Crumb("Not found")])" />
+    <Section>
+        <EmptyState Title="This tenant does not exist or you have no access to it" Icon="@Icons.Material.Outlined.SearchOff">
+            <Actions><MudButton Variant="Variant.Outlined" Href="/customers">All customers</MudButton></Actions>
+        </EmptyState>
+    </Section>
 }
 else
 {
-    <h1 class="vy-page-title">@_tenant.DisplayName</h1>
-    <p class="vy-page-lede">@_tenant.CustomerName · tenant @_tenant.EntraTenantId</p>
-
-    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-        <MudSimpleTable Dense="true" Elevation="0">
-            <tbody>
-                <tr><td>Consent</td><td><ConsentChip State="@_tenant.ConsentState" /> @HealthDetail</td></tr>
-                <tr><td>Application ID</td><td>@_tenant.ClientId</td></tr>
-                <tr><td>Certificate valid until</td><td>@_tenant.CertificateExpiresAt?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)</td></tr>
-                <tr><td>Last check</td><td>@(_tenant.LastHealthCheckAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "never")</td></tr>
-            </tbody>
-        </MudSimpleTable>
-        @if (_canConnect)
-        {
-            <div class="mt-3">
-                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
-                <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="DiscoverAsync" Disabled="@(_busy || !Granted)">Find mailboxes and OneDrives</MudButton>
-                @if (_tenant.NextCertificateExpiresAt is null)
-                {
-                    <MudButton Class="ml-2" Variant="Variant.Text" OnClick="BeginRotationAsync" Disabled="_busy">Rotate certificate</MudButton>
-                }
-                else
-                {
-                    <MudButton Class="ml-2" Variant="Variant.Outlined" OnClick="CompleteRotationAsync" Disabled="_busy">Confirm the new certificate</MudButton>
-                }
-                <MudButton Class="ml-2" Variant="Variant.Text" OnClick="ToggleCorrection" Disabled="_busy">Correct tenant ID or application ID</MudButton>
-            </div>
-            @if (_correcting)
+    <PageHeader Title="@_tenant.DisplayName"
+                Crumbs="@([new Crumb("Customers", "/customers"), new Crumb(_tenant.CustomerName, $"/customers/{_tenant.CustomerId}"), new Crumb(_tenant.DisplayName)])">
+        <Status>
+            @if (_health is { } h)
             {
-                <MudGrid Spacing="2" Class="mt-2">
-                    <MudItem xs="12" md="5">
-                        <MudTextField @bind-Value="_correctTenantId" Label="Tenant ID" Disabled="@(_deletion?.HoldsBackups == true)"
-                                      HelperText="@(_deletion?.HoldsBackups == true ? "Fixed: this tenant holds backups" : "Directory (tenant) ID from Entra")" />
-                    </MudItem>
-                    <MudItem xs="12" md="5"><MudTextField @bind-Value="_correctClientId" Label="Application ID" HelperText="Application ID on the overview of the app registration in Entra" /></MudItem>
-                    <MudItem xs="12" md="2" Class="d-flex align-center">
-                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CorrectConnectionAsync" Disabled="_busy">Save</MudButton>
-                    </MudItem>
-                </MudGrid>
-                <p class="vy-muted mt-1">The certificate stays the same; the permission check runs again afterwards.</p>
+                <StatusChip Status="h.Status" Reason="@h.Reason" />
             }
-        }
-        @if (_report is not null)
-        {
-            <pre class="vy-secret mt-3">@_report.ToText()</pre>
-        }
-        @if (_rotationScript is not null)
-        {
-            <p class="vy-muted mt-3">Run this script in the tenant, then confirm the new certificate. Vaulty switches only after it works.</p>
-            <MudTextField T="string" Value="@_rotationScript" ReadOnly="true" Lines="10" Variant="Variant.Outlined" />
-        }
-    </MudPaper>
+            <ConsentChip State="@_tenant.ConsentState" />
+            @if (_deletion?.LegalHold == true)
+            {
+                <span class="vy-tag"><MudIcon Icon="@Icons.Material.Outlined.Gavel" Style="font-size: 14px" /> On legal hold</span>
+            }
+        </Status>
+        <LedeContent>@_tenant.CustomerName · @(_tenant.DefaultDomain is { } d ? $"{d} · " : "")tenant ID <span class="vy-mono">@_tenant.EntraTenantId</span></LedeContent>
+        <Actions>
+            @if (_canConnect)
+            {
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.VerifiedUser" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.TravelExplore" OnClick="DiscoverAsync" Disabled="@(_busy || !Granted)"
+                           title="@(Granted ? null : "Check permissions first")">Find mailboxes and OneDrives</MudButton>
+            }
+        </Actions>
+    </PageHeader>
+
+    @if (_tenant.ConsentState == "lost")
+    {
+        <Notice Tone="error" Title="Vaulty lost access to this tenant; backups cannot run">
+            <ChildContent>
+                @(string.IsNullOrEmpty(HealthDetail) ? "The app registration was removed, its consent revoked, or its certificate no longer works." : HealthDetail)
+                Check permissions to see what is missing. If the app was created again, correct the application ID on the Connection tab.
+            </ChildContent>
+            <Actions>
+                @if (_canConnect)
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => SelectTab(TabConnection))">Open the Connection tab</MudButton>
+                }
+            </Actions>
+        </Notice>
+    }
+    else if (Connected == 1 || _objects.Count == 0)
+    {
+        <Notice Tone="info" Title="@(Connected == 1 ? "Tenant connected. Finish the set-up" : "Finish the set-up of this tenant")">
+            <ol class="mt-1 mb-0 pl-5">
+                <li>@(Granted ? "Permissions checked: done." : "Check permissions. Microsoft can take a few minutes before a new app works; check again if it is not ready.")</li>
+                <li>@(_objects.Count > 0 ? $"Mailboxes and OneDrives found: {_objects.Count}." : "Find mailboxes and OneDrives. The list below fills when the discovery job finishes.")</li>
+                <li>Choose what is backed up below, and set the backup frequency and retention on the Policy tab.</li>
+            </ol>
+        </Notice>
+    }
+
+    @if (_report is not null)
+    {
+        <Notice Tone="@(_report.BackupReady ? "success" : "warning")" Title="@(_report.BackupReady ? "Permissions are in place" : "Some permissions are missing")">
+            <ChildContent><pre class="vy-mono mt-2 mb-0" style="white-space: pre-wrap">@_report.ToText()</pre></ChildContent>
+            <Actions><MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _report = null)">Close</MudButton></Actions>
+        </Notice>
+    }
 
     @if (_health is { } health)
     {
-        <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-            <MudText Typo="Typo.h6">Health</MudText>
-            <MudSimpleTable Dense="true" Elevation="0">
-                <tbody>
-                    <tr><td>Status</td><td><StatusChip Status="health.Status" Reason="@health.Reason" /> @health.Reason</td></tr>
-                    <tr><td>Protected objects</td><td>@Vaulty.Infrastructure.Notifications.DigestMail.Counts(health.Counts)</td></tr>
-                    <tr><td>Oldest latest snapshot</td><td>@(health.OldestLatestSnapshotAt is { } oldest ? $"{Time.Absolute(oldest)} ({Protection.Age(Clock.GetUtcNow() - oldest)} ago)" : "none yet")</td></tr>
-                    <tr><td>Last verification</td><td>@(health.LastVerificationAt is { } v ? $"{Time.Absolute(v)}, {(health.LastVerificationFailures ?? 0)} problem{((health.LastVerificationFailures ?? 0) == 1 ? "" : "s")} found" : "not run yet")</td></tr>
-                    <tr><td>Microsoft Graph, last 24 hours</td><td>@health.Requests24h.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) requests, @health.Throttled24h.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) throttled (429)</td></tr>
-                </tbody>
-            </MudSimpleTable>
-        </MudPaper>
+        <div class="vy-stats">
+            <StatTile Label="Protected" Tone="@Protection.CssClass(health.Status)"
+                      Value="@($"{StatusText.Number(health.Counts.GetValueOrDefault(ProtectionStatus.Protected))} of {StatusText.Number(health.Counts.Where(c => c.Key != ProtectionStatus.Excluded).Sum(c => c.Value))}")"
+                      Caption="@(health.Counts.Count == 0 ? "None yet" : Vaulty.Infrastructure.Notifications.DigestMail.Counts(health.Counts))" />
+            <StatTile Label="Oldest latest snapshot" Value="@(health.OldestLatestSnapshotAt is { } oldest ? $"{Protection.Age(Clock.GetUtcNow() - oldest)} ago" : "None yet")"
+                      Caption="@(health.OldestLatestSnapshotAt is { } o2 ? Time.Absolute(o2) : "No snapshot yet")" />
+            <StatTile Label="Last verification" Value="@(health.LastVerificationAt is { } v ? Time.Relative(v) : "Not run yet")"
+                      Caption="@(health.LastVerificationAt is null ? "Runs on schedule" : StatusText.Plural(health.LastVerificationFailures ?? 0, "problem") + " found")"
+                      Tone="@(health.LastVerificationFailures is > 0 ? "failed" : null)" />
+            <StatTile Label="Microsoft Graph, last 24 hours" Value="@StatusText.Plural(health.Requests24h, "request")"
+                      Caption="@($"{StatusText.Number(health.Throttled24h)} throttled (429); throttling is normal and handled")" />
+        </div>
     }
 
-    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-        <MudText Typo="Typo.h6">Policy</MudText>
-        <MudGrid Spacing="2">
-            <MudItem xs="12" md="3"><MudNumericField @bind-Value="_frequencyHours" Label="Back up every (hours)" Min="1" Max="168" Disabled="!_canManagePolicy" /></MudItem>
-            <MudItem xs="12" md="3"><MudNumericField @bind-Value="_retentionDays" Label="Retention (days)" Min="90" Disabled="!_canChangeRetention" HelperText="At least 90 days; data is immutable until 30 days after" /></MudItem>
-            <MudItem xs="12" md="4"><MudTextField @bind-Value="_excluded" Label="Excluded folders" HelperText="Well-known names, for example junkemail, deleteditems" Disabled="!_canManagePolicy" /></MudItem>
-            <MudItem xs="12" md="2" Class="d-flex align-center"><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SavePolicyAsync" Disabled="!_canManagePolicy">Save</MudButton></MudItem>
-        </MudGrid>
-    </MudPaper>
-
-    <MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
-        <MudText Typo="Typo.h6">What is backed up</MudText>
-        <p class="vy-muted mt-1">Choose which mailboxes and OneDrives Vaulty backs up. An excluded object gets no new backups; its snapshots, the newest
-            one too, end with their retention, and the data is removed once its Object Lock has ended. Selecting it again before then keeps everything.
-            @SelectionSummary</p>
-        <MudSwitch T="bool" Value="@_protectNew" ValueChanged="SetProtectNewAsync" Color="Color.Primary" Disabled="@(!_canManagePolicy || _busy)"
-                   Label="Back up newly found mailboxes and OneDrives automatically" />
-    </MudPaper>
-
-    <MudGrid Spacing="2" Class="mb-2">
-        <MudItem xs="12" sm="6" md="4">
-            <MudTextField T="string" @bind-Value="_filterText" Immediate="true" DebounceInterval="250" Label="Search" Placeholder="Name or e-mail address"
-                          Clearable="true" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" />
-        </MudItem>
-        <MudItem xs="12" sm="3" md="2">
-            <MudSelect T="string" @bind-Value="_filterType" Label="Type" Clearable="true">
-                @foreach (var type in TypeFilters) { <MudSelectItem Value="@type">@type</MudSelectItem> }
-            </MudSelect>
-        </MudItem>
-        <MudItem xs="12" sm="3" md="2">
-            <MudSelect T="string" @bind-Value="_filterStatus" Label="Status" Clearable="true">
-                @foreach (var status in StatusFilters) { <MudSelectItem Value="@status">@status</MudSelectItem> }
-            </MudSelect>
-        </MudItem>
-        @if (_canManagePolicy)
-        {
-            <MudItem xs="12" md="4" Class="d-flex align-center">
-                @* The buttons act on the objects shown: filter first, then select or exclude them in one go. *@
-                <MudButton Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable(), true))" Disabled="@(_busy || Selectable().Count == 0)">
-                    Back up @Selectable().Count shown
-                </MudButton>
-                <MudButton Class="ml-2" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => SetSelectionAsync(Selectable(), false))"
-                           Disabled="@(_busy || Selectable().Count == 0)">Exclude @Selectable().Count shown</MudButton>
-            </MudItem>
-        }
-    </MudGrid>
-
-    <MudTable Items="Filtered" Hover="true" Elevation="0" Outlined="true" Dense="true">
-        <HeaderContent>
-            <MudTh>Back up</MudTh>
-            <MudTh>Protected object</MudTh>
-            <MudTh>Type</MudTh>
-            <MudTh>Status</MudTh>
-            <MudTh>Last backup</MudTh>
-            <MudTh>Legal hold</MudTh>
-            <MudTh></MudTh>
-        </HeaderContent>
-        <RowTemplate>
-            <MudTd>
-                @if (context.State is "active" or "excluded" or "paused")
-                {
-                    <MudSwitch T="bool" Value="@(context.State != "excluded")" ValueChanged="@(v => SetSelectionAsync([context.Id], v))" Color="Color.Primary"
-                               Disabled="@(!_canManagePolicy || _busy)" aria-label="@($"Back up {context.DisplayName}")" />
-                }
-            </MudTd>
-            <MudTd>
-                @if (_canBrowse)
-                {
-                    <MudLink Href="@($"/objects/{context.Id}")">@context.DisplayName</MudLink>
-                }
-                else
-                {
-                    @context.DisplayName
-                }
-            </MudTd>
-            <MudTd>@KindLabel(context)</MudTd>
-            <MudTd>
-                @switch (context.State)
-                {
-                    case "source_deleted":
-                        <span class="vy-status neutral">Source deleted @context.SourceDeletedAt?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)</span>
-                        break;
-                    case "not_protected":
-                        <span class="vy-status neutral">Not protected yet</span>
-                        break;
-                    case "paused":
-                        <span class="vy-status neutral">Paused</span>
-                        break;
-                    case "excluded":
-                        <span class="vy-status neutral" title="Not selected for backup">Excluded</span>
-                        @if (context.DataRemovedFrom(_retentionDays) is { } removed)
-                        {
-                            <div class="vy-muted vy-nowrap" title="Every snapshot ends with its retention; the data goes once its Object Lock has ended. Select it again to keep backing it up.">
-                                Data removed from @Time.Absolute(removed)
-                            </div>
-                        }
-                        break;
-                    default:
-                        @if (_health?.Objects.FirstOrDefault(o => o.Id == context.Id) is { } status)
-                        {
-                            <StatusChip Status="status.Status" Reason="@status.Reason" />
-                        }
-                        break;
-                }
-            </MudTd>
-            <MudTd Class="vy-nowrap">@(context.LastBackupAt?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "")</MudTd>
-            <MudTd>
-                @if (_canHold)
-                {
-                    <MudSwitch T="bool" Value="@_held.Contains(context.Id)" ValueChanged="@(v => SetObjectHoldAsync(context, v))" Color="Color.Warning"
-                               Disabled="@(_deletion?.LegalHold == true)" aria-label="@($"Legal hold for {context.DisplayName}")" />
-                }
-                else if (_held.Contains(context.Id))
-                {
-                    <span class="vy-status neutral">On hold</span>
-                }
-            </MudTd>
-            <MudTd>
-                @if (_canRun && context.State == "active" && Granted)
-                {
-                    <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Backup" OnClick="@(() => BackUpNowAsync(context))">Back up now</MudButton>
-                }
-            </MudTd>
-        </RowTemplate>
-        <NoRecordsContent><span class="vy-muted">Nothing found yet. Check permissions, then find mailboxes and OneDrives.</span></NoRecordsContent>
-    </MudTable>
-
-    @if (_deletion is not null && (_canHold || _canDelete))
-    {
-        <MudPaper Class="pa-4 mt-4" Elevation="0" Outlined="true">
-            <MudText Typo="Typo.h6">Legal hold and deletion</MudText>
-            @if (_canHold)
-            {
-                <MudSwitch T="bool" Value="@_deletion.LegalHold" ValueChanged="SetTenantHoldAsync" Color="Color.Warning"
-                           Label="Legal hold for the whole tenant: no snapshot expires until the hold is released" />
-            }
-            else if (_deletion.LegalHold)
-            {
-                <p>This tenant is on legal hold: no snapshot expires until the hold is released.</p>
-            }
-            @if (_canDelete && !_deletion.HoldsBackups && _deletion.State != "deleted")
-            {
-                <MudAlert Severity="Severity.Info" Class="mt-2">
-                    This tenant holds no backups yet, so nothing needs protecting: you can remove it now, for example to connect it again
-                    with the right details. As soon as it holds a backup, deleting it takes a request, 30 days and a second administrator.
-                </MudAlert>
-                <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Error" OnClick="RemoveUnusedAsync"
-                           Disabled="@(_busy || _deletion.LegalHold)">Remove tenant now</MudButton>
-            }
-            else if (_canDelete)
-            {
-                @switch (_deletion.State)
-                {
-                    case "active":
-                        <p class="vy-muted mt-2">Deleting a tenant stops its backups at once. A second administrator can confirm the deletion after 30 days;
-                            until then it can be withdrawn. After confirmation the data is removed as its retention lock expires.</p>
-                        <MudButton Variant="Variant.Outlined" Color="Color.Error" OnClick="RequestDeletionAsync" Disabled="@(_busy || _deletion.LegalHold)">Request deletion</MudButton>
-                        break;
-                    case "deletion_requested":
-                        <MudAlert Severity="Severity.Warning" Class="mt-2">
-                            Deletion requested on @_deletion.RequestedAt?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture).
-                            Backups are stopped. A second administrator can confirm from @_deletion.ConfirmableFrom?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) (UTC).
-                        </MudAlert>
-                        <div class="mt-2">
-                            <MudButton Variant="Variant.Outlined" OnClick="WithdrawDeletionAsync" Disabled="_busy">Withdraw the request</MudButton>
-                            @if (_deletion.RequestedBy != _userId)
-                            {
-                                <MudButton Class="ml-2" Variant="Variant.Filled" Color="Color.Error" OnClick="ConfirmDeletionAsync"
-                                           Disabled="@(_busy || Clock.GetUtcNow() < _deletion.ConfirmableFrom)">Confirm deletion</MudButton>
-                            }
+    <MudTabs @bind-ActivePanelIndex="_tab" Elevation="0" Rounded="false" ApplyEffectsToContainer="false" Class="vy-tabs" KeepPanelsAlive="false">
+        <MudTabPanel Text="@($"Protected objects ({_objects.Count})")">
+            <Section Flush="true">
+                <div class="vy-table-toolbar" style="padding: 4px 20px 0">
+                    <div class="vy-table-search">
+                        <MudTextField T="string" @bind-Value="_filterText" Immediate="true" DebounceInterval="200" Placeholder="Search name or e-mail address" Clearable="true"
+                                      Variant="Variant.Outlined" Margin="Margin.Dense" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" aria-label="Search protected objects" />
+                    </div>
+                    <div class="vy-table-filter">
+                        <MudSelect T="string" @bind-Value="_filterType" Label="Type" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense">
+                            @foreach (var type in TypeFilters) { <MudSelectItem Value="@type">@type</MudSelectItem> }
+                        </MudSelect>
+                    </div>
+                    <div class="vy-table-filter">
+                        <MudSelect T="string" @bind-Value="_filterStatus" Label="Status" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense">
+                            @foreach (var status in StatusFilters) { <MudSelectItem Value="@status">@status</MudSelectItem> }
+                        </MudSelect>
+                    </div>
+                    <span class="vy-table-count" aria-live="polite">@CountText</span>
+                    @if (_canManagePolicy)
+                    {
+                        <div class="vy-table-toolbar-end">
+                            @* The buttons act on the objects shown: filter first, then select or exclude them in one go. *@
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => SetSelectionAsync(Selectable(), true))" Disabled="@(_busy || Selectable().Count == 0)">
+                                Back up @Selectable().Count shown
+                            </MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => SetSelectionAsync(Selectable(), false))"
+                                       Disabled="@(_busy || Selectable().Count == 0)">Exclude @Selectable().Count shown</MudButton>
                         </div>
-                        break;
-                    default:
-                        <p class="mt-2">This tenant is deleted. Its data is removed as its retention lock expires.</p>
-                        break;
+                    }
+                </div>
+                <div class="d-flex flex-wrap align-center gap-3" style="padding: 0 20px 8px">
+                    <MudSwitch T="bool" Value="@_protectNew" ValueChanged="SetProtectNewAsync" Color="Color.Primary" Disabled="@(!_canManagePolicy || _busy)"
+                               Label="Back up newly found mailboxes and OneDrives automatically" />
+                    <span class="vy-muted" style="font-size: 0.8125rem">@SelectionSummary</span>
+                </div>
+
+                <MudTable Items="Filtered" Hover="true" Elevation="0" Dense="true" T="ProtectedObjectRow" Breakpoint="Breakpoint.None" HorizontalScrollbar="true">
+                    <HeaderContent>
+                        <MudTh>Back up</MudTh>
+                        <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => o.DisplayName)">Protected object</MudTableSortLabel></MudTh>
+                        <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => KindLabel(o))">Type</MudTableSortLabel></MudTh>
+                        <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => StatusRank(o))" InitialDirection="SortDirection.Descending">Status</MudTableSortLabel></MudTh>
+                        <MudTh><MudTableSortLabel T="ProtectedObjectRow" SortBy="@(o => o.LastBackupAt ?? DateTimeOffset.MinValue)">Last backup</MudTableSortLabel></MudTh>
+                        <MudTh><span class="vy-sr-only">Actions</span></MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd>
+                            @if (context.State is "active" or "excluded" or "paused")
+                            {
+                                <MudSwitch T="bool" Value="@(context.State != "excluded")" ValueChanged="@(v => SetSelectionAsync([context.Id], v))" Color="Color.Primary"
+                                           Disabled="@(!_canManagePolicy || _busy)" aria-label="@($"Back up {context.DisplayName}")" />
+                            }
+                        </MudTd>
+                        <MudTd>
+                            @if (_canBrowse)
+                            {
+                                <a href="@($"/objects/{context.Id}")" class="vy-cell-main">@context.DisplayName</a>
+                            }
+                            else
+                            {
+                                <span class="vy-cell-main">@context.DisplayName</span>
+                            }
+                            @if (Upn(context) is { } upn && !upn.Equals(context.DisplayName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                <div class="vy-cell-sub">@upn</div>
+                            }
+                            @if (_held.Contains(context.Id))
+                            {
+                                <div><span class="vy-tag mt-1"><MudIcon Icon="@Icons.Material.Outlined.Gavel" Style="font-size: 14px" /> On legal hold</span></div>
+                            }
+                        </MudTd>
+                        <MudTd>@KindLabel(context)</MudTd>
+                        <MudTd>
+                            @switch (context.State)
+                            {
+                                case "source_deleted":
+                                    <span class="vy-status neutral" title="The source no longer exists in Microsoft 365; snapshots are kept until their retention ends.">Source deleted @Time.Absolute(context.SourceDeletedAt)</span>
+                                    break;
+                                case "not_protected":
+                                    <span class="vy-status neutral">Not protected yet</span>
+                                    break;
+                                case "paused":
+                                    <span class="vy-status neutral">Paused</span>
+                                    break;
+                                case "excluded":
+                                    <div class="vy-state">
+                                        <span class="vy-status neutral" title="Not selected for backup">Excluded</span>
+                                        @if (context.DataRemovedFrom(_retentionDays) is { } removed)
+                                        {
+                                            <span class="vy-state-reason" title="Every snapshot ends with its retention; the data goes once its Object Lock has ended. Select it again to keep backing it up.">
+                                                Data removed from @Time.Absolute(removed)
+                                            </span>
+                                        }
+                                    </div>
+                                    break;
+                                default:
+                                    @if (_health?.Objects.FirstOrDefault(o => o.Id == context.Id) is { } status)
+                                    {
+                                        <StatusChip Status="status.Status" Reason="@status.Reason" ShowReason="@(status.Status is ProtectionStatus.Failed)"
+                                                    Text="@(status.Status == ProtectionStatus.Partial ? $"Partial: {status.Missing} missing" : null)" />
+                                    }
+                                    break;
+                            }
+                        </MudTd>
+                        <MudTd Class="vy-nowrap">@(context.LastBackupAt is { } at ? Time.Relative(at) : "Never")</MudTd>
+                        <MudTd Class="vy-actions-cell">
+                            @if (_canRun && context.State == "active" && Granted)
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Backup" OnClick="@(() => BackUpNowAsync(context))">Back up now</MudButton>
+                            }
+                            @if (_canHold)
+                            {
+                                <MudMenu Icon="@Icons.Material.Outlined.MoreVert" Size="Size.Small" AriaLabel="@($"More actions for {context.DisplayName}")" Dense="true">
+                                    @if (_held.Contains(context.Id))
+                                    {
+                                        <MudMenuItem Icon="@Icons.Material.Outlined.Gavel" OnClick="@(() => SetObjectHoldAsync(context, false))" Disabled="@(_deletion?.LegalHold == true)">Release legal hold</MudMenuItem>
+                                    }
+                                    else
+                                    {
+                                        <MudMenuItem Icon="@Icons.Material.Outlined.Gavel" OnClick="@(() => SetObjectHoldAsync(context, true))" Disabled="@(_deletion?.LegalHold == true)">Place on legal hold</MudMenuItem>
+                                    }
+                                </MudMenu>
+                            }
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent>
+                        @if (_objects.Count == 0)
+                        {
+                            <EmptyState Title="No mailboxes or OneDrives found yet" Icon="@Icons.Material.Outlined.Inbox" Compact="true">
+                                <ChildContent>@(Granted ? "Find them now; the list fills in when the discovery job finishes." : "Check permissions first, then find the mailboxes and OneDrives.")</ChildContent>
+                                <Actions>
+                                    @if (_canConnect)
+                                    {
+                                        @if (Granted)
+                                        {
+                                            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" OnClick="DiscoverAsync" Disabled="_busy">Find mailboxes and OneDrives</MudButton>
+                                        }
+                                        else
+                                        {
+                                            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
+                                        }
+                                    }
+                                </Actions>
+                            </EmptyState>
+                        }
+                        else
+                        {
+                            <EmptyState Title="Nothing matches" Icon="@Icons.Material.Outlined.SearchOff" Compact="true">
+                                <Actions><MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="ClearFilters">Clear search and filters</MudButton></Actions>
+                            </EmptyState>
+                        }
+                    </NoRecordsContent>
+                </MudTable>
+            </Section>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Policy">
+            <Section Title="Policy for every protected object in this tenant" Description="@PolicyDescription">
+                <div class="vy-grid-2" style="max-width: 820px">
+                    <MudSelect T="int" @bind-Value="_frequencyHours" Label="Back up" Variant="Variant.Outlined" Disabled="!_canManagePolicy"
+                               HelperText="Each backup is incremental: only what changed since the last snapshot is read.">
+                        @foreach (var hours in FrequencyOptions)
+                        {
+                            <MudSelectItem Value="@hours">@FrequencyLabel(hours)</MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudSelect T="int" @bind-Value="_retentionDays" Label="Retention" Variant="Variant.Outlined" Disabled="!_canChangeRetention"
+                               HelperText="@($"Snapshots are kept this long and stored immutably until 30 days after. At least 90 days.{(_canChangeRetention ? "" : " Changing it needs the retention permission.")}")">
+                        @foreach (var days in RetentionOptions)
+                        {
+                            <MudSelectItem Value="@days">@RetentionLabel(days)</MudSelectItem>
+                        }
+                    </MudSelect>
+                    <div style="grid-column: 1 / -1">
+                        <MudTextField @bind-Value="_excluded" Label="Excluded folders" Variant="Variant.Outlined" Disabled="!_canManagePolicy"
+                                      HelperText="Well-known folder names, separated by commas, for example junkemail, deleteditems" />
+                    </div>
+                </div>
+                <div class="vy-wizard-footer">
+                    <span class="vy-grow"></span>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SavePolicyAsync" Disabled="@(!_canManagePolicy || _busy)">Save policy</MudButton>
+                </div>
+            </Section>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Connection">
+            <Section Title="App registration" Description="@ConnectionDescription">
+                <dl class="vy-fields wide">
+                    <dt>Consent</dt><dd><ConsentChip State="@_tenant.ConsentState" /> @HealthDetail</dd>
+                    <dt>Last permission check</dt><dd>@(_tenant.LastHealthCheckAt is { } at ? Time.Absolute(at) : "Never")</dd>
+                    <dt>Tenant ID</dt><dd class="vy-mono">@_tenant.EntraTenantId</dd>
+                    <dt>Application ID</dt><dd class="vy-mono">@_tenant.ClientId</dd>
+                    <dt>Certificate valid until</dt>
+                    <dd>
+                        @Time.Absolute(_tenant.CertificateExpiresAt)
+                        @if (_tenant.CertificateExpiresAt is { } exp && exp - Clock.GetUtcNow() < TimeSpan.FromDays(30))
+                        {
+                            <span class="vy-status partial ml-2">Expires in @Protection.Age(exp - Clock.GetUtcNow())</span>
+                        }
+                    </dd>
+                </dl>
+                @if (_canConnect)
+                {
+                    <div class="vy-wizard-footer">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ProbeAsync" Disabled="_busy">Check permissions</MudButton>
+                        @if (_tenant.NextCertificateExpiresAt is null)
+                        {
+                            <MudButton Variant="Variant.Outlined" OnClick="BeginRotationAsync" Disabled="_busy">Rotate certificate</MudButton>
+                        }
+                        else
+                        {
+                            <MudButton Variant="Variant.Outlined" OnClick="CompleteRotationAsync" Disabled="_busy">Confirm the new certificate</MudButton>
+                        }
+                        <MudButton Variant="Variant.Text" OnClick="ToggleCorrection" Disabled="_busy">Correct tenant ID or application ID</MudButton>
+                    </div>
                 }
-            }
-        </MudPaper>
-    }
+                @if (_rotationScript is not null || _tenant.NextCertificateExpiresAt is not null)
+                {
+                    <Notice Tone="info" Class="mt-4" Title="Certificate rotation started">
+                        Run this script in the tenant, then select Confirm the new certificate. Vaulty switches only after the new certificate works.
+                    </Notice>
+                    @if (_rotationScript is not null)
+                    {
+                        <pre class="vy-script" tabindex="0" aria-label="Rotation script">@_rotationScript</pre>
+                    }
+                }
+                @if (_correcting)
+                {
+                    <div class="mt-4" style="max-width: 820px">
+                        <div class="vy-grid-2">
+                            <MudTextField @bind-Value="_correctTenantId" Label="Tenant ID" Variant="Variant.Outlined" Disabled="@(_deletion?.HoldsBackups == true)"
+                                          HelperText="@(_deletion?.HoldsBackups == true ? "Fixed: this tenant holds backups" : "Directory (tenant) ID from Entra")" />
+                            <MudTextField @bind-Value="_correctClientId" Label="Application ID" Variant="Variant.Outlined" HelperText="Application ID on the overview of the app registration in Entra" />
+                        </div>
+                        <p class="vy-muted mt-2 mb-0">The certificate stays the same; the permission check runs again afterwards.</p>
+                        <div class="vy-wizard-footer">
+                            <MudButton Variant="Variant.Text" OnClick="ToggleCorrection">Cancel</MudButton>
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CorrectConnectionAsync" Disabled="_busy">Save the IDs</MudButton>
+                        </div>
+                    </div>
+                }
+            </Section>
+        </MudTabPanel>
+
+        @if (_deletion is not null && (_canHold || _canDelete))
+        {
+            <MudTabPanel Text="Legal hold and deletion">
+                <Section Title="Legal hold" Description="@LegalHoldDescription">
+                    @if (_canHold)
+                    {
+                        <MudSwitch T="bool" Value="@_deletion.LegalHold" ValueChanged="SetTenantHoldAsync" Color="Color.Warning"
+                                   Label="Legal hold for the whole tenant: no snapshot expires until the hold is released" />
+                    }
+                    else
+                    {
+                        <p class="mt-0">@(_deletion.LegalHold ? "This tenant is on legal hold: no snapshot expires until the hold is released." : "This tenant is not on legal hold.")</p>
+                    }
+                </Section>
+                @if (_canDelete)
+                {
+                    <Section Title="Delete the tenant" Class="vy-danger">
+                        @if (!_deletion.HoldsBackups && _deletion.State != "deleted")
+                        {
+                            <p class="mt-0">This tenant holds no backups yet, so nothing needs protecting: you can remove it now, for example to connect it again with the right details.
+                                As soon as it holds a backup, deleting it takes a request, 30 days and a second administrator.</p>
+                            <MudButton Variant="Variant.Filled" Color="Color.Error" OnClick="RemoveUnusedAsync" Disabled="@(_busy || _deletion.LegalHold)">Remove tenant now</MudButton>
+                        }
+                        else
+                        {
+                            @switch (_deletion.State)
+                            {
+                                case "active":
+                                    <p class="mt-0">Deleting a tenant stops its backups at once. A second administrator can confirm the deletion after 30 days;
+                                        until then it can be withdrawn. After confirmation the data is removed as its retention lock expires.</p>
+                                    @if (_deletion.LegalHold)
+                                    {
+                                        <p class="vy-muted">Release the legal hold first; a tenant on legal hold cannot be deleted.</p>
+                                    }
+                                    <MudButton Variant="Variant.Outlined" Color="Color.Error" OnClick="RequestDeletionAsync" Disabled="@(_busy || _deletion.LegalHold)">Request deletion</MudButton>
+                                    break;
+                                case "deletion_requested":
+                                    <Notice Tone="warning" Title="Deletion requested">
+                                        Requested on @Time.Absolute(_deletion.RequestedAt). Backups are stopped. A second administrator can confirm from @Time.Absolute(_deletion.ConfirmableFrom).
+                                    </Notice>
+                                    <div class="d-flex gap-2">
+                                        <MudButton Variant="Variant.Outlined" OnClick="WithdrawDeletionAsync" Disabled="_busy">Withdraw the request</MudButton>
+                                        @if (_deletion.RequestedBy != _userId)
+                                        {
+                                            <MudButton Variant="Variant.Filled" Color="Color.Error" OnClick="ConfirmDeletionAsync"
+                                                       Disabled="@(_busy || Clock.GetUtcNow() < _deletion.ConfirmableFrom)">Confirm deletion</MudButton>
+                                        }
+                                        else
+                                        {
+                                            <span class="vy-muted align-self-center">Another administrator confirms; you requested it.</span>
+                                        }
+                                    </div>
+                                    break;
+                                default:
+                                    <p class="mt-0">This tenant is deleted. Its data is removed as its retention lock expires.</p>
+                                    break;
+                            }
+                        }
+                    </Section>
+                }
+            </MudTabPanel>
+        }
+    </MudTabs>
 }
 
 @code {
+    private const int TabConnection = 2;
+
     [Parameter] public Guid TenantId { get; set; }
+    [SupplyParameterFromQuery(Name = "tab")] public string? TabQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "connected")] public int? Connected { get; set; }
     [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
 
     private TenantRow? _tenant;
@@ -307,12 +451,34 @@ else
     private IReadOnlySet<Guid> _held = new HashSet<Guid>();
     private int _frequencyHours = 6;
     private int _retentionDays = 90;
+    private int _savedRetentionDays = 90;
     private string? _excluded;
     private bool _busy;
+    private int _tab;
     private Guid _organizationId;
     private Guid _userId;
 
     private bool Granted => _tenant?.ConsentState == "granted";
+
+    private static readonly int[] FrequencyHours = [1, 2, 4, 6, 8, 12, 24];
+    private static readonly int[] RetentionDays = [90, 180, 365, 730, 1095, 1825, 2555, 3650];
+
+    private IEnumerable<int> FrequencyOptions => FrequencyHours.Contains(_frequencyHours) ? FrequencyHours : FrequencyHours.Append(_frequencyHours).Order();
+    private IEnumerable<int> RetentionOptions => RetentionDays.Contains(_retentionDays) ? RetentionDays : RetentionDays.Append(_retentionDays).Order();
+
+    private static string FrequencyLabel(int hours) => hours switch { 1 => "Every hour", 24 => "Once a day", _ => $"Every {hours} hours" };
+
+    private static string RetentionLabel(int days) => days switch
+    {
+        _ when days % 365 == 0 => days == 365 ? "1 year" : $"{days / 365} years",
+        _ => $"{days} days",
+    };
+
+    private string PolicyDescription => $"Backed up {FrequencyLabel(_frequencyHours).ToLowerInvariant()}, kept {RetentionLabel(_savedRetentionDays)}. Changes apply from the next backup.";
+
+    private const string ConnectionDescription = "Vaulty signs in to the tenant with its own app registration and a certificate whose private key only Vaulty holds.";
+
+    private const string LegalHoldDescription = "A hold suspends retention: no snapshot of the tenant or of a held protected object expires until the hold is released. Place a hold on one protected object from its row menu.";
 
     private string HealthDetail
     {
@@ -330,15 +496,21 @@ else
         }
     }
 
-    private static string KindLabel(ProtectedObjectRow row) => (row.Kind, row.SubKind) switch
+    private static string KindLabel(ProtectedObjectRow row) => Vaulty.Web.Browse.ObjectLabels.Kind(row.Kind, row.SubKind);
+
+    private static string? Upn(ProtectedObjectRow row)
     {
-        ("mailbox", "shared") => "Shared mailbox",
-        ("mailbox", "room" or "equipment") => "Resource mailbox",
-        ("mailbox", "archive") => "Archive mailbox",
-        ("mailbox", _) => "Mailbox",
-        ("drive", _) => "OneDrive",
-        _ => row.Kind,
-    };
+        try
+        {
+            using var doc = JsonDocument.Parse(row.SourceDetails);
+            return doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("upn", out var upn) && upn.ValueKind == JsonValueKind.String
+                ? upn.GetString() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private bool _loaded;
 
@@ -347,12 +519,15 @@ else
         try
         {
             await LoadAsync();
+            _tab = TabQuery switch { "policy" => 1, "connection" => TabConnection, "hold" => 3, _ => _tab };
         }
         finally
         {
             _loaded = true;
         }
     }
+
+    private void SelectTab(int tab) => _tab = tab;
 
     private async Task LoadAsync()
     {
@@ -377,15 +552,19 @@ else
         _health = (await Dashboards.LoadAsync(access, TenantId)).Tenants.FirstOrDefault(t => t.Id == TenantId);
         _held = await Holds.ObjectsOnHoldAsync(access, TenantId);
         var policy = await TenantService.PolicyAsync(_organizationId, TenantId);
-        (_frequencyHours, _retentionDays, _excluded) = (policy.FrequencyMinutes / 60, policy.RetentionDays, string.Join(", ", policy.ExcludedFolders));
+        (_frequencyHours, _retentionDays, _excluded) = (Math.Max(1, policy.FrequencyMinutes / 60), policy.RetentionDays, string.Join(", ", policy.ExcludedFolders));
+        _savedRetentionDays = policy.RetentionDays;
     }
 
     private async Task<bool> ConfirmedAsync()
     {
         if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
-        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/tenants/{TenantId}")}", forceLoad: true);
+        var tab = _tab switch { 1 => "policy", TabConnection => "connection", 3 => "hold", _ => null };
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString($"/tenants/{TenantId}{(tab is null ? "" : $"?tab={tab}")}")}", forceLoad: true);
         return false;
     }
+
+    private async Task<bool> NeedsStepUpAsync() => !VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock);
 
     private async Task ProbeAsync()
     {
@@ -414,6 +593,10 @@ else
             await Workflows.StartDiscoveryAsync(_organizationId, TenantId, _userId);
             Snackbar.Add("Discovery started. The list fills in when it finishes; follow it on the Jobs page.", Severity.Success);
         }
+        catch (Exception ex) when (ex is InvalidOperationException or Temporalio.Exceptions.TemporalException)
+        {
+            Snackbar.Add($"Discovery could not start: {ex.Message}", Severity.Error);
+        }
         finally
         {
             _busy = false;
@@ -424,11 +607,19 @@ else
     {
         var current = await TenantService.PolicyAsync(_organizationId, TenantId);
         if (current.RetentionDays != _retentionDays && !_canChangeRetention) return;
+        if (_retentionDays < current.RetentionDays)
+        {
+            var ok = await Dialogs.ConfirmAsync("Shorten the retention?",
+                $"Snapshots are then kept {RetentionLabel(_retentionDays)} instead of {RetentionLabel(current.RetentionDays)}. Snapshots older than that expire and their data is removed once its lock ends; this cannot be undone.",
+                "Shorten the retention", danger: true, stepUp: await NeedsStepUpAsync());
+            if (!ok) return;
+        }
         if (current.RetentionDays != _retentionDays && !await ConfirmedAsync()) return;
         try
         {
             await TenantService.SavePolicyAsync(_organizationId, _userId, TenantId, new TenantService.PolicyView(_frequencyHours * 60, _retentionDays,
                 (_excluded ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
+            _savedRetentionDays = _retentionDays;
             Snackbar.Add("Policy saved. It applies from the next backup.", Severity.Success);
         }
         catch (TenantException ex)
@@ -439,6 +630,11 @@ else
 
     private async Task SetObjectHoldAsync(ProtectedObjectRow row, bool hold)
     {
+        if (!hold && !await Dialogs.ConfirmAsync($"Release the legal hold on {row.DisplayName}?",
+                "Retention runs again: snapshots older than the retention expire and their data is removed once its lock ends.", "Release hold", danger: true))
+        {
+            return;
+        }
         await Holds.SetForObjectAsync(await Current.GetAsync(), row.Id, hold);
         Snackbar.Add(hold ? $"Legal hold placed on {row.DisplayName}." : $"Legal hold on {row.DisplayName} released.", Severity.Info);
         await LoadAsync();
@@ -446,13 +642,28 @@ else
 
     private async Task SetTenantHoldAsync(bool hold)
     {
+        if (!hold && !await Dialogs.ConfirmAsync("Release the legal hold on the tenant?",
+                "Retention runs again for every protected object without its own hold: snapshots older than the retention expire and their data is removed once its lock ends.",
+                "Release hold", danger: true))
+        {
+            return;
+        }
         await Holds.SetForTenantAsync(await Current.GetAsync(), TenantId, hold);
         Snackbar.Add(hold ? "Legal hold placed on the tenant." : "Legal hold on the tenant released.", Severity.Info);
         await LoadAsync();
     }
 
-    private async Task RequestDeletionAsync() => await DeletionStepAsync(async (access, fresh) => await Deletion.RequestAsync(access, fresh, TenantId),
-        "Deletion requested. Backups are stopped; a second administrator can confirm in 30 days.");
+    private async Task RequestDeletionAsync()
+    {
+        if (!await Dialogs.ConfirmAsync($"Request deletion of {_tenant!.DisplayName}?",
+                "Backups stop at once. A second administrator can confirm the deletion after 30 days; until then you can withdraw it.", "Request deletion",
+                danger: true, stepUp: await NeedsStepUpAsync(), typeToConfirm: _tenant.DisplayName))
+        {
+            return;
+        }
+        await DeletionStepAsync(async (access, fresh) => await Deletion.RequestAsync(access, fresh, TenantId),
+            "Deletion requested. Backups are stopped; a second administrator can confirm in 30 days.");
+    }
 
     private string SelectionSummary
     {
@@ -460,7 +671,16 @@ else
         {
             var selected = _objects.Count(o => o.State is "active" or "paused");
             var excluded = _objects.Count(o => o.State == "excluded");
-            return $"{selected} selected, {excluded} excluded.";
+            return $"{selected} selected for backup, {excluded} excluded.";
+        }
+    }
+
+    private string CountText
+    {
+        get
+        {
+            var shown = Filtered.Count();
+            return shown == _objects.Count ? StatusText.Plural(_objects.Count, "protected object") : $"{shown} of {StatusText.Plural(_objects.Count, "protected object")}";
         }
     }
 
@@ -472,9 +692,12 @@ else
     private string? _filterType;
     private string? _filterStatus;
 
+    private void ClearFilters() => (_filterText, _filterType, _filterStatus) = (null, null, null);
+
     private IEnumerable<ProtectedObjectRow> Filtered => _objects.Where(o =>
         (string.IsNullOrWhiteSpace(_filterText) || o.DisplayName.Contains(_filterText.Trim(), StringComparison.OrdinalIgnoreCase)
-            || o.SourceId.Contains(_filterText.Trim(), StringComparison.OrdinalIgnoreCase))
+            || o.SourceId.Contains(_filterText.Trim(), StringComparison.OrdinalIgnoreCase)
+            || (Upn(o)?.Contains(_filterText.Trim(), StringComparison.OrdinalIgnoreCase) ?? false))
         && (_filterType is null || KindLabel(o) == _filterType)
         && (_filterStatus is null || StatusLabel(o) == _filterStatus));
 
@@ -488,14 +711,20 @@ else
         _ => _health?.Objects.FirstOrDefault(h => h.Id == o.Id) is { } status ? Protection.Label(status.Status) : "Awaiting first backup",
     };
 
+    private int StatusRank(ProtectedObjectRow o) => StatusLabel(o) switch
+    {
+        "Failed" => 7, "Partial" => 6, "Awaiting first backup" => 5, "Not protected yet" => 4, "Paused" => 3, "Protected" => 2, "Source deleted" => 1, _ => 0,
+    };
+
     private async Task SetSelectionAsync(List<Guid> ids, bool include)
     {
         if (!include && ids.Count > 0)
         {
-            var confirmed = await Dialogs.ShowMessageBoxAsync($"Exclude {ids.Count} from backup?",
-                "Their running backups stop now and they get no new backups. Their snapshots end with their retention and the data is then removed; " +
-                "selecting them again before then keeps everything.", yesText: "Exclude", cancelText: "Keep backing up");
-            if (confirmed != true) return;
+            var name = ids.Count == 1 ? _objects.FirstOrDefault(o => o.Id == ids[0])?.DisplayName : null;
+            var confirmed = await Dialogs.ConfirmAsync(name is null ? $"Exclude {ids.Count} protected objects from backup?" : $"Exclude {name} from backup?",
+                "Running backups stop now and no new backups are made. The snapshots end with their retention and the data is then removed; selecting them again before then keeps everything.",
+                "Exclude", danger: true, stepUp: await NeedsStepUpAsync(), cancelText: "Keep backing up");
+            if (!confirmed) return;
         }
         await SelectionStepAsync(async (access, fresh) =>
         {
@@ -550,6 +779,12 @@ else
 
     private async Task RemoveUnusedAsync()
     {
+        if (!await Dialogs.ConfirmAsync($"Remove {_tenant!.DisplayName} now?",
+                "The tenant holds no backups, so nothing is lost. Its connection and certificate are removed; you can connect it again afterwards.", "Remove tenant",
+                danger: true, stepUp: await NeedsStepUpAsync()))
+        {
+            return;
+        }
         var customerId = _tenant!.CustomerId;
         await DeletionStepAsync(async (access, fresh) => await Deletion.RemoveUnusedAsync(access, fresh, TenantId), "The tenant is removed. You can connect it again.");
         if ((await TenantService.ListAsync(_organizationId)).All(t => t.Id != TenantId)) Navigation.NavigateTo($"/customers/{customerId}");
@@ -591,8 +826,16 @@ else
     private async Task WithdrawDeletionAsync() => await DeletionStepAsync(async (access, _) => await Deletion.WithdrawAsync(access, TenantId),
         "The deletion request is withdrawn. Backups resume.");
 
-    private async Task ConfirmDeletionAsync() => await DeletionStepAsync(async (access, fresh) => await Deletion.ConfirmAsync(access, fresh, TenantId),
-        "The tenant is deleted.");
+    private async Task ConfirmDeletionAsync()
+    {
+        if (!await Dialogs.ConfirmAsync($"Delete {_tenant!.DisplayName}?",
+                "The tenant is deleted. Its data is removed as its retention lock expires; this cannot be undone.", "Delete the tenant",
+                danger: true, stepUp: await NeedsStepUpAsync(), typeToConfirm: _tenant.DisplayName))
+        {
+            return;
+        }
+        await DeletionStepAsync(async (access, fresh) => await Deletion.ConfirmAsync(access, fresh, TenantId), "The tenant is deleted.");
+    }
 
     private async Task DeletionStepAsync(Func<Vaulty.Infrastructure.Access.UserAccess, bool, Task> step, string done)
     {
@@ -620,8 +863,15 @@ else
 
     private async Task BackUpNowAsync(ProtectedObjectRow row)
     {
-        var job = await Workflows.StartBackupAsync(_organizationId, TenantId, row.Id, row.Kind, _userId);
-        Snackbar.Add(job is null ? "A backup of this object is already running." : "Backup started. Follow it on the Jobs page.", Severity.Info);
+        try
+        {
+            var job = await Workflows.StartBackupAsync(_organizationId, TenantId, row.Id, row.Kind, _userId);
+            Snackbar.Add(job is null ? $"A backup of {row.DisplayName} is already running." : $"Backup of {row.DisplayName} started. Follow it on the Jobs page.", Severity.Info);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Temporalio.Exceptions.TemporalException)
+        {
+            Snackbar.Add($"The backup could not start: {ex.Message}", Severity.Error);
+        }
     }
 
     private async Task BeginRotationAsync()
