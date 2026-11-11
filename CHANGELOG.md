@@ -7,6 +7,9 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- Excluding objects asks for confirmation, stops their running backups and settles their open failed, partial and
+  missed backup alerts; the minute sweep settles them too for objects excluded earlier. The excluded status says its
+  snapshots end with their retention and the data is then removed.
 - Search and filter: on the tenant page by name or e-mail address, type and status, and the selection buttons act on
   the objects shown; on the jobs page by object, tenant or request ID, and by tenant, next to status and type.
 - Running backups and discoveries can be cancelled from the jobs page, by anyone who may run backups; audited. A

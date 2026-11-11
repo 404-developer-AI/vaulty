@@ -180,6 +180,24 @@ public sealed class NotificationTests(PostgresDatabase db) : IClassFixture<Postg
     }
 
     [PostgresFact]
+    public async Task Backup_alerts_of_an_object_excluded_earlier_are_settled_by_the_sweep()
+    {
+        var seed = new NotificationSeed();
+        await seed.SeedAsync(db, DateTimeOffset.UtcNow.AddDays(1));
+        await using var owner = new NpgsqlConnection(db.Migrator);
+        await owner.ExecuteAsync(
+            """
+            INSERT INTO vaulty.alerts (id, organization_id, tenant_id, protected_object_id, kind, severity, message, notified_at)
+                VALUES (gen_random_uuid(), @org, @tenant, @o, 'backup.failed', 'critical', 'Backup failed; Vaulty retries at the next run.', now());
+            UPDATE vaulty.protected_objects SET state = 'excluded', next_run_at = NULL WHERE id = @o;
+            """, new { org = seed.Org, tenant = seed.Tenant, o = seed.Object });
+        await using var worker = VaultyDataSource.Create(db.Worker);
+        await Dispatcher(worker, TimeProvider.System, new RecordingMailSender(), new MemorySecretStore()).FindMissedRunsAsync();
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.alerts WHERE protected_object_id = @o AND resolved_at IS NULL",
+            new { o = seed.Object }));
+    }
+
+    [PostgresFact]
     public async Task An_object_queued_behind_its_tenants_budget_is_not_missed_and_a_started_run_settles_its_alert()
     {
         var due = DateTimeOffset.UtcNow.AddHours(-2);

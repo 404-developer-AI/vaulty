@@ -49,6 +49,14 @@ public sealed class NotificationDispatcher(NpgsqlDataSource dataSource, IWebhook
         foreach (var organization in await OrganizationsAsync(cancellationToken).ConfigureAwait(false))
         {
             await using var session = await OrganizationSession.BeginAsync(dataSource, organization, cancellationToken).ConfigureAwait(false);
+            // Backup alerts of an object that is no longer backed up are settled: it gets no next run to retry in.
+            await session.Connection.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE vaulty.alerts a SET resolved_at = @now
+                 WHERE a.kind = ANY(@kinds) AND a.resolved_at IS NULL
+                   AND EXISTS (SELECT 1 FROM vaulty.protected_objects o WHERE o.id = a.protected_object_id AND o.state = 'excluded')
+                """, new { now, kinds = Tenants.BackupSelection.BackupAlertKinds }, session.Transaction, cancellationToken: cancellationToken))
+                .ConfigureAwait(false);
             // A missed run that has started since is settled at once, without waiting for its snapshot to commit.
             await session.Connection.ExecuteAsync(new CommandDefinition(
                 """

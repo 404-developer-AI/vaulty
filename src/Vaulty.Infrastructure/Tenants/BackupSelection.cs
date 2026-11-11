@@ -51,16 +51,46 @@ public sealed class BackupSelection(NpgsqlDataSource dataSource, TimeProvider cl
         if (changed.Count == 0) return 0;
         if (!include)
         {
-            // A missed run of an object that is no longer selected is no longer a problem.
+            // A missed, failed or partial backup of an object that is no longer backed up is no longer a problem to act on.
             await session.Connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE vaulty.alerts SET resolved_at = @now WHERE protected_object_id = ANY(@changed) AND kind = @kind AND resolved_at IS NULL",
-                new { now, changed = changed.ToArray(), kind = NotificationKinds.BackupMissed }, session.Transaction, cancellationToken: cancellationToken))
+                "UPDATE vaulty.alerts SET resolved_at = @now WHERE protected_object_id = ANY(@changed) AND kind = ANY(@kinds) AND resolved_at IS NULL",
+                new { now, changed = changed.ToArray(), kinds = BackupAlertKinds }, session.Transaction, cancellationToken: cancellationToken))
                 .ConfigureAwait(false);
         }
         await AuditLog.WriteAsync(session, $"user:{access.UserId}", include ? "backup.objects_selected" : "backup.objects_excluded", $"tenant:{tenantId}",
             new { count = changed.Count, objects = changed }, cancellationToken).ConfigureAwait(false);
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         return changed.Count;
+    }
+
+    /// <summary>The alerts about an object's backups, settled when it is excluded.</summary>
+    public static readonly string[] BackupAlertKinds = [NotificationKinds.BackupFailed, NotificationKinds.BackupPartial, NotificationKinds.BackupMissed];
+
+    /// <summary>
+    /// The running backup runs of excluded objects among <paramref name="objectIds"/>, to cancel: excluding an object stops
+    /// its running backup too, so no more bandwidth goes to it. Audited per run.
+    /// </summary>
+    public async Task<IReadOnlyList<(string WorkflowId, string? RunId)>> RunningBackupsToStopAsync(UserAccess access, Guid tenantId,
+        IReadOnlyCollection<Guid> objectIds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        ArgumentNullException.ThrowIfNull(objectIds);
+        if (objectIds.Count == 0) return [];
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await CustomerOfAsync(session, access, tenantId, Permissions.PoliciesManage, cancellationToken).ConfigureAwait(false);
+        var runs = (await session.Connection.QueryAsync<(Guid JobId, string WorkflowId, string? RunId)>(new CommandDefinition(
+            """
+            SELECT j.id, j.workflow_id, j.workflow_run_id FROM vaulty.jobs j JOIN vaulty.protected_objects o ON o.id = j.protected_object_id
+             WHERE j.tenant_id = @tenantId AND j.protected_object_id = ANY(@ids) AND j.kind = 'backup' AND j.state = 'running'
+               AND j.workflow_id IS NOT NULL AND o.state = 'excluded'
+            """, new { tenantId, ids = objectIds.ToArray() }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false)).ToList();
+        foreach (var run in runs)
+        {
+            await AuditLog.WriteAsync(session, $"user:{access.UserId}", "job.cancel_requested", $"job:{run.JobId}", new { reason = "excluded" }, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        await session.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return runs.Select(r => (r.WorkflowId, r.RunId)).ToList();
     }
 
     /// <summary>Whether newly found mailboxes and drives are backed up at once (true) or wait to be selected (false).</summary>

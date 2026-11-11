@@ -18,6 +18,7 @@
 @inject NavigationManager Navigation
 @inject TimeProvider Clock
 @inject ISnackbar Snackbar
+@inject IDialogService Dialogs
 
 <PageTitle>@(_tenant?.DisplayName ?? "Tenant") · Vaulty</PageTitle>
 
@@ -487,13 +488,34 @@ else
         _ => _health?.Objects.FirstOrDefault(h => h.Id == o.Id) is { } status ? Protection.Label(status.Status) : "Awaiting first backup",
     };
 
-    private async Task SetSelectionAsync(List<Guid> ids, bool include) => await SelectionStepAsync(async (access, fresh) =>
+    private async Task SetSelectionAsync(List<Guid> ids, bool include)
     {
-        var changed = await Selection.SetAsync(access, fresh, TenantId, ids, include);
-        Snackbar.Add(changed == 0 ? "Nothing to change." : include ? $"{changed} selected for backup; their first backup starts shortly."
-            : $"{changed} excluded from backup; their data is removed once retention and its lock end, unless you select them again.",
-            changed == 0 ? Severity.Info : Severity.Success);
-    });
+        if (!include && ids.Count > 0)
+        {
+            var confirmed = await Dialogs.ShowMessageBoxAsync($"Exclude {ids.Count} from backup?",
+                "Their running backups stop now and they get no new backups. Their snapshots end with their retention and the data is then removed; " +
+                "selecting them again before then keeps everything.", yesText: "Exclude", cancelText: "Keep backing up");
+            if (confirmed != true) return;
+        }
+        await SelectionStepAsync(async (access, fresh) =>
+        {
+            var changed = await Selection.SetAsync(access, fresh, TenantId, ids, include);
+            var stopped = 0;
+            if (!include && changed > 0)
+            {
+                // Excluding stops a backup that is still running, so no more bandwidth goes to an object that is not backed up.
+                foreach (var (workflowId, runId) in await Selection.RunningBackupsToStopAsync(access, TenantId, ids))
+                {
+                    await Workflows.CancelAsync(workflowId, runId);
+                    stopped++;
+                }
+            }
+            Snackbar.Add(changed == 0 ? "Nothing to change." : include ? $"{changed} selected for backup; their first backup starts shortly."
+                : $"{changed} excluded from backup{(stopped > 0 ? $"; {stopped} running {(stopped == 1 ? "backup was" : "backups were")} stopped" : "")}. " +
+                  "Their data is removed once retention and its lock end, unless you select them again.",
+                changed == 0 ? Severity.Info : Severity.Success);
+        });
+    }
 
     private async Task SetProtectNewAsync(bool protectNew) => await SelectionStepAsync(async (access, fresh) =>
     {

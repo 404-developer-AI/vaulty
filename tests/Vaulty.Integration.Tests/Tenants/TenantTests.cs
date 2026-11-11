@@ -280,7 +280,21 @@ public sealed class TenantTests(PostgresDatabase db) : IClassFixture<PostgresDat
 
         // Excluding lowers protection: only with a fresh step-up, and audited.
         await Assert.ThrowsAsync<Vaulty.Infrastructure.Restore.StepUpRequiredException>(() => selection.SetAsync(access, false, tenantId, mailboxes.Take(1).ToList(), false));
+        // The first mailbox has a failed backup alert and a backup running.
+        await owner.ExecuteAsync(
+            """
+            INSERT INTO vaulty.alerts (id, organization_id, tenant_id, protected_object_id, kind, severity, message)
+                VALUES (gen_random_uuid(), @org, @tenantId, @o, 'backup.failed', 'critical', 'Backup failed; Vaulty retries at the next run.');
+            INSERT INTO vaulty.jobs (id, organization_id, kind, tenant_id, protected_object_id, state, started_at, workflow_id, workflow_run_id)
+                VALUES (gen_random_uuid(), @org, 'backup', @tenantId, @o, 'running', now(), 'backup-excluded', 'run-x');
+            """, new { org, tenantId, o = mailboxes[0] });
+        Assert.Empty(await selection.RunningBackupsToStopAsync(access, tenantId, mailboxes.Take(1).ToList())); // still selected: nothing to stop
         Assert.Equal(1, await selection.SetAsync(access, true, tenantId, mailboxes.Take(1).ToList(), include: false));
+        // Excluded: its backup alerts are settled, and its running backup is the one to stop.
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.alerts WHERE protected_object_id = @o AND resolved_at IS NULL",
+            new { o = mailboxes[0] }));
+        Assert.Equal([("backup-excluded", (string?)"run-x")], await selection.RunningBackupsToStopAsync(access, tenantId, mailboxes.Take(1).ToList()));
+        await owner.ExecuteAsync("UPDATE vaulty.jobs SET state = 'cancelled' WHERE protected_object_id = @o", new { o = mailboxes[0] });
         Assert.Equal(3, await owner.ExecuteScalarAsync<int>(Due, new { tenantId }));
         var readOnly = new UserAccess(Guid.NewGuid(), org, true, new Dictionary<string, HashSet<Guid>?> { [Vaulty.Core.Security.Permissions.CustomersView] = null });
         await Assert.ThrowsAsync<AccessException>(() => selection.SetAsync(readOnly, true, tenantId, mailboxes, true));

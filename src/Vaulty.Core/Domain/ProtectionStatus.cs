@@ -35,7 +35,7 @@ public static class Protection
         ArgumentNullException.ThrowIfNull(input);
         if (input.ObjectState == "source_deleted") return (ProtectionStatus.SourceDeleted, "The source no longer exists in Microsoft 365; snapshots are kept.");
         if (input.ObjectState is "paused") return (ProtectionStatus.Paused, "Backups are paused.");
-        if (input.ObjectState is "excluded") return (ProtectionStatus.Excluded, "Not selected for backup; existing snapshots are kept until their retention ends.");
+        if (input.ObjectState is "excluded") return (ProtectionStatus.Excluded, "Not selected for backup; its snapshots end with their retention, then the data is removed.");
         if (input.ObjectState is "not_protected") return (ProtectionStatus.NotRunYet, "Not protected yet.");
         if (input.ConsentState == "lost") return (ProtectionStatus.Failed, "Vaulty lost access to the tenant; backups cannot run.");
         if (input.VerificationFailed) return (ProtectionStatus.Failed, "Verification found a problem in stored data.");
