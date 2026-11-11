@@ -20,6 +20,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="Temporal/Histories/**/*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../../src/Vaulty.Infrastructure/Vaulty.Infrastructure.csproj" />
     <ProjectReference Include="../../src/Vaulty.Workers/Vaulty.Workers.csproj" />
     <ProjectReference Include="../../src/Vaulty.Web/Vaulty.Web.csproj" />

@@ -233,6 +233,13 @@ public sealed class JobsService(NpgsqlDataSource dataSource)
                 "UPDATE vaulty.jobs SET state = 'cancelled', finished_at = now(), error = 'Cancelled before it started.' WHERE id = @jobId AND state = 'queued'",
                 new { jobId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         }
+        else
+        {
+            // Kept with the job: the reconciler acts on it when the request cannot reach the run, or the run is stuck.
+            await session.Connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE vaulty.jobs SET cancel_requested_at = coalesce(cancel_requested_at, now()) WHERE id = @jobId",
+                new { jobId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        }
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         return j.WorkflowId is { } workflowId ? (workflowId, j.RunId) : null;
     }

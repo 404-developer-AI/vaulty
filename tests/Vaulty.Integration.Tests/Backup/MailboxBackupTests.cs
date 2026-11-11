@@ -235,6 +235,7 @@ internal sealed class BackupHarness : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await HistoryCapture.CaptureAsync(_fixture.Server.Client, Queue);
         await KillWorkerAsync();
         await DataSource.DisposeAsync();
         await Api.DisposeAsync();

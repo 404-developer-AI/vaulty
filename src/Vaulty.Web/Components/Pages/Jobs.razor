@@ -75,7 +75,7 @@
                         <div class="vy-muted">
                             @if (p.Remaining is { } left)
                             {
-                                <text>About @Duration(left) left · done around @Time.Ahead(now + left)</text>
+                                <text>@(left.TotalMinutes < 1 ? "Less than a minute" : $"About {Duration(left)}") left · done around @Time.Ahead(now + left)</text>
                             }
                             else
                             {
@@ -176,8 +176,9 @@
         _busy = true;
         try
         {
-            if (await JobsService.CancelAsync(await Current.GetAsync(), job.Id) is { } run) await Workflows.CancelAsync(run.WorkflowId, run.RunId);
-            Snackbar.Add("Cancellation requested. The job ends after its current step.", Severity.Info);
+            var reached = await JobsService.CancelAsync(await Current.GetAsync(), job.Id) is not { } run || await Workflows.CancelAsync(run.WorkflowId, run.RunId);
+            Snackbar.Add(reached ? "Cancellation requested. The job ends after its current step."
+                : "The request did not reach this job's run. Vaulty stops or closes the job within a few minutes.", Severity.Info);
             await LoadAsync(reset: true);
         }
         catch (Exception ex) when (ex is Vaulty.Infrastructure.Access.AccessException or InvalidOperationException)

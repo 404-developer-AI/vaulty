@@ -187,7 +187,12 @@ public static class WorkerHost
         if (settings.Queues.Contains(TaskQueues.Backup))
         {
             builder.Services.AddHostedService<RecurringWorkflows>();
-            if (!settings.Synthetic) builder.Services.AddHostedService<BackupScheduler>();
+            if (!settings.Synthetic)
+            {
+                builder.Services.AddHostedService<BackupScheduler>();
+                builder.Services.AddSingleton<JobRepair>();
+                builder.Services.AddHostedService<JobReconciler>();
+            }
         }
         return builder.Build();
     }

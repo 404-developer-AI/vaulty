@@ -108,8 +108,11 @@ public interface IWorkflowStarter
     /// <summary>"pause", "resume" or "cancel" for a running restore; ignored when it already finished.</summary>
     Task SignalRestoreAsync(Guid restoreId, string signal, CancellationToken cancellationToken = default);
 
-    /// <summary>Requests cancellation of one workflow run (a backup or discovery); ignored when it already finished.</summary>
-    Task CancelAsync(string workflowId, string? runId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Requests cancellation of one workflow run (a backup or discovery). Returns false when that run was not found: it ended,
+    /// or the job recorded another run; the job reconciler then closes the job or sends the request to the right run.
+    /// </summary>
+    Task<bool> CancelAsync(string workflowId, string? runId, CancellationToken cancellationToken = default);
 }
 
 public sealed class TemporalWorkflowStarter(Func<Task<ITemporalClient>> client, NpgsqlDataSource dataSource) : IWorkflowStarter
@@ -131,16 +134,18 @@ public sealed class TemporalWorkflowStarter(Func<Task<ITemporalClient>> client, 
             .ConfigureAwait(false);
     }
 
-    public async Task CancelAsync(string workflowId, string? runId, CancellationToken cancellationToken = default)
+    public async Task<bool> CancelAsync(string workflowId, string? runId, CancellationToken cancellationToken = default)
     {
         var handle = (await client().ConfigureAwait(false)).GetWorkflowHandle(workflowId, runId);
         try
         {
             await handle.CancelAsync(new() { Rpc = new() { CancellationToken = cancellationToken } }).ConfigureAwait(false);
+            return true;
         }
-        catch (Temporalio.Exceptions.RpcException ex) when (ex.Code == Temporalio.Exceptions.RpcException.StatusCode.NotFound)
+        catch (Temporalio.Exceptions.RpcException ex) when (ex.Code is Temporalio.Exceptions.RpcException.StatusCode.NotFound
+                                                              or Temporalio.Exceptions.RpcException.StatusCode.InvalidArgument)
         {
-            // Finished already: nothing to cancel.
+            return false;
         }
     }
 

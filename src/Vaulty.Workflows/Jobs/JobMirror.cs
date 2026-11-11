@@ -102,9 +102,14 @@ public sealed class JobMirrorInterceptor : IWorkerInterceptor
 
         public override async Task<object?> ExecuteWorkflowAsync(ExecuteWorkflowInput input)
         {
+            if (input.Args.FirstOrDefault() is not IJobInput job || job.JobId == Guid.Empty)
+            {
+                return await Next.ExecuteWorkflowAsync(input);
+            }
             // Only the workflow that owns the job mirrors it. A child that receives the same input (the sync step of a drive
             // backup) would otherwise mark the job as finished, with no counts, before the backup itself had committed.
-            if (input.Args.FirstOrDefault() is not IJobInput job || job.JobId == Guid.Empty || Workflow.Info.Parent is not null)
+            // A child started before this rule recorded the mirror in its history and replays that path (see WorkflowPatches).
+            if (Workflow.Info.Parent is not null && Workflow.Patched(WorkflowPatches.ChildSkipsJobMirror))
             {
                 return await Next.ExecuteWorkflowAsync(input);
             }

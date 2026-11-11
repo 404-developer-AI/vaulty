@@ -203,3 +203,10 @@ public sealed class BackupSelectionMigration : SqlMigration
 {
     protected override string ScriptName => "0015_backup_selection";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261111000016_JobReconcile")]
+public sealed class JobReconcileMigration : SqlMigration
+{
+    protected override string ScriptName => "0016_job_reconcile";
+}

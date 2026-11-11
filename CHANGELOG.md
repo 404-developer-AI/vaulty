@@ -7,6 +7,16 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- A job reconciler in the worker compares open backup and discovery jobs with the workflow engine every two minutes. A
+  job whose workflow ended without recording it (terminated, timed out, removed) is closed with its staged snapshot,
+  and raises a backup alert when it failed. A workflow whose task keeps failing is marked stuck on the jobs page and
+  raises an alert instead of showing "Running" for good; when someone asked to cancel it, the reconciler stops it,
+  because a stuck workflow cannot process that request itself. A cancellation that went to a run that no longer exists
+  (older versions could record the run of a child step) is sent to the job's real run.
+- Workflow changes are versioned: a change to the commands a workflow issues sits behind a marker, so a run that was
+  going during an update replays its old path. A replay test checks recorded histories of earlier versions against the
+  current code. The first marker covers the change that stopped child steps writing their parent's job, which left
+  OneDrive backups that were running during that update stuck; after this update they continue (and stop, when asked).
 - Excluding objects asks for confirmation, stops their running backups and settles their open failed, partial and
   missed backup alerts; the minute sweep settles them too for objects excluded earlier. The excluded status says its
   snapshots end with their retention and the data is then removed.
@@ -191,6 +201,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- "Cancel" says when the request did not reach the job's run, instead of reporting a cancellation that never happened;
+  the request is kept with the job for the reconciler. "About less than a minute left" reads "Less than a minute left".
 - The web app and API take the scheme and client address from the reverse proxy on the same host: redirects stay on
   https and the secure-only cookies work behind Caddy (sign-in no longer loops).
 - Stylesheets, scripts and images are served to visitors who are not signed in, so the sign-in and set-up pages are

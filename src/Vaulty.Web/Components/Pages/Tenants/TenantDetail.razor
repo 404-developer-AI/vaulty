@@ -506,8 +506,8 @@ else
                 // Excluding stops a backup that is still running, so no more bandwidth goes to an object that is not backed up.
                 foreach (var (workflowId, runId) in await Selection.RunningBackupsToStopAsync(access, TenantId, ids))
                 {
-                    await Workflows.CancelAsync(workflowId, runId);
-                    stopped++;
+                    // A run the request does not reach is stopped by the job reconciler, which acts on the recorded request.
+                    if (await Workflows.CancelAsync(workflowId, runId)) stopped++;
                 }
             }
             Snackbar.Add(changed == 0 ? "Nothing to change." : include ? $"{changed} selected for backup; their first backup starts shortly."

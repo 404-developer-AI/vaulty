@@ -88,6 +88,9 @@ public sealed class BackupSelection(NpgsqlDataSource dataSource, TimeProvider cl
         {
             await AuditLog.WriteAsync(session, $"user:{access.UserId}", "job.cancel_requested", $"job:{run.JobId}", new { reason = "excluded" }, cancellationToken)
                 .ConfigureAwait(false);
+            await session.Connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE vaulty.jobs SET cancel_requested_at = coalesce(cancel_requested_at, now()) WHERE id = @JobId",
+                new { run.JobId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         }
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         return runs.Select(r => (r.WorkflowId, r.RunId)).ToList();
