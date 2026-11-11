@@ -451,7 +451,8 @@ else
     {
         var changed = await Selection.SetAsync(access, fresh, TenantId, ids, include);
         Snackbar.Add(changed == 0 ? "Nothing to change." : include ? $"{changed} selected for backup; their first backup starts shortly."
-            : $"{changed} excluded from backup; their snapshots are kept until retention ends.", changed == 0 ? Severity.Info : Severity.Success);
+            : $"{changed} excluded from backup; their data is removed once retention and its lock end, unless you select them again.",
+            changed == 0 ? Severity.Info : Severity.Success);
     });
 
     private async Task SetProtectNewAsync(bool protectNew) => await SelectionStepAsync(async (access, fresh) =>

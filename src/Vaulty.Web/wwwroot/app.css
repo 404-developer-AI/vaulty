@@ -122,7 +122,7 @@ h1:focus, h1:focus-visible { outline: none; }
 .content-area .mud-paper.pa-4 { padding: 20px 24px !important; }
 .content-area .mud-paper + .mud-paper, .content-area .mud-paper + .mud-table, .content-area .mud-table + .mud-paper { margin-top: 20px; }
 /* A data table stands on its own; a simple key/value table inside a panel stays flat. */
-.mud-table:not(.mud-simple-table) { border-radius: var(--vy-radius-lg) !important; overflow: hidden; border: 1px solid var(--vy-border); background: var(--vy-surface); box-shadow: var(--vy-shadow-sm); }
+.mud-table:not(.mud-simple-table) { border-radius: var(--vy-radius-lg) !important; overflow-x: auto; border: 1px solid var(--vy-border); background: var(--vy-surface); box-shadow: var(--vy-shadow-sm); }
 .mud-simple-table { border: 0 !important; box-shadow: none !important; background: transparent !important; }
 .mud-table .mud-table-head .mud-table-cell { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--mud-palette-text-secondary); }
 .mud-table .mud-table-body .mud-table-row:hover { background: var(--vy-bg) !important; }
@@ -140,4 +140,5 @@ h1:focus, h1:focus-visible { outline: none; }
 /* Status chips and actions keep to one line in a table; long names wrap instead. */
 .vy-status, .vy-nowrap { white-space: nowrap; }
 .mud-table .mud-button-root { white-space: nowrap; }
-.mud-table .mud-table-cell .mud-link { overflow-wrap: anywhere; }
+/* Names keep whole words and get room; a table wider than its frame scrolls instead of cutting off its last column. */
+.mud-table .mud-table-body .mud-table-cell:has(.mud-link) { min-width: 240px; }

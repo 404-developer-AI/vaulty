@@ -222,7 +222,8 @@ All notable changes to this project are documented in this file. The format foll
   key/value tables inside a panel stay flat.
 - Detail pages (customer, tenant, protected object, snapshot, restore) show a loading bar while they load, instead of
   saying for a moment that the item does not exist.
-- Status chips, table buttons and backup times stay on one line in tables; long names wrap instead.
+- Status chips, table buttons and backup times stay on one line in tables; names keep whole words and get room, and a
+  table wider than its frame scrolls sideways instead of cutting off its last column.
 - A protected object waiting for a free place within its tenant's budget of concurrent backups (20 mailboxes, 10
   drives) is queued, not a missed run; a missed-run alert is settled as soon as the backup starts, and its text names
   the worker service and object storage as the causes to check.
