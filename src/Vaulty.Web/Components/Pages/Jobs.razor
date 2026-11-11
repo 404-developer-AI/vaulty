@@ -181,7 +181,7 @@
         if (KindQuery is not null && Kinds.Contains(KindQuery)) _kind = KindQuery;
         if (StateQuery is not null && States.Contains(StateQuery)) _state = StateQuery;
         var access = await Current.GetAsync();
-        _tenants = (await Tenants.ListAsync(access.OrganizationId)).Where(t => access.Allows(Permissions.CustomersView, t.CustomerId))
+        _tenants = (await Tenants.ListAsync(access.OrganizationId)).Where(t => access.AllowsTenant(Permissions.CustomersView, t.CustomerId, t.Id))
             .OrderBy(t => t.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
         await LoadAsync(reset: true);
     }

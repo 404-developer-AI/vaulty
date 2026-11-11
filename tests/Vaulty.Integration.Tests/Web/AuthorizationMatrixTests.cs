@@ -30,6 +30,8 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         ["/account/confirm"] = null,   // signed in with a second factor (fallback policy)
         ["/account/microsoft"] = null,
         ["/settings/sign-in"] = VaultyPolicies.Permission(Permissions.SignInManage),
+        ["/settings/roles"] = VaultyPolicies.Permission(Permissions.RolesManage),
+        ["/settings/groups"] = VaultyPolicies.Permission(Permissions.GroupsManage),
         ["/"] = null,
         ["/settings/users"] = VaultyPolicies.Permission(Permissions.UsersManage),
         ["/settings/audit"] = VaultyPolicies.Permission(Permissions.AuditView),
@@ -188,15 +190,17 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         var (_, organizationId, adminId, userId) = await SeedOrganizationWithUserAsync(withMfa: false);
         using var scope = app.Factory.Services.CreateScope();
         var access = scope.ServiceProvider.GetRequiredService<AccessService>();
+        // An administrator with every permission and every customer, as the Organization admin role gives.
+        var admin = new UserAccess(adminId, organizationId, true, Permissions.All.ToDictionary(p => p.Key, _ => (HashSet<Guid>?)null));
         var roles = await scope.ServiceProvider.GetRequiredService<UserDirectory>().RolesAsync(organizationId);
 
         foreach (var role in roles.Where(r => Permissions.AnyRequiresMfa(r.Permissions)))
         {
-            var error = await Assert.ThrowsAsync<AccessException>(() => access.AssignRoleAsync(organizationId, adminId, userId, role.Id, null));
+            var error = await Assert.ThrowsAsync<AccessException>(() => access.AssignRoleAsync(admin, userId, role.Id));
             Assert.Contains("passkey or an authenticator app", error.Message, StringComparison.Ordinal);
         }
         var readOnly = roles.Single(r => r.Name == BuiltInRoles.ReadOnly);
-        await access.AssignRoleAsync(organizationId, adminId, userId, readOnly.Id, null);
+        await access.AssignRoleAsync(admin, userId, readOnly.Id);
         var effective = await access.GetAccessAsync(organizationId, userId);
         Assert.True(effective.Allows(Permissions.CustomersView));
         Assert.False(effective.Allows(Permissions.RestoreInPlace));

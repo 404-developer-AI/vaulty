@@ -273,6 +273,25 @@ public sealed class AppRegistrationClient(HttpClient http, MicrosoftEndpoints en
         return everyone ? TenantMfaPosture.ConditionalAccess : TenantMfaPosture.None;
     }
 
+    /// <summary>The security groups a member belongs to, directly or through other groups (GroupMember.Read.All).</summary>
+    public async Task<IReadOnlySet<Guid>> MemberGroupsAsync(string token, Guid objectId, CancellationToken cancellationToken = default)
+    {
+        var groups = new HashSet<Guid>();
+        string? next = $"users/{objectId}/transitiveMemberOf/microsoft.graph.group?$select=id&$top=999";
+        for (var page = 0; next is not null && page < 50; page++)
+        {
+            var json = await SendAsync(token, HttpMethod.Get, next, null, cancellationToken).ConfigureAwait(false);
+            foreach (var item in (json?["value"] as JsonArray ?? []).OfType<JsonObject>())
+            {
+                if (Guid.TryParse(item["id"]?.GetValue<string>(), out var id)) groups.Add(id);
+            }
+            // The next link is absolute; it must stay on Graph.
+            next = json?["@odata.nextLink"]?.GetValue<string>() is { } link && Uri.TryCreate(link, UriKind.Absolute, out var uri) &&
+                   uri.Host == endpoints.Graph.Host ? uri.ToString() : null;
+        }
+        return groups;
+    }
+
     private static DirectoryMember? Member(JsonObject json) => Guid.TryParse(json["id"]?.GetValue<string>(), out var id)
         ? new DirectoryMember(id, json["displayName"]?.GetValue<string>(), json["userPrincipalName"]?.GetValue<string>())
         : null;

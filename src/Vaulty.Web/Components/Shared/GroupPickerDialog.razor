@@ -1,0 +1,46 @@
+@* The groups of one user; memberships from an Entra group mapping are shown and cannot be changed here. *@
+@using Vaulty.Infrastructure.Access
+
+<MudDialog>
+    <DialogContent>
+        <p class="vy-muted mt-0">A user sees the customers of all their groups together. Without a group, the user sees no customer.</p>
+        @foreach (var group in Groups)
+        {
+            var mapped = Mapped.Contains(group.Id);
+            <div>
+                <MudCheckBox T="bool" Value="@(mapped || _chosen.Contains(group.Id))" Disabled="mapped" ValueChanged="@(on => Toggle(group.Id, on))"
+                             Label="@($"{group.Name}{(mapped ? " (from Entra)" : "")}")" />
+                <div class="vy-muted" style="margin: -8px 0 6px 44px; font-size: 0.8125rem">@Describe(group)</div>
+            </div>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="@(() => Dialog.Close(DialogResult.Ok<IReadOnlyCollection<Guid>>(_chosen.ToList())))">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public IReadOnlyList<GroupRow> Groups { get; set; } = [];
+    [Parameter] public IReadOnlySet<Guid> Selected { get; set; } = new HashSet<Guid>();
+    [Parameter] public IReadOnlySet<Guid> Mapped { get; set; } = new HashSet<Guid>();
+
+    private HashSet<Guid> _chosen = [];
+
+    protected override void OnInitialized() => _chosen = [.. Selected];
+
+    private void Toggle(Guid id, bool on)
+    {
+        if (on) _chosen.Add(id);
+        else _chosen.Remove(id);
+    }
+
+    public static string Describe(GroupRow group)
+    {
+        var includes = group.Rules.Count(r => r.Include);
+        var excludes = group.Rules.Count(r => !r.Include);
+        var what = group.AllCustomers ? "Every customer" : $"{includes} included";
+        return excludes > 0 ? $"{what}, {excludes} excluded" : what;
+    }
+}

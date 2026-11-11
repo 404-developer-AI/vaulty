@@ -57,6 +57,8 @@ internal sealed class MicrosoftSimulator : IDisposable
     public Action<JsonObject>? ShapeIdToken { get; set; }
     public List<(Guid Id, string Name, string Upn, string Type)> Members { get; } = [];
     public bool SecurityDefaults { get; set; }
+    /// <summary>The Entra security groups of each account (object id), for transitiveMemberOf.</summary>
+    public Dictionary<Guid, HashSet<Guid>> EntraGroups { get; } = [];
 
     public Dictionary<Guid, JsonObject> Applications { get; } = [];
     public Dictionary<Guid, Guid> ServicePrincipals { get; } = [];
@@ -305,6 +307,11 @@ internal sealed class MicrosoftSimulator : IDisposable
                     ["value"] = new JsonArray(Members.Where(m => m.Type == "Member" && (m.Name.StartsWith(text, StringComparison.OrdinalIgnoreCase) || m.Upn.StartsWith(text, StringComparison.OrdinalIgnoreCase)))
                         .Select(m => (JsonNode)new JsonObject { ["id"] = m.Id.ToString(), ["displayName"] = m.Name, ["userPrincipalName"] = m.Upn }).ToArray()),
                 });
+            }
+            case "GET" when path.StartsWith("users/", StringComparison.Ordinal) && path.Contains("/transitiveMemberOf", StringComparison.Ordinal):
+            {
+                var groups = EntraGroups.TryGetValue(Guid.Parse(path[6..42]), out var set) ? set : [];
+                return Json(200, new JsonObject { ["value"] = new JsonArray(groups.Select(g => (JsonNode)new JsonObject { ["id"] = g.ToString() }).ToArray()) });
             }
             case "GET" when path.StartsWith("users/", StringComparison.Ordinal):
             {

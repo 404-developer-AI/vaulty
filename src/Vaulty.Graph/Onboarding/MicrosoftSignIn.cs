@@ -125,8 +125,10 @@ public static class SignInAppPermissions
     public const string UserReadAll = "User.Read.All";
     /// <summary>Read whether the tenant requires multi-factor authentication.</summary>
     public const string PolicyReadAll = "Policy.Read.All";
+    /// <summary>Read the Entra groups of a person at sign-in, for group mappings.</summary>
+    public const string GroupMemberReadAll = "GroupMember.Read.All";
 
-    public static readonly IReadOnlyList<string> Optional = [UserReadAll, PolicyReadAll];
+    public static readonly IReadOnlyList<string> Optional = [UserReadAll, PolicyReadAll, GroupMemberReadAll];
 
     /// <summary>The application permissions in an app-only access token (its roles claim); empty when the token is not a JWT.</summary>
     public static IReadOnlyList<string> Granted(string accessToken)

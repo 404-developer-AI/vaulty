@@ -42,7 +42,7 @@ public sealed class DashboardService(NpgsqlDataSource dataSource, TimeProvider c
     {
         ArgumentNullException.ThrowIfNull(access);
         var now = clock.GetUtcNow();
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var customers = (await session.Connection.QueryAsync<(Guid Id, string Code, string Name)>(new CommandDefinition(
             "SELECT id, code, name FROM vaulty.customers", transaction: session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false))
             .Where(c => access.Allows(Permissions.CustomersView, c.Id)).ToList();

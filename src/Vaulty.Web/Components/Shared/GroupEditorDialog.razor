@@ -1,0 +1,92 @@
+@* A group: every customer, or the customers, tenants and tags it includes; excludes win within the group. *@
+@using Vaulty.Infrastructure.Access
+
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="_name" Label="Name" Variant="Variant.Outlined" MaxLength="100" AutoFocus="true" />
+        <MudTextField @bind-Value="_description" Label="Description (optional)" Variant="Variant.Outlined" MaxLength="500" Class="mt-2" />
+        <MudSwitch T="bool" @bind-Value="_all" Color="Color.Primary" Label="Every customer, also the ones added later" Class="mt-3" />
+
+        <h3 class="mt-4 mb-1">@(_all ? "Except" : "Rules")</h3>
+        <p class="vy-muted mt-0" style="font-size: 0.8125rem">
+            Include a customer (with all its tenants), a single tenant, or every customer with a tag. Exclude to take something out again; an exclude wins within this group.
+        </p>
+        @for (var i = 0; i < _rules.Count; i++)
+        {
+            var index = i;
+            var rule = _rules[index];
+            <div class="d-flex align-center gap-2 mb-2">
+                <MudSelect T="string" Value="@rule.Kind" ValueChanged="@(k => _rules[index] = rule with { Kind = k })" Dense="true" Variant="Variant.Outlined"
+                           Margin="Margin.Dense" Style="max-width: 140px" Disabled="_all">
+                    <MudSelectItem Value="@("include")">Include</MudSelectItem>
+                    <MudSelectItem Value="@("exclude")">Exclude</MudSelectItem>
+                </MudSelect>
+                <MudAutocomplete T="ScopeTarget" Value="@Find(rule)" ValueChanged="@(t => _rules[index] = Rule(rule.Kind, t))" SearchFunc="SearchAsync"
+                                 ToStringFunc="@(t => t?.Label)" Dense="true" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="Customer, tenant or tag"
+                                 Class="flex-grow-1" ResetValueOnEmptyText="true" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Close" Size="Size.Small" aria-label="Remove the rule" OnClick="@(() => _rules.RemoveAt(index))" />
+            </div>
+        }
+        <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Add" OnClick="@(() => _rules.Add(new GroupRule(_all ? "exclude" : "include", null, null, null)))">Add a rule</MudButton>
+        @if (_error is not null)
+        {
+            <Notice Tone="error" Class="mt-2">@_error</Notice>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public GroupRow? Group { get; set; }
+    [Parameter] public IReadOnlyList<ScopeTarget> Targets { get; set; } = [];
+
+    private string? _name;
+    private string? _description;
+    private bool _all;
+    private List<GroupRule> _rules = [];
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        (_name, _description, _all) = (Group?.Name, Group?.Description, Group?.AllCustomers ?? false);
+        _rules = [.. Group?.Rules ?? []];
+    }
+
+    private ScopeTarget? Find(GroupRule rule) => Targets.FirstOrDefault(t =>
+        rule.CustomerId is { } c ? t.Kind == "customer" && t.Id == c
+        : rule.TenantId is { } tenant ? t.Kind == "tenant" && t.Id == tenant
+        : rule.Tag is { } tag && t.Kind == "tag" && string.Equals(t.Tag, tag, StringComparison.OrdinalIgnoreCase));
+
+    private static GroupRule Rule(string kind, ScopeTarget? target) => target?.Kind switch
+    {
+        "customer" => new GroupRule(kind, target.Id, null, null),
+        "tenant" => new GroupRule(kind, null, target.Id, null),
+        "tag" => new GroupRule(kind, null, null, target.Tag),
+        _ => new GroupRule(kind, null, null, null),
+    };
+
+    private Task<IEnumerable<ScopeTarget>> SearchAsync(string text, CancellationToken cancellationToken) =>
+        Task.FromResult(string.IsNullOrWhiteSpace(text) ? Targets.Take(50)
+            : Targets.Where(t => t.Label.Contains(text.Trim(), StringComparison.OrdinalIgnoreCase)).Take(50));
+
+    private void Save()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Enter a name.";
+            return;
+        }
+        var rules = _rules.Where(r => r.CustomerId is not null || r.TenantId is not null || r.Tag is not null)
+            .Select(r => _all ? r with { Kind = "exclude" } : r).ToList();
+        if (!_all && !rules.Any(r => r.Include))
+        {
+            _error = "Include at least one customer, tenant or tag, or choose every customer.";
+            return;
+        }
+        Dialog.Close(DialogResult.Ok(new GroupDraft(_name.Trim(), _description, _all, rules)));
+    }
+}

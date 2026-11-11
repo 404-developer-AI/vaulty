@@ -120,14 +120,15 @@ public static class MicrosoftSignInEndpoints
     }
 
     private static async Task<IResult> FinishAsync(HttpContext context, [FromQuery] string? ticket, MicrosoftLogins logins, MicrosoftSignInService signIn,
-        VaultySignInManager signInManager, UserManager<User> users, AccountAudit audit, SignInMessages messages, CurrentAccess current, TimeProvider clock)
+        VaultySignInManager signInManager, UserManager<User> users, AccountAudit audit, SignInMessages messages, CurrentAccess current, TimeProvider clock,
+        Vaulty.Infrastructure.Access.EntraGroupSync groups)
     {
         var result = logins.Redeem(ticket, context.Request.Cookies[BindingCookie]);
         context.Response.Cookies.Delete(BindingCookie, new CookieOptions { Secure = true, Path = "/", SameSite = SameSiteMode.Lax });
         if (result is null) return Results.Redirect("/account/login?error=expired");
         return result.Purpose switch
         {
-            MicrosoftLoginPurpose.SignIn => await SignInAsync(result, signIn, signInManager, users, audit, messages),
+            MicrosoftLoginPurpose.SignIn => await SignInAsync(result, signIn, signInManager, users, audit, messages, groups),
             MicrosoftLoginPurpose.Link => await FinishLinkAsync(context, result, signIn, signInManager, messages),
             MicrosoftLoginPurpose.StepUp => await FinishStepUpAsync(context, result, signIn, signInManager, users, audit, messages, clock),
             _ => await FinishCheckAsync(context, result, signIn, current),
@@ -135,17 +136,24 @@ public static class MicrosoftSignInEndpoints
     }
 
     private static async Task<IResult> SignInAsync(MicrosoftLoginResult result, MicrosoftSignInService signIn, VaultySignInManager signInManager,
-        UserManager<User> users, AccountAudit audit, SignInMessages messages)
+        UserManager<User> users, AccountAudit audit, SignInMessages messages, Vaulty.Infrastructure.Access.EntraGroupSync groups)
     {
         IResult Refuse(string message) => Results.Redirect($"/account/login?error=microsoft&detail={Uri.EscapeDataString(messages.Protect(message))}");
         if (result.Account is not { } account) return Refuse(result.Error ?? "The sign-in with Microsoft did not complete. Start again.");
         var found = await signIn.FindLinkedUserAsync(account.TenantId, account.ObjectId);
+        // The person's Entra groups decide the mapped roles and groups, read now at every sign-in.
+        var entraGroups = await groups.MappedGroupsOfAsync(result.OrganizationId, account.ObjectId);
+        if (found is null && entraGroups.Count > 0 && (await signIn.GetAsync(result.OrganizationId)).JitProvisioning)
+        {
+            found = await ProvisionAsync(result.OrganizationId, account, signIn, users, groups, audit);
+        }
         if (found is not { } linked)
         {
             await audit.WriteOrganizationAsync(result.OrganizationId, "login.failed",
                 new { method = "microsoft", reason = "not_linked", entra_object_id = account.ObjectId, account = account.Account });
             return Refuse($"{account.Account ?? "This Microsoft account"} is not linked to a Vaulty user. Ask an administrator of Vaulty to add you.");
         }
+        await groups.ApplyAsync(linked.OrganizationId, linked.UserId, entraGroups);
         var user = await users.FindByIdAsync(linked.UserId.ToString());
         if (user is null) return Refuse("This Vaulty user is disabled.");
         var settings = await signIn.GetAsync(user.OrganizationId);
@@ -166,6 +174,36 @@ public static class MicrosoftSignInEndpoints
         await audit.WriteAsync(user, "login.succeeded", details);
         // Without a second factor from Microsoft or of its own, the user can only add one.
         return Results.Redirect(mfaSource is null && !user.TwoFactorEnabled ? "/account/mfa-setup" : result.ReturnPath);
+    }
+
+    /// <summary>A member of a mapped Entra group signs in for the first time: a Vaulty user linked to the account, in the mapped groups only.</summary>
+    private static async Task<(Guid UserId, Guid OrganizationId)?> ProvisionAsync(Guid organizationId, Vaulty.Graph.Onboarding.MicrosoftAccount account,
+        MicrosoftSignInService signIn, UserManager<User> users, Vaulty.Infrastructure.Access.EntraGroupSync groups, AccountAudit audit)
+    {
+        var name = account.Account ?? account.ObjectId.ToString();
+        var user = new User
+        {
+            Id = Guid.CreateVersion7(),
+            OrganizationId = organizationId,
+            UserName = name,
+            NormalizedUserName = users.NormalizeName(name),
+            Email = account.Account,
+            NormalizedEmail = account.Account is null ? null : users.NormalizeEmail(account.Account),
+            DisplayName = account.DisplayName,
+        };
+        if (!(await users.CreateAsync(user)).Succeeded) return null;
+        try
+        {
+            await signIn.LinkAsync(organizationId, "system:jit", user.Id, account.ObjectId, account.Account);
+        }
+        catch (SignInSetupException)
+        {
+            await users.DeleteAsync(user);
+            return null;
+        }
+        await groups.LeaveDefaultGroupAsync(organizationId, user.Id);
+        await audit.WriteAsync(user, "user.created", new { method = "jit", entra_object_id = account.ObjectId });
+        return (user.Id, organizationId);
     }
 
     private static async Task<IResult> FinishLinkAsync(HttpContext context, MicrosoftLoginResult result, MicrosoftSignInService signIn,

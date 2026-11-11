@@ -60,6 +60,8 @@ public static class Permissions
     public const string SettingsManage = "settings.manage";
     public const string StorageManage = "storage.manage";
     public const string SignInManage = "signin.manage";
+    public const string GroupsManage = "groups.manage";
+    public const string AccessView = "access.view";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
     [
@@ -109,10 +111,20 @@ public static class Permissions
             RequiresMfa: true, RequiresStepUp: true),
         new(StorageManage, AdministrationGroup, "Manage storage",
             "Configure the object storage account and rotate its keys.", [], RequiresMfa: true, RequiresStepUp: true),
+        new(GroupsManage, AdministrationGroup, "Manage groups",
+            "Create groups of customers and tenants and choose who is in them; groups decide which customers a user sees.", [],
+            RequiresMfa: true, RequiresStepUp: true),
+        new(AccessView, AdministrationGroup, "View access", "See what each user may do and see, and who has access to a customer.", []),
         new(SignInManage, AdministrationGroup, "Manage sign-in",
             "Set up sign-in with Microsoft, link users to their Microsoft account and choose who handles the second factor.", [],
             RequiresMfa: true, RequiresStepUp: true),
     ];
+
+    /// <summary>
+    /// Permissions that act on a customer as a whole (its details, its deletion, connecting a new tenant to it): they need
+    /// the whole customer in the user's groups, not only some of its tenants.
+    /// </summary>
+    public static readonly IReadOnlySet<string> WholeCustomer = new HashSet<string>(StringComparer.Ordinal) { CustomersManage, CustomersDelete, TenantsConnect };
 
     private static readonly Dictionary<string, PermissionInfo> ByKey = All.ToDictionary(p => p.Key, StringComparer.Ordinal);
 

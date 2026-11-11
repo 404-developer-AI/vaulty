@@ -65,7 +65,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
     public async Task<ObjectHeader?> ObjectAsync(UserAccess access, Guid objectId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var header = await session.Connection.QuerySingleOrDefaultAsync<ObjectHeader>(new CommandDefinition(
             """
             SELECT o.id, o.tenant_id, c.id AS customer_id, c.name AS customer_name, t.display_name AS tenant_name, o.kind, o.sub_kind, o.display_name, o.state
@@ -79,7 +79,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
     {
         ArgumentNullException.ThrowIfNull(access);
         if (await ObjectAsync(access, objectId, cancellationToken).ConfigureAwait(false) is null) return [];
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<(Guid Id, long Sequence, string State, DateTime StartedAt, DateTime? CommittedAt, string Counts,
             int Exceptions, DateTime? VerifiedAt)>(new CommandDefinition(
             """
@@ -99,7 +99,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
     {
         ArgumentNullException.ThrowIfNull(access);
         if (await ObjectAsync(access, objectId, cancellationToken).ConfigureAwait(false) is null) return [];
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var json = await session.Connection.ExecuteScalarAsync<string?>(new CommandDefinition(
             "SELECT exceptions::text FROM vaulty.snapshots WHERE id = @snapshotId AND protected_object_id = @objectId",
             new { snapshotId, objectId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
@@ -130,7 +130,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
     {
         var (header, sequence) = await ResolveAsync(access, objectId, snapshotId, cancellationToken).ConfigureAwait(false);
         var repositoryKeys = await keys.GetAsync(access.OrganizationId, header.TenantId, cancellationToken).ConfigureAwait(false);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var folders = (await session.Connection.QueryAsync<(string SourceId, string? ParentSourceId, byte[]? SealedMetadata)>(new CommandDefinition(
             $"""
             SELECT source_id, parent_source_id, sealed_metadata FROM vaulty.items
@@ -183,7 +183,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
             afterModified = new DateTime(long.Parse(parts[0], CultureInfo.InvariantCulture), DateTimeKind.Utc);
             afterId = Guid.Parse(parts[1]);
         }
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var parameters = new { tenantId = header.TenantId, objectId, sequence, folderId, afterModified, afterId, take = PageSize + 1 };
         var rows = (await session.Connection.QueryAsync<Row>(new CommandDefinition(
             $"""
@@ -208,7 +208,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
     {
         var (header, sequence) = await ResolveAsync(access, objectId, snapshotId, cancellationToken).ConfigureAwait(false);
         var repositoryKeys = await keys.GetAsync(access.OrganizationId, header.TenantId, cancellationToken).ConfigureAwait(false);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var row = await session.Connection.QuerySingleOrDefaultAsync<Row>(new CommandDefinition(
             $"""
             SELECT id, source_id, parent_source_id, kind, size, modified_at, sealed_metadata, preview_size, preview_type, limited_fidelity FROM vaulty.items
@@ -239,7 +239,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
         var tsQuery = SearchText.ToQuery(query);
         if (tsQuery is null || !access.Allows(Permissions.SnapshotsBrowse)) return [];
         var customers = access.Customers(Permissions.SnapshotsBrowse);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var rows = (await session.Connection.QueryAsync<HitRow>(new CommandDefinition(
             """
             SELECT i.id, i.tenant_id, i.protected_object_id, i.source_id, i.kind, i.size, i.modified_at, i.sealed_metadata,
@@ -282,7 +282,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
         var (header, sequence) = await ResolveAsync(access, objectId, snapshotId, cancellationToken).ConfigureAwait(false);
         var repositoryKeys = await keys.GetAsync(access.OrganizationId, header.TenantId, cancellationToken).ConfigureAwait(false);
         Row? row;
-        await using (var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false))
+        await using (var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false))
         {
             row = await session.Connection.QuerySingleOrDefaultAsync<Row>(new CommandDefinition(
                 $"""
@@ -325,7 +325,7 @@ public sealed class SnapshotBrowser(NpgsqlDataSource dataSource, TenantKeyProvid
         ArgumentNullException.ThrowIfNull(access);
         var header = await ObjectAsync(access, objectId, cancellationToken).ConfigureAwait(false)
                      ?? throw new AccessException("You do not have access to this protected object.");
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var sequence = await session.Connection.ExecuteScalarAsync<long?>(new CommandDefinition(
             "SELECT sequence FROM vaulty.snapshots WHERE id = @snapshotId AND protected_object_id = @objectId AND state IN ('committed', 'partial')",
             new { snapshotId, objectId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false)

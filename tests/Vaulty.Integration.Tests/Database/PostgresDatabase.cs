@@ -31,6 +31,18 @@ public sealed class PostgresDatabase : IAsyncLifetime
 
     public string Name { get; } = "vaulty_test_" + Guid.NewGuid().ToString("N")[..12];
 
+    /// <summary>Stops the migrations after this one, so a test can seed data of an older schema and migrate on itself.</summary>
+    public string? MigrateTo { get; init; }
+
+    /// <summary>Applies the migrations not applied yet (or up to one).</summary>
+    public async Task MigrateAsync(string? target = null)
+    {
+        await using var context = new Infrastructure.Database.VaultyDbContext(Infrastructure.Database.DatabaseMigrator.Options(
+            new NpgsqlConnectionStringBuilder(Migrator) { CommandTimeout = 600 }.ConnectionString));
+        await Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>(context.Database)
+            .MigrateAsync(target);
+    }
+
     public string Migrator => As("vaulty_migrator");
     public string Api => As("vaulty_api");
     public string Worker => As("vaulty_worker");
@@ -83,7 +95,8 @@ public sealed class PostgresDatabase : IAsyncLifetime
         }
 
         // Migrations create many partitions; on a busy test machine they need more than the default 30 seconds.
-        await Infrastructure.Database.DatabaseMigrator.MigrateAsync(new NpgsqlConnectionStringBuilder(Migrator) { CommandTimeout = 600 }.ConnectionString);
+        if (MigrateTo is not null) await MigrateAsync(MigrateTo);
+        else await Infrastructure.Database.DatabaseMigrator.MigrateAsync(new NpgsqlConnectionStringBuilder(Migrator) { CommandTimeout = 600 }.ConnectionString);
     }
 
     private static Task CreateRolesAsync(NpgsqlConnection admin) => Execute(admin, """

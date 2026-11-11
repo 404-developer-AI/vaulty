@@ -89,6 +89,8 @@ internal sealed class NotificationSeed
         await owner.ExecuteAsync(
             """
             INSERT INTO vaulty.organizations (id, name) VALUES (@org, 'O');
+            -- As every organization has it: the default group, which new users join.
+            INSERT INTO vaulty.user_groups (id, organization_id, name, all_customers, is_default) VALUES (gen_random_uuid(), @org, 'All customers', true, true);
             INSERT INTO vaulty.customers (id, organization_id, code, name) VALUES (@customer, @org, 'C1', 'Contoso');
             INSERT INTO vaulty.tenants (id, organization_id, customer_id, entra_tenant_id, display_name, consent_state, client_id)
                 VALUES (@tenant, @org, @customer, @entra, 'Contoso tenant', 'granted', @client);

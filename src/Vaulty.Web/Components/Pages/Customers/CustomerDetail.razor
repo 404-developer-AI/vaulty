@@ -9,6 +9,7 @@
 @inject CurrentAccess Current
 @inject DisplayTime Time
 @inject NavigationManager Navigation
+@inject Vaulty.Infrastructure.Access.AccessAdministration Administration
 
 <PageTitle>@(_customer?.Name ?? "Customer") · Vaulty</PageTitle>
 
@@ -99,6 +100,31 @@ else
             </MudSimpleTable>
         }
     </Section>
+    @if (_holders is not null)
+    {
+        <Section Title="Who has access" Description="Users whose groups include this customer, wholly or some of its tenants, with their roles.">
+            @if (_holders.Count == 0)
+            {
+                <p class="vy-muted mb-0">Nobody.</p>
+            }
+            else
+            {
+                <MudSimpleTable Dense="true" Elevation="0">
+                    <thead><tr><th>User</th><th>Roles</th><th>Sees</th></tr></thead>
+                    <tbody>
+                        @foreach (var holder in _holders)
+                        {
+                            <tr>
+                                <td>@(holder.DisplayName ?? holder.UserName)<div class="vy-muted">@holder.UserName</div></td>
+                                <td>@(holder.Roles.Count == 0 ? "No role" : string.Join(", ", holder.Roles))</td>
+                                <td>@(holder.WholeCustomer ? "Every tenant" : "Some tenants")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            }
+        </Section>
+    }
 }
 
 @code {
@@ -111,6 +137,7 @@ else
     private IReadOnlyList<TenantRow> _tenants = [];
     private bool _canConnect;
     private bool _loaded;
+    private IReadOnlyList<Vaulty.Infrastructure.Access.AccessHolder>? _holders;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -133,7 +160,8 @@ else
         if (!access.Allows(Permissions.CustomersView, CustomerId)) return;
         _canConnect = access.Allows(Permissions.TenantsConnect, CustomerId);
         _customer = (await CustomerService.ListAsync(organizationId)).FirstOrDefault(c => c.Id == CustomerId);
-        _tenants = await TenantService.ListAsync(organizationId, CustomerId);
+        _tenants = (await TenantService.ListAsync(organizationId, CustomerId)).Where(t => access.Scope.SeesTenant(CustomerId, t.Id)).ToList();
         _status = (await Dashboards.LoadAsync(access)).Customers.FirstOrDefault(c => c.Id == CustomerId);
+        _holders = access.Allows(Permissions.AccessView) ? await Administration.HoldersAsync(access, CustomerId) : null;
     }
 }

@@ -25,7 +25,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
     public async Task<IReadOnlyList<WebhookRow>> ListAsync(UserAccess access, CancellationToken cancellationToken = default)
     {
         Require(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<(Guid Id, string Name, string Url, string[] Events, bool Enabled, DateTime CreatedAt)>(new CommandDefinition(
             "SELECT id, name, url, events, enabled, created_at FROM vaulty.webhooks ORDER BY created_at", transaction: session.Transaction,
             cancellationToken: cancellationToken)).ConfigureAwait(false);
@@ -43,7 +43,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
         if (events.Count == 0 || events.Any(e => !NotificationKinds.Exists(e))) throw new InvalidOperationException("Choose at least one event.");
         var id = Guid.CreateVersion7();
         var secret = await RotateSecretAsync(id, access, cancellationToken).ConfigureAwait(false);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await session.Connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO vaulty.webhooks (id, organization_id, name, url, events, created_by) VALUES (@id, @organization, @name, @url, @events, @user)",
             new { id, organization = access.OrganizationId, name = name.Trim(), url = url!.Trim(), events = events.Distinct().ToArray(), user = access.UserId },
@@ -58,7 +58,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
         Require(access);
         await EnsureExistsAsync(access, id, cancellationToken).ConfigureAwait(false);
         var secret = await RotateSecretAsync(id, access, cancellationToken).ConfigureAwait(false);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await AuditLog.WriteAsync(session, $"user:{access.UserId}", "webhook.secret_rotated", $"webhook:{id}", null, cancellationToken).ConfigureAwait(false);
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         return secret;
@@ -67,7 +67,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
     public async Task SetEnabledAsync(UserAccess access, Guid id, bool enabled, CancellationToken cancellationToken = default)
     {
         Require(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await session.Connection.ExecuteAsync(new CommandDefinition("UPDATE vaulty.webhooks SET enabled = @enabled WHERE id = @id", new { id, enabled },
             session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         await AuditLog.WriteAsync(session, $"user:{access.UserId}", enabled ? "webhook.enabled" : "webhook.disabled", $"webhook:{id}", null, cancellationToken)
@@ -78,7 +78,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
     public async Task DeleteAsync(UserAccess access, Guid id, CancellationToken cancellationToken = default)
     {
         Require(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await session.Connection.ExecuteAsync(new CommandDefinition("DELETE FROM vaulty.webhooks WHERE id = @id", new { id }, session.Transaction,
             cancellationToken: cancellationToken)).ConfigureAwait(false);
         await AuditLog.WriteAsync(session, $"user:{access.UserId}", "webhook.deleted", $"webhook:{id}", null, cancellationToken).ConfigureAwait(false);
@@ -90,7 +90,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
     {
         Require(access);
         await EnsureExistsAsync(access, id, cancellationToken).ConfigureAwait(false);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var eventId = Guid.CreateVersion7();
         await session.Connection.ExecuteAsync(new CommandDefinition(
             """
@@ -108,7 +108,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
     public async Task<IReadOnlyList<DeliveryRow>> DeliveriesAsync(UserAccess access, Guid id, CancellationToken cancellationToken = default)
     {
         Require(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<(Guid Id, string Kind, string State, int Attempts, int? LastStatus, string? LastError, DateTime CreatedAt,
             DateTime? DeliveredAt)>(new CommandDefinition(
             """
@@ -128,7 +128,7 @@ public sealed class WebhookService(NpgsqlDataSource dataSource, ISecretStore sec
 
     private async Task EnsureExistsAsync(UserAccess access, Guid id, CancellationToken cancellationToken)
     {
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         if (!await session.Connection.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT EXISTS (SELECT 1 FROM vaulty.webhooks WHERE id = @id)", new { id },
                 session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false))
         {
@@ -186,7 +186,7 @@ public sealed class JobsService(NpgsqlDataSource dataSource)
     {
         ArgumentNullException.ThrowIfNull(access);
         if (!access.Allows(Permissions.JobsView)) throw new AccessException("You cannot view jobs.");
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<(Guid Id, string Kind, string State, Guid? TenantId, string? TenantName, Guid? CustomerId, Guid? ObjectId,
             string? ObjectName, string? WorkflowId, DateTime CreatedAt, DateTime? StartedAt, DateTime? FinishedAt, string ResultCounts, string? Error,
             long? ItemsSoFar, long? BytesSoFar, long? ExpectedItems, long? ExpectedBytes)>(new CommandDefinition(
@@ -223,7 +223,7 @@ public sealed class JobsService(NpgsqlDataSource dataSource)
     public async Task<(string WorkflowId, string? RunId)?> CancelAsync(UserAccess access, Guid jobId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var job = await session.Connection.QuerySingleOrDefaultAsync<(string Kind, string State, Guid? CustomerId, string? WorkflowId, string? RunId)?>(
             new CommandDefinition(
                 """
@@ -265,7 +265,7 @@ public sealed class AlertService(NpgsqlDataSource dataSource, TimeProvider clock
     public async Task ResolveAsync(UserAccess access, Guid alertId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var customer = await session.Connection.QuerySingleOrDefaultAsync<(Guid Id, Guid? CustomerId)?>(new CommandDefinition(
             "SELECT a.id, t.customer_id FROM vaulty.alerts a LEFT JOIN vaulty.tenants t ON t.id = a.tenant_id WHERE a.id = @alertId", new { alertId },
             session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);

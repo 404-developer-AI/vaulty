@@ -68,7 +68,7 @@ public sealed class RestoreService(NpgsqlDataSource dataSource, SnapshotBrowser 
 
         var restoreId = Guid.CreateVersion7();
         var jobId = Guid.CreateVersion7();
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var valid = await session.Connection.ExecuteScalarAsync<bool>(new CommandDefinition(
             "SELECT EXISTS (SELECT 1 FROM vaulty.snapshots WHERE id = @SnapshotId AND protected_object_id = @ObjectId AND state IN ('committed', 'partial'))",
             request, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
@@ -100,7 +100,7 @@ public sealed class RestoreService(NpgsqlDataSource dataSource, SnapshotBrowser 
     {
         ArgumentNullException.ThrowIfNull(access);
         if (await browser.ObjectAsync(access, objectId, cancellationToken).ConfigureAwait(false) is null) return [];
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<SummaryRow>(new CommandDefinition(
             """
             SELECT id, protected_object_id, kind, target_mode, state, created_at, finished_at, counts::text AS counts, requested_by
@@ -114,7 +114,7 @@ public sealed class RestoreService(NpgsqlDataSource dataSource, SnapshotBrowser 
     {
         ArgumentNullException.ThrowIfNull(access);
         SummaryRow? row;
-        await using (var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false))
+        await using (var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false))
         {
             row = await session.Connection.QuerySingleOrDefaultAsync<SummaryRow>(new CommandDefinition(
                 """
@@ -125,7 +125,7 @@ public sealed class RestoreService(NpgsqlDataSource dataSource, SnapshotBrowser 
         if (row is null) return null;
         var header = await browser.ObjectAsync(access, row.ProtectedObjectId, cancellationToken).ConfigureAwait(false);
         if (header is null) return null;
-        await using var read = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var read = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var items = (await read.Connection.QueryAsync<RestoreItemReport>(new CommandDefinition(
             """
             SELECT item_id, source_id, kind, relative_path, state, target_id, detail FROM vaulty.restore_items
@@ -158,7 +158,7 @@ public sealed class RestoreService(NpgsqlDataSource dataSource, SnapshotBrowser 
         Require(access, Permissions.ExportCreate, report.Object.CustomerId);
         if (export.CreatedBy != access.UserId) throw new AccessException("Only the user who asked for the export can download it.");
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).Replace('+', '-').Replace('/', '_').TrimEnd('=');
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var updated = await session.Connection.ExecuteAsync(new CommandDefinition(
             "UPDATE vaulty.exports SET token_hash = @hash WHERE id = @id AND downloaded_at IS NULL AND expires_at > @now AND created_by = @user",
             new { id = export.Id, hash = SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(token)), now = clock.GetUtcNow(), user = access.UserId },
@@ -180,7 +180,7 @@ public sealed class RestoreService(NpgsqlDataSource dataSource, SnapshotBrowser 
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(token);
         if (!stepUpFresh || !access.Allows(Permissions.ExportCreate)) return null;
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var claimed = await session.Connection.QuerySingleOrDefaultAsync<(string ObjectKey, long Size, Guid RestoreId)?>(new CommandDefinition(
             """
             UPDATE vaulty.exports SET downloaded_at = @now

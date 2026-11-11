@@ -1,0 +1,127 @@
+@page "/settings/roles"
+@attribute [Authorize(Policy = "perm:" + Permissions.RolesManage)]
+@using Vaulty.Infrastructure.Access
+@inject AccessAdministration Administration
+@inject CurrentAccess Current
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Roles · Vaulty</PageTitle>
+
+<PageHeader Title="Roles"
+            Lede="A role is a set of permissions: what a user may do. Which customers the user sees comes from groups. The built-in roles stay as they are; copy one to make your own. Changes ask you to confirm it's you.">
+    <Actions>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Add" OnClick="@(() => EditAsync(null, copy: false))">New role</MudButton>
+    </Actions>
+</PageHeader>
+
+<MudTable Items="_roles" Hover="true" Elevation="0" Dense="true" Breakpoint="Breakpoint.None" HorizontalScrollbar="true" Loading="!_loaded">
+    <HeaderContent>
+        <MudTh>Role</MudTh>
+        <MudTh>Permissions</MudTh>
+        <MudTh>Users</MudTh>
+        <MudTh><span class="vy-sr-only">Actions</span></MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>
+            <div>@context.Name @if (context.BuiltIn) { <span class="vy-status neutral ml-1">Built in</span> }</div>
+            @if (context.Description is { } description)
+            {
+                <div class="vy-muted">@description</div>
+            }
+        </MudTd>
+        <MudTd>
+            <span title="@string.Join(", ", context.Permissions.Select(p => Permissions.Get(p).Label))">@context.Permissions.Count of @Permissions.All.Count</span>
+        </MudTd>
+        <MudTd>@context.Holders</MudTd>
+        <MudTd>
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => EditAsync(context, copy: true))">Copy</MudButton>
+            @if (!context.BuiltIn)
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => EditAsync(context, copy: false))">Edit</MudButton>
+                <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" Disabled="@(context.Holders > 0)" OnClick="@(() => DeleteAsync(context))"
+                           title="@(context.Holders > 0 ? "Take the role away from its users first" : null)">Delete</MudButton>
+            }
+        </MudTd>
+    </RowTemplate>
+</MudTable>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private IReadOnlyList<RoleDetail> _roles = [];
+    private bool _loaded;
+    private Guid _organizationId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _organizationId = VaultyWebSetup.OrganizationId((await AuthenticationState).User) ?? Guid.Empty;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _roles = await Administration.RolesAsync(_organizationId);
+        _loaded = true;
+    }
+
+    private async Task<UserAccess> ActorAsync()
+    {
+        Current.Invalidate();
+        return await Current.GetAsync((await AuthenticationState).User);
+    }
+
+    private async Task<bool> ConfirmedAsync()
+    {
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString("/settings/roles")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task EditAsync(RoleDetail? role, bool copy)
+    {
+        if (!await ConfirmedAsync()) return;
+        var parameters = new DialogParameters<RoleEditorDialog>
+        {
+            { d => d.Name, role is null ? null : copy ? $"{role.Name} (copy)" : role.Name },
+            { d => d.Description, role?.Description },
+            { d => d.Chosen, role?.Permissions ?? [] },
+        };
+        var title = role is null ? "New role" : copy ? $"Copy {role.Name}" : $"Edit {role.Name}";
+        var dialog = await Dialogs.ShowAsync<RoleEditorDialog>(title, parameters, new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
+        if (await dialog.Result is not { Canceled: false, Data: RoleEditorDialog.RoleDraft draft }) return;
+        try
+        {
+            if (role is null || copy) await Administration.CreateRoleAsync(await ActorAsync(), draft.Name, draft.Description, draft.Permissions);
+            else await Administration.UpdateRoleAsync(await ActorAsync(), role.Id, draft.Name, draft.Description, draft.Permissions);
+            Snackbar.Add(role is null || copy ? $"The role {draft.Name} was created." : $"The role {draft.Name} was changed; its users have the change at once.",
+                Severity.Success);
+            await LoadAsync();
+        }
+        catch (AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task DeleteAsync(RoleDetail role)
+    {
+        if (!await Dialogs.ConfirmAsync($"Delete the role {role.Name}?", "No user holds it, so nobody loses a permission.", "Delete role", danger: true,
+                stepUp: !VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)))
+        {
+            return;
+        }
+        if (!await ConfirmedAsync()) return;
+        try
+        {
+            await Administration.DeleteRoleAsync(await ActorAsync(), role.Id);
+            await LoadAsync();
+        }
+        catch (AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+}

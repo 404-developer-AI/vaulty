@@ -19,7 +19,7 @@ public sealed class BackupSelection(NpgsqlDataSource dataSource, TimeProvider cl
     public async Task<bool> ProtectsNewObjectsAsync(UserAccess access, Guid tenantId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await CustomerOfAsync(session, access, tenantId, Permissions.CustomersView, cancellationToken).ConfigureAwait(false);
         return await session.Connection.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT protect_new_objects FROM vaulty.tenants WHERE id = @tenantId",
             new { tenantId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
@@ -32,7 +32,7 @@ public sealed class BackupSelection(NpgsqlDataSource dataSource, TimeProvider cl
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(objectIds);
         if (objectIds.Count == 0) return 0;
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await CustomerOfAsync(session, access, tenantId, Permissions.PoliciesManage, cancellationToken).ConfigureAwait(false);
         if (!include && !stepUpFresh) throw new StepUpRequiredException();
         var now = clock.GetUtcNow();
@@ -76,7 +76,7 @@ public sealed class BackupSelection(NpgsqlDataSource dataSource, TimeProvider cl
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(objectIds);
         if (objectIds.Count == 0) return [];
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await CustomerOfAsync(session, access, tenantId, Permissions.PoliciesManage, cancellationToken).ConfigureAwait(false);
         var runs = (await session.Connection.QueryAsync<(Guid JobId, string WorkflowId, string? RunId)>(new CommandDefinition(
             """
@@ -100,7 +100,7 @@ public sealed class BackupSelection(NpgsqlDataSource dataSource, TimeProvider cl
     public async Task SetProtectNewObjectsAsync(UserAccess access, bool stepUpFresh, Guid tenantId, bool protectNew, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await CustomerOfAsync(session, access, tenantId, Permissions.PoliciesManage, cancellationToken).ConfigureAwait(false);
         if (!protectNew && !stepUpFresh) throw new StepUpRequiredException();
         var changed = await session.Connection.ExecuteAsync(new CommandDefinition(

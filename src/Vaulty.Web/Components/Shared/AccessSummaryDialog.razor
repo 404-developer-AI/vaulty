@@ -1,0 +1,48 @@
+@* What a user may do (effective permissions) and see (customers and tenants), in plain words. *@
+@using Vaulty.Infrastructure.Access
+
+<MudDialog>
+    <DialogContent>
+        <h3 class="mt-0">May do</h3>
+        @if (Summary.Permissions.Count == 0)
+        {
+            <p class="vy-muted">Nothing: the user has no role, or its permissions need a second factor the user has not set up.</p>
+        }
+        else
+        {
+            <ul class="mt-0">
+                @foreach (var permission in Summary.Permissions)
+                {
+                    <li>@permission</li>
+                }
+            </ul>
+        }
+        <h3>Sees</h3>
+        @if (Summary.AllCustomers)
+        {
+            <p>Every customer, also the ones added later.</p>
+        }
+        else if (Summary.WholeCustomers.Count == 0 && Summary.PartialCustomers.Count == 0)
+        {
+            <p class="vy-muted">No customer: the user is in no group, or the groups include nothing.</p>
+        }
+        else
+        {
+            <ul class="mt-0">
+                @foreach (var customer in Summary.WholeCustomers)
+                {
+                    <li>@customer, with all its tenants</li>
+                }
+                @foreach (var (customer, tenants) in Summary.PartialCustomers)
+                {
+                    <li>@customer: only @string.Join(", ", tenants)</li>
+                }
+            </ul>
+        }
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public AccessSummary Summary { get; set; } = default!;
+}

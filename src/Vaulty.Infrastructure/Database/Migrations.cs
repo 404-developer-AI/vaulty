@@ -224,3 +224,10 @@ public sealed class MicrosoftSignInMigration : SqlMigration
 {
     protected override string ScriptName => "0018_microsoft_sign_in";
 }
+
+[DbContext(typeof(VaultyDbContext))]
+[Migration("20261111000019_AccessGroups")]
+public sealed class AccessGroupsMigration : SqlMigration
+{
+    protected override string ScriptName => "0019_access_groups";
+}

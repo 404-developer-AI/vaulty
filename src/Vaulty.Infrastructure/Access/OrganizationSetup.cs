@@ -97,7 +97,7 @@ public sealed class OrganizationSetup(NpgsqlDataSource dataSource, AccessService
                 new { key = PendingAdminSetting, organizationId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
             await session.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        await access.AssignRoleAsync(organizationId, userId, userId, roleId!.Value, null, cancellationToken).ConfigureAwait(false);
+        await access.AssignRoleAsSystemAsync(organizationId, "setup", userId, roleId!.Value, cancellationToken).ConfigureAwait(false);
         return true;
     }
 }

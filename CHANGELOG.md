@@ -7,6 +7,36 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- Roles decide what a user may do, groups decide where. A group is every customer (minus what it excludes) or the
+  customers, single tenants and customer tags it includes; excludes win within a group, a user sees the union of their
+  groups, and a user without a group sees no customer. A tag rule follows the tag, also for customers added later. The
+  default group "All customers" is the one new users join; it cannot be deleted. Settings > Groups.
+- Custom roles: create, change, copy and delete, under Settings > Roles. Built-in roles stay as they are and can be
+  copied. The server checks every permission against the catalog and its dependencies; a role cannot be deleted while
+  users hold it, and a permission that needs a second factor is not added while a holder has none.
+- No escalation: nobody gives a role, or changes a role, group or user, with permissions or customers they do not hold
+  or see themselves. Organization-wide permissions count only for users who see every customer, and the last
+  Organization admin with every customer is kept; such changes run one at a time per organization.
+- Row-level security on the scope: a user's session in the web limits every row of a customer or tenant, in every
+  table, to the user's groups, on top of the checks in the pages and services. Workers and other system tasks are not
+  limited beyond their organization. The policy reads the scope once per query and costs no measurable time on items.
+- Pages that work on one tenant check the tenant, not only its customer; a user who sees part of a customer cannot act
+  on the customer as a whole (its details, its deletion, connecting a tenant to it).
+- Changes of roles and groups take effect at once. A restore or export whose starter can no longer run it is paused,
+  and the audit log says why; someone who may run it resumes or cancels it.
+- Entra group mappings (Settings > Sign-in): members of an Entra security group get roles and groups at each Microsoft
+  sign-in and lose them when they leave the group. Vaulty reads the groups through Microsoft Graph at sign-in
+  (`GroupMember.Read.All`); when it cannot, the mapped access is taken away. Mapped roles and groups are marked and
+  are not removed by hand. Optionally, a member of a mapped group without a Vaulty user gets one at the first sign-in,
+  in the mapped groups only.
+- Settings > Users and roles shows each user's groups, and "Access" shows what a user may do and see in plain words; a
+  customer page shows who has access to it. New permissions "Manage groups" (`groups.manage`) and "View access"
+  (`access.view`), held by the built-in Organization admin role.
+- Alert mail and the daily digest follow the groups: a user receives mail about a customer only when their groups
+  include it, and the digest shows only those customers.
+- Existing roles limited to customers become a group of exactly those customers per user, so nobody sees more or less
+  than before; the old column is kept for a rollback to the previous version.
+
 - Sign-in with Microsoft for the people of an organization, through its own "Vaulty sign-in" app registration in its
   own Microsoft tenant (single tenant, certificate only, asking for `openid profile email` and nothing else). Settings >
   Sign-in guides the set-up: Vaulty creates the certificate, shows each value for the Entra admin center, checks that

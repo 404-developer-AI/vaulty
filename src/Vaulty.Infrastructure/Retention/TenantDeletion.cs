@@ -28,7 +28,7 @@ public sealed class TenantDeletion(NpgsqlDataSource dataSource, TimeProvider clo
     {
         ArgumentNullException.ThrowIfNull(access);
         var row = await TenantAsync(access, tenantId, null, cancellationToken).ConfigureAwait(false);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var holdsBackups = await session.Connection.ExecuteScalarAsync<bool>(new CommandDefinition(HoldsBackupsSql, new { tenantId }, session.Transaction,
             cancellationToken: cancellationToken)).ConfigureAwait(false);
         return new TenantDeletionState(row.State, Utc(row.RequestedAt), row.RequestedBy, Utc(row.RequestedAt)?.Add(WaitingPeriod), row.LegalHold, holdsBackups);
@@ -52,7 +52,7 @@ public sealed class TenantDeletion(NpgsqlDataSource dataSource, TimeProvider clo
         if (!stepUpFresh) throw new StepUpRequiredException();
         if (row.LegalHold) throw new InvalidOperationException("The tenant is on legal hold. Release the hold before deleting it.");
         if (row.State == "deleted") throw new InvalidOperationException("This tenant is deleted already.");
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         // One statement: the check for backups and the removal cannot be separated by a backup that starts in between.
         var removed = await session.Connection.ExecuteAsync(new CommandDefinition(
             $"""
@@ -80,7 +80,7 @@ public sealed class TenantDeletion(NpgsqlDataSource dataSource, TimeProvider clo
         if (!stepUpFresh) throw new StepUpRequiredException();
         if (row.LegalHold) throw new InvalidOperationException("The tenant is on legal hold. Release the hold before deleting it.");
         if (row.State != "active") throw new InvalidOperationException("A deletion of this tenant was requested already.");
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await session.Connection.ExecuteAsync(new CommandDefinition(
             """
             UPDATE vaulty.tenants SET state = 'deletion_requested', deletion_requested_at = @now, deletion_requested_by = @user, deletion_confirmed_by = NULL
@@ -98,7 +98,7 @@ public sealed class TenantDeletion(NpgsqlDataSource dataSource, TimeProvider clo
     {
         ArgumentNullException.ThrowIfNull(access);
         await TenantAsync(access, tenantId, Permissions.TenantsDelete, cancellationToken).ConfigureAwait(false);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var changed = await session.Connection.ExecuteAsync(new CommandDefinition(
             """
             UPDATE vaulty.tenants SET state = 'active', deletion_requested_at = NULL, deletion_requested_by = NULL
@@ -120,7 +120,7 @@ public sealed class TenantDeletion(NpgsqlDataSource dataSource, TimeProvider clo
         var from = Utc(row.RequestedAt)!.Value.Add(WaitingPeriod);
         if (clock.GetUtcNow() < from) throw new InvalidOperationException($"The deletion can be confirmed from {from:d MMM yyyy, HH:mm} (UTC), 30 days after the request.");
         if (row.LegalHold) throw new InvalidOperationException("The tenant is on legal hold. Release the hold before deleting it.");
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         await session.Connection.ExecuteAsync(new CommandDefinition(
             """
             UPDATE vaulty.tenants SET state = 'deleted', deletion_confirmed_by = @user WHERE id = @tenantId AND state = 'deletion_requested';
@@ -158,7 +158,7 @@ public sealed class TenantDeletion(NpgsqlDataSource dataSource, TimeProvider clo
 
     private async Task<TenantRow> TenantAsync(UserAccess access, Guid tenantId, string? permission, CancellationToken cancellationToken)
     {
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var row = await session.Connection.QuerySingleOrDefaultAsync<TenantRow>(new CommandDefinition(
             "SELECT customer_id, display_name, state, deletion_requested_at AS requested_at, deletion_requested_by AS requested_by, legal_hold FROM vaulty.tenants WHERE id = @tenantId",
             new { tenantId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
@@ -179,7 +179,7 @@ public sealed class LegalHold(NpgsqlDataSource dataSource)
     public async Task<IReadOnlySet<Guid>> ObjectsOnHoldAsync(UserAccess access, Guid tenantId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<(Guid Id, Guid CustomerId)>(new CommandDefinition(
             """
             SELECT o.id, t.customer_id FROM vaulty.protected_objects o JOIN vaulty.tenants t ON t.id = o.tenant_id
@@ -191,7 +191,7 @@ public sealed class LegalHold(NpgsqlDataSource dataSource)
     public async Task SetForObjectAsync(UserAccess access, Guid objectId, bool hold, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var customer = await session.Connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
             "SELECT t.customer_id FROM vaulty.protected_objects o JOIN vaulty.tenants t ON t.id = o.tenant_id WHERE o.id = @objectId", new { objectId },
             session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
@@ -206,7 +206,7 @@ public sealed class LegalHold(NpgsqlDataSource dataSource)
     public async Task SetForTenantAsync(UserAccess access, Guid tenantId, bool hold, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
-        await using var session = await OrganizationSession.BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        await using var session = await OrganizationSession.BeginAsync(dataSource, access, cancellationToken).ConfigureAwait(false);
         var customer = await session.Connection.ExecuteScalarAsync<Guid?>(new CommandDefinition("SELECT customer_id FROM vaulty.tenants WHERE id = @tenantId",
             new { tenantId }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         if (customer is null || !access.Allows(Permissions.LegalHoldManage, customer.Value)) throw new AccessException("You cannot change the legal hold of this tenant.");

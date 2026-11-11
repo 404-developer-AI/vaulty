@@ -11,6 +11,8 @@
 @inject DisplayTime Time
 @inject ISnackbar Snackbar
 @inject IDialogService Dialogs
+@inject Vaulty.Infrastructure.Access.AccessAdministration Administration
+@inject CurrentAccess Current
 
 <PageTitle>Sign-in · Vaulty</PageTitle>
 
@@ -93,7 +95,8 @@ else
             <li><strong>Token configuration &gt; Add optional claim &gt; ID</strong>: <CopyValue Value="auth_time" />. Vaulty uses it to check that the Microsoft sign-in behind "Confirm it's you" is fresh.</li>
             <li>Optional, each with admin consent, as <strong>Application permissions</strong> of Microsoft Graph:
                 <CopyValue Value="@SignInAppPermissions.UserReadAll" /> to pick users from your tenant when you add or link them, and
-                <CopyValue Value="@SignInAppPermissions.PolicyReadAll" /> so Vaulty can check that your tenant requires multi-factor authentication.</li>
+                <CopyValue Value="@SignInAppPermissions.PolicyReadAll" /> so Vaulty can check that your tenant requires multi-factor authentication, and
+                <CopyValue Value="@SignInAppPermissions.GroupMemberReadAll" /> to give roles and groups through Entra groups (step 5).</li>
             <li>Copy the <strong>Application ID</strong>, the <strong>Directory (tenant) ID</strong> and the <strong>Object ID</strong> from the overview of the app.</li>
         </ol>
     </Section>
@@ -163,6 +166,40 @@ else
             <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveOptionsAsync" Disabled="@(_busy || !OptionsChanged)">Save</MudButton>
         </div>
     </Section>
+
+    <Section Title="5. Entra groups (optional)" Description="Members of an Entra security group get roles and groups at every Microsoft sign-in, and lose them when they leave the group. Vaulty reads the groups at sign-in; when it cannot, the mapped access is taken away until the next sign-in that can.">
+        @if (!_settings.CanReadGroups)
+        {
+            <Notice Tone="info">Give the sign-in app the application permission GroupMember.Read.All with admin consent, then check the certificate again in step 3.</Notice>
+        }
+        else
+        {
+            <MudTable Items="_mappings" Elevation="0" Dense="true" Breakpoint="Breakpoint.None">
+                <HeaderContent>
+                    <MudTh>Entra group</MudTh>
+                    <MudTh>Gives</MudTh>
+                    <MudTh><span class="vy-sr-only">Actions</span></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd>
+                        <div>@(context.DisplayName ?? "Unnamed group")</div>
+                        <div class="vy-muted vy-mono">@context.EntraGroupId</div>
+                    </MudTd>
+                    <MudTd>@string.Join(", ", context.RoleIds.Select(r => _roles.FirstOrDefault(x => x.Id == r)?.Name ?? "role").Concat(context.GroupIds.Select(g => "group " + (_groups.FirstOrDefault(x => x.Id == g)?.Name ?? ""))))</MudTd>
+                    <MudTd>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => EditMappingAsync(context))">Edit</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => DeleteMappingAsync(context))">Delete</MudButton>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+            <div class="vy-wizard-footer">
+                <MudSwitch T="bool" Value="_settings.JitProvisioning" ValueChanged="SetJitAsync" Color="Color.Primary" Disabled="_busy"
+                           Label="Create a Vaulty user for a member of a mapped group at the first sign-in" />
+                <span class="vy-grow"></span>
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Add" OnClick="@(() => EditMappingAsync(null))">Add an Entra group</MudButton>
+            </div>
+        }
+    </Section>
 }
 
 @code {
@@ -186,6 +223,66 @@ else
     private bool _resumed;
     private Guid _organizationId;
     private string _actor = "user";
+    private IReadOnlyList<Vaulty.Infrastructure.Access.MappingRow> _mappings = [];
+    private IReadOnlyList<Vaulty.Infrastructure.Access.RoleDetail> _roles = [];
+    private IReadOnlyList<Vaulty.Infrastructure.Access.GroupRow> _groups = [];
+
+    private async Task<Vaulty.Infrastructure.Access.UserAccess> ActorAsync()
+    {
+        Current.Invalidate();
+        return await Current.GetAsync((await AuthenticationState).User);
+    }
+
+    private async Task EditMappingAsync(Vaulty.Infrastructure.Access.MappingRow? mapping)
+    {
+        if (!await ConfirmedAsync("mappings")) return;
+        var parameters = new DialogParameters<GroupMappingDialog> { { d => d.Mapping, mapping }, { d => d.Roles, _roles }, { d => d.Groups, _groups } };
+        var dialog = await Dialogs.ShowAsync<GroupMappingDialog>(mapping is null ? "Add an Entra group" : "Edit the Entra group", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        if (await dialog.Result is not { Canceled: false, Data: GroupMappingDialog.MappingDraft draft }) return;
+        await RunAccessAsync(async () =>
+        {
+            await Administration.SaveMappingAsync(await ActorAsync(), mapping?.Id, draft.EntraGroupId, draft.Name, draft.Roles, draft.Groups);
+            Snackbar.Add("Saved. Members get it at their next Microsoft sign-in.", Severity.Success);
+        });
+    }
+
+    private async Task DeleteMappingAsync(Vaulty.Infrastructure.Access.MappingRow mapping)
+    {
+        if (!await Dialogs.ConfirmAsync("Delete this Entra group?", "Its members lose the roles and groups it gave at once.", "Delete", danger: true,
+                stepUp: !VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)))
+        {
+            return;
+        }
+        if (!await ConfirmedAsync("mappings")) return;
+        await RunAccessAsync(async () => await Administration.DeleteMappingAsync(await ActorAsync(), mapping.Id));
+    }
+
+    private async Task SetJitAsync(bool on)
+    {
+        if (!await ConfirmedAsync("mappings")) return;
+        await RunAsync(async () => _settings = await MicrosoftSignIn.SetJitProvisioningAsync(_organizationId, _actor, on));
+    }
+
+    private async Task RunAccessAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+            await LoadMappingsAsync();
+        }
+        catch (Vaulty.Infrastructure.Access.AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task LoadMappingsAsync()
+    {
+        _mappings = await Administration.MappingsAsync(_organizationId);
+        _roles = await Administration.RolesAsync(_organizationId);
+        _groups = await Administration.GroupsAsync(_organizationId);
+    }
 
     private Uri RedirectUri => MicrosoftSignInSettings.RedirectUri(HostOptions.PublicHost, new Uri(Navigation.BaseUri));
 
@@ -213,6 +310,7 @@ else
         _actor = $"user:{VaultyWebSetup.UserId(user)}";
         await Time.LoadAsync();
         await LoadAsync();
+        await LoadMappingsAsync();
         if (OptionsQuery is { Length: 3 } o && o.All(c => c is '0' or '1')) (_enabled, _delegated, _signInOnly) = (o[0] == '1', o[1] == '1', o[2] == '1');
         _loaded = true;
     }

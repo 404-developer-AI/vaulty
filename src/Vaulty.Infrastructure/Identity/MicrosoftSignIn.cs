@@ -43,6 +43,8 @@ public sealed record MicrosoftSignInSettings
     public bool MicrosoftHandlesSecondFactor { get; init; } = true;
     /// <summary>Only Microsoft sign-in, except for local Organization admins kept for emergencies.</summary>
     public bool SignInOnly { get; init; }
+    /// <summary>A member of a mapped Entra group without a Vaulty user gets one at the first Microsoft sign-in.</summary>
+    public bool JitProvisioning { get; init; }
 
     public bool CredentialWorks { get; init; }
     public string? CredentialDetail { get; init; }
@@ -58,6 +60,8 @@ public sealed record MicrosoftSignInSettings
                          && SignInChecks.Count > 0 && SignInChecks.Where(c => c.Required).All(c => c.Passed);
 
     public bool CanPickUsers => GrantedPermissions.Contains(SignInAppPermissions.UserReadAll, StringComparer.OrdinalIgnoreCase);
+
+    public bool CanReadGroups => GrantedPermissions.Contains(SignInAppPermissions.GroupMemberReadAll, StringComparer.OrdinalIgnoreCase);
 
     public static string CertificateSecretName(Guid organizationId) => $"organization.{organizationId:N}.signin.certificate";
 
@@ -293,6 +297,23 @@ public sealed class MicrosoftSignInService(NpgsqlDataSource dataSource, ISecretS
         session.Connection.ExecuteAsync(new CommandDefinition(
             $"UPDATE vaulty.users u SET security_stamp = replace(gen_random_uuid()::text, '-', '') WHERE u.entra_object_id IS NULL AND NOT ({BreakGlassCondition})",
             new { adminRole = BuiltInRoles.OrganizationAdmin }, session.Transaction, cancellationToken: cancellationToken));
+
+    /// <summary>Creating users at their first Microsoft sign-in through an Entra group mapping (off by default).</summary>
+    public Task<MicrosoftSignInSettings> SetJitProvisioningAsync(Guid organizationId, string actor, bool on, CancellationToken cancellationToken = default) =>
+        ChangeAsync(organizationId, actor, "jit_provisioning", s =>
+        {
+            if (on && !s.CanReadGroups) throw new SignInSetupException("Give the sign-in app GroupMember.Read.All and check the certificate again first.");
+            return s with { JitProvisioning = on };
+        }, new { on }, cancellationToken);
+
+    /// <summary>An app-only Graph token of the sign-in app, for the directory reads its optional permissions allow.</summary>
+    public async Task<string> AppTokenAsync(Guid organizationId, CancellationToken cancellationToken = default)
+    {
+        var settings = await GetAsync(organizationId, cancellationToken).ConfigureAwait(false);
+        if (settings.ClientId is not { } clientId || settings.TenantId is not { } tenant) throw new SignInSetupException("Sign-in with Microsoft is not set up.");
+        using var certificate = await LoadCertificateAsync(organizationId, cancellationToken).ConfigureAwait(false);
+        return (await identity.AppOnlyTokenAsync(tenant.ToString(), clientId, certificate, cancellationToken).ConfigureAwait(false)).AccessToken;
+    }
 
     // ---- break-glass ------------------------------------------------------------------------------------------------------
 

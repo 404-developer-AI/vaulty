@@ -1,0 +1,89 @@
+@* Name, description and permissions of a custom role, grouped as in the catalog. Choosing a permission also chooses what it needs. *@
+
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="_name" Label="Name" Variant="Variant.Outlined" MaxLength="100" AutoFocus="true" />
+        <MudTextField @bind-Value="_description" Label="Description (optional)" Variant="Variant.Outlined" MaxLength="500" Class="mt-2" />
+        @foreach (var group in Permissions.All.GroupBy(p => p.Group))
+        {
+            <h3 class="mt-4 mb-1">@group.Key</h3>
+            @foreach (var permission in group)
+            {
+                <div>
+                    <MudCheckBox T="bool" Value="@_chosen.Contains(permission.Key)" ValueChanged="@(on => Toggle(permission.Key, on))" Label="@permission.Label" />
+                    <div class="vy-muted" style="margin: -8px 0 6px 44px; font-size: 0.8125rem">
+                        @permission.Description
+                        @if (permission.RequiresMfa)
+                        {
+                            <span> Needs a second factor.</span>
+                        }
+                        @if (permission.Requires.Count > 0)
+                        {
+                            <span> Includes @string.Join(", ", permission.Requires.Select(r => Permissions.Get(r).Label)).</span>
+                        }
+                    </div>
+                </div>
+            }
+        }
+        @if (_error is not null)
+        {
+            <Notice Tone="error" Class="mt-2">@_error</Notice>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    public sealed record RoleDraft(string Name, string? Description, IReadOnlyList<string> Permissions);
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public string? Name { get; set; }
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public IReadOnlyList<string> Chosen { get; set; } = [];
+
+    private string? _name;
+    private string? _description;
+    private HashSet<string> _chosen = new(StringComparer.Ordinal);
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        (_name, _description) = (Name, Description);
+        _chosen = new HashSet<string>(Chosen, StringComparer.Ordinal);
+    }
+
+    private void Toggle(string key, bool on)
+    {
+        if (on)
+        {
+            foreach (var needed in Permissions.Closure([key])) _chosen.Add(needed);
+        }
+        else
+        {
+            // Taking a permission away also takes away what depends on it.
+            _chosen.Remove(key);
+            foreach (var dependent in Permissions.All.Where(p => _chosen.Contains(p.Key) && Permissions.Closure([p.Key]).Contains(key)).ToList())
+            {
+                _chosen.Remove(dependent.Key);
+            }
+        }
+    }
+
+    private void Save()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Enter a name.";
+            return;
+        }
+        if (_chosen.Count == 0)
+        {
+            _error = "Choose at least one permission.";
+            return;
+        }
+        Dialog.Close(DialogResult.Ok(new RoleDraft(_name.Trim(), _description, _chosen.ToList())));
+    }
+}

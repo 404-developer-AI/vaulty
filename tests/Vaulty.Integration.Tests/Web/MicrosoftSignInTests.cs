@@ -52,7 +52,7 @@ public sealed class SignInWebFixture : IAsyncLifetime
         });
         Microsoft.TenantId = Tenant;
         Microsoft.SignInClientId = Guid.NewGuid();
-        Microsoft.SignInAppRoles = [SignInAppPermissions.UserReadAll, SignInAppPermissions.PolicyReadAll];
+        Microsoft.SignInAppRoles = [SignInAppPermissions.UserReadAll, SignInAppPermissions.PolicyReadAll, SignInAppPermissions.GroupMemberReadAll];
         Microsoft.SecurityDefaults = true;
 
         using var scope = Factory.Services.CreateScope();
@@ -539,6 +539,71 @@ public sealed partial class MicrosoftSignInTests(SignInWebFixture app) : IClassF
         Assert.Equal("1000", Assert.Single(fresh.FindAll(Vaulty.Infrastructure.Web.VaultyClaims.AuthTime)).Value);
         Assert.Equal("microsoft", fresh.FindFirst(Vaulty.Infrastructure.Web.VaultyClaims.Method)?.Value);
         Assert.True(fresh.HasClaim(Vaulty.Infrastructure.Web.VaultyClaims.Mfa, "1"));
+    }
+
+    [PostgresFact]
+    public async Task An_Entra_group_gives_its_mapped_role_at_sign_in_and_takes_it_away_after_leaving_it()
+    {
+        var (user, objectId) = await UserAsync("mapped");
+        var administration = Service<AccessAdministration>();
+        var readOnly = (await administration.RolesAsync(app.Organization)).Single(r => r.Name == Vaulty.Core.Security.BuiltInRoles.ReadOnly).Id;
+        var entraGroup = Guid.NewGuid();
+        var actor = new UserAccess(app.Admin.Id, app.Organization, true,
+            Vaulty.Core.Security.Permissions.All.ToDictionary(p => p.Key, _ => (HashSet<Guid>?)null));
+        var mapping = await administration.SaveMappingAsync(actor, null, entraGroup, "Helpdesk", [readOnly], []);
+        try
+        {
+            app.Microsoft.EntraGroups[objectId] = [entraGroup];
+            await SignInWithMicrosoftAsync(app.Client(), objectId);
+            Assert.Contains(Vaulty.Core.Security.Permissions.ReportsView, (await Service<AccessService>().GetAccessAsync(app.Organization, user.Id)).Permissions);
+
+            app.Microsoft.EntraGroups[objectId] = [];
+            await SignInWithMicrosoftAsync(app.Client(), objectId);
+            Assert.Empty((await Service<AccessService>().GetAccessAsync(app.Organization, user.Id)).Permissions);
+        }
+        finally
+        {
+            await administration.DeleteMappingAsync(actor, mapping);
+        }
+    }
+
+    [PostgresFact]
+    public async Task A_member_of_a_mapped_group_gets_a_user_at_the_first_sign_in_when_that_is_switched_on()
+    {
+        var administration = Service<AccessAdministration>();
+        var signIn = Service<MicrosoftSignInService>();
+        var readOnly = (await administration.RolesAsync(app.Organization)).Single(r => r.Name == Vaulty.Core.Security.BuiltInRoles.ReadOnly).Id;
+        var entraGroup = Guid.NewGuid();
+        var actor = new UserAccess(app.Admin.Id, app.Organization, true,
+            Vaulty.Core.Security.Permissions.All.ToDictionary(p => p.Key, _ => (HashSet<Guid>?)null));
+        var mapping = await administration.SaveMappingAsync(actor, null, entraGroup, "New staff", [readOnly], []);
+        var newcomer = Guid.NewGuid();
+        var outsider = Guid.NewGuid();
+        app.Microsoft.EntraGroups[newcomer] = [entraGroup];
+        try
+        {
+            // Off by default: an account without a Vaulty user is refused.
+            var refused = await SignInWithMicrosoftAsync(app.Client(), newcomer);
+            Assert.StartsWith("/account/login?error=microsoft", refused.Headers.Location?.OriginalString, StringComparison.Ordinal);
+
+            await signIn.SetJitProvisioningAsync(app.Organization, "test", true);
+            var client = app.Client();
+            await SignInWithMicrosoftAsync(client, newcomer);
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/")).StatusCode);
+            var created = await signIn.FindLinkedUserAsync(app.Tenant, newcomer);
+            Assert.NotNull(created);
+            var access = await Service<AccessService>().GetAccessAsync(app.Organization, created.Value.UserId);
+            Assert.Contains(Vaulty.Core.Security.Permissions.ReportsView, access.Permissions);
+            // In no mapped group: still no user.
+            var other = await SignInWithMicrosoftAsync(app.Client(), outsider);
+            Assert.StartsWith("/account/login?error=microsoft", other.Headers.Location?.OriginalString, StringComparison.Ordinal);
+            Assert.Null(await signIn.FindLinkedUserAsync(app.Tenant, outsider));
+        }
+        finally
+        {
+            await signIn.SetJitProvisioningAsync(app.Organization, "test", false);
+            await administration.DeleteMappingAsync(actor, mapping);
+        }
     }
 
     [Fact]

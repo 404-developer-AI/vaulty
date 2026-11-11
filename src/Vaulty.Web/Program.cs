@@ -46,6 +46,10 @@ builder.Services.AddSingleton<ICredentialVerifier, MsalCredentialVerifier>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Identity.MicrosoftSignInService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Identity.MicrosoftLogins>();
 builder.Services.AddSingleton<SignInMessages>();
+// Roles, groups and Entra group mappings; a change of access pauses restores whose starter may no longer run them.
+builder.Services.AddSingleton<Vaulty.Infrastructure.Access.AccessAdministration>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Access.EntraGroupSync>();
+builder.Services.AddSingleton<Vaulty.Infrastructure.Access.IRestorePauser, Vaulty.Web.Account.WorkflowRestorePauser>();
 builder.Services.AddSingleton<CertificateRotation>();
 builder.Services.AddHostedService<CertificateRotationService>();
 builder.Services.AddSingleton<Vaulty.Infrastructure.Browse.ApiBackupStorage>();

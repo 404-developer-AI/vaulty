@@ -239,8 +239,13 @@ public sealed class NotificationDispatcher(NpgsqlDataSource dataSource, IWebhook
             }
             foreach (var user in recipients.GroupBy(r => r.Id))
             {
-                var customers = user.Any(r => r.CustomerId is null) ? null : user.Select(r => r.CustomerId!.Value).ToHashSet();
-                var access = new UserAccess(user.Key, organization, true, new Dictionary<string, HashSet<Guid>?> { [Permissions.CustomersView] = customers });
+                // The digest shows what the user's groups include, nothing more.
+                AccessScope scope;
+                await using (var scopeSession = await OrganizationSession.BeginAsync(dataSource, organization, cancellationToken).ConfigureAwait(false))
+                {
+                    scope = await AccessService.ScopeAsync(scopeSession, user.Key, cancellationToken).ConfigureAwait(false);
+                }
+                var access = new UserAccess(user.Key, organization, true, new HashSet<string>(StringComparer.Ordinal) { Permissions.CustomersView }, scope);
                 var dashboard = await dashboards.LoadAsync(access, cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (!dashboard.Customers.Any()) continue;
                 try
@@ -271,10 +276,11 @@ public sealed class NotificationDispatcher(NpgsqlDataSource dataSource, IWebhook
         var column = preference == "digest_mail" ? "u.digest_mail" : "u.alert_mail";
         return (await session.Connection.QueryAsync<Recipient>(new CommandDefinition(
             $"""
-            SELECT DISTINCT u.id, u.email, u.display_name, a.customer_id FROM vaulty.users u
+            SELECT DISTINCT u.id, u.email, u.display_name, NULL::uuid AS customer_id FROM vaulty.users u
               JOIN vaulty.role_assignments a ON a.user_id = u.id JOIN vaulty.role_permissions p ON p.role_id = a.role_id
              WHERE p.permission = @permission AND u.disabled_at IS NULL AND u.email IS NOT NULL AND {column}
-               AND (@any OR a.customer_id IS NULL OR a.customer_id = @customerId)
+               -- Roles say what, groups say where: mail about a customer goes only to users whose groups include it.
+               AND (@any OR @customerId IS NULL OR vaulty.user_sees_customer(u.id, @customerId))
             """, new { permission = Permissions.ReportsView, customerId, any = anyCustomer }, session.Transaction, cancellationToken: cancellationToken))
             .ConfigureAwait(false)).ToList();
     }

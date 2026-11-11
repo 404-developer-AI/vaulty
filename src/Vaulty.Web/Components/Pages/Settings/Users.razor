@@ -12,11 +12,12 @@
 @inject ISnackbar Snackbar
 @inject IDialogService Dialogs
 @inject Vaulty.Infrastructure.Identity.MicrosoftSignInService MicrosoftSignIn
+@inject AccessAdministration Administration
 
 <PageTitle>Users and roles · Vaulty</PageTitle>
 
 <PageHeader Title="Users and roles"
-            Lede="Roles give permissions, for every customer or for one. Roles that allow restores, exports or administration need a passkey or authenticator app on the account. Changes ask you to confirm it's you.">
+            Lede="Roles decide what a user may do, groups decide which customers the user sees. Roles that allow restores, exports or administration need a second factor. Changes ask you to confirm it's you and take effect at once.">
     <Actions>
         @if (!_adding)
         {
@@ -49,6 +50,8 @@
         <MudTh>Second factor</MudTh>
         <MudTh>Roles</MudTh>
         <MudTh><span class="vy-sr-only">Add a role</span></MudTh>
+        <MudTh>Groups</MudTh>
+        <MudTh><span class="vy-sr-only">Actions</span></MudTh>
     </HeaderContent>
     <RowTemplate>
         <MudTd>
@@ -91,9 +94,18 @@
         <MudTd>
             @foreach (var assignment in _assignments.Where(a => a.UserId == context.Id))
             {
-                <MudChip T="string" Size="Size.Small" OnClose="@(() => RemoveAsync(assignment))">
-                    @assignment.RoleName@(assignment.CustomerName is { } c ? $" ({c})" : "")
-                </MudChip>
+                @if (assignment.FromMapping)
+                {
+                    <MudChip T="string" Size="Size.Small" title="Given by a Microsoft Entra group">@assignment.RoleName (Entra)</MudChip>
+                }
+                else if (_canManageRoles)
+                {
+                    <MudChip T="string" Size="Size.Small" OnClose="@(() => RemoveAsync(assignment))">@assignment.RoleName</MudChip>
+                }
+                else
+                {
+                    <MudChip T="string" Size="Size.Small">@assignment.RoleName</MudChip>
+                }
             }
         </MudTd>
         <MudTd>
@@ -105,6 +117,26 @@
                         <MudSelectItem Value="@role.Id">@role.Name</MudSelectItem>
                     }
                 </MudSelect>
+            }
+        </MudTd>
+        <MudTd>
+            @foreach (var membership in _memberships.Where(m => m.UserId == context.Id))
+            {
+                <MudChip T="string" Size="Size.Small">@GroupName(membership.GroupId)@(membership.FromMapping ? " (Entra)" : "")</MudChip>
+            }
+            @if (!_memberships.Any(m => m.UserId == context.Id))
+            {
+                <span class="vy-status neutral" title="Without a group the user sees no customer">No customers</span>
+            }
+        </MudTd>
+        <MudTd>
+            @if (_canManageGroups)
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => EditGroupsAsync(context))">Groups</MudButton>
+            }
+            @if (_canViewAccess)
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => ShowAccessAsync(context))">Access</MudButton>
             }
         </MudTd>
     </RowTemplate>
@@ -119,7 +151,11 @@
     private IReadOnlyList<UserRow> _users = [];
     private IReadOnlyList<RoleRow> _roles = [];
     private IReadOnlyList<AssignmentRow> _assignments = [];
+    private IReadOnlyList<GroupRow> _groups = [];
+    private IReadOnlyList<MembershipRow> _memberships = [];
     private bool _canManageRoles;
+    private bool _canManageGroups;
+    private bool _canViewAccess;
     private bool _canManageSignIn;
     private bool _microsoftReady;
     private bool _canPickUsers;
@@ -131,7 +167,15 @@
     private Guid _userId;
 
     public sealed record PageData(List<UserRow> Users, List<RoleRow> Roles, List<AssignmentRow> Assignments, bool CanManageRoles, bool CanManageSignIn,
-        bool MicrosoftReady, bool CanPickUsers);
+        bool MicrosoftReady, bool CanPickUsers)
+    {
+        public List<GroupRow> Groups { get; init; } = [];
+        public List<MembershipRow> Memberships { get; init; } = [];
+        public bool CanManageGroups { get; init; }
+        public bool CanViewAccess { get; init; }
+    }
+
+    private string GroupName(Guid id) => _groups.FirstOrDefault(g => g.Id == id)?.Name ?? "Group";
 
     // Carried from the prerendered page to the interactive circuit, so the table does not empty itself while it loads again.
     [PersistentState] public PageData? Loaded { get; set; }
@@ -146,12 +190,15 @@
             var access = await Current.GetAsync(state.User);
             _canManageRoles = access.Allows(Permissions.RolesManage);
             _canManageSignIn = access.Allows(Permissions.SignInManage);
+            _canManageGroups = access.Allows(Permissions.GroupsManage);
+            _canViewAccess = access.Allows(Permissions.AccessView);
             await LoadAsync();
         }
         else
         {
             (_users, _roles, _assignments, _canManageRoles) = (Loaded.Users, Loaded.Roles, Loaded.Assignments, Loaded.CanManageRoles);
             (_canManageSignIn, _microsoftReady, _canPickUsers) = (Loaded.CanManageSignIn, Loaded.MicrosoftReady, Loaded.CanPickUsers);
+            (_groups, _memberships, _canManageGroups, _canViewAccess) = (Loaded.Groups, Loaded.Memberships, Loaded.CanManageGroups, Loaded.CanViewAccess);
         }
     }
 
@@ -162,7 +209,12 @@
         _assignments = await Directory.AssignmentsAsync(_organizationId);
         var signIn = await MicrosoftSignIn.GetAsync(_organizationId);
         (_microsoftReady, _canPickUsers) = (signIn.Ready, signIn.CanPickUsers);
-        Loaded = new PageData([.. _users], [.. _roles], [.. _assignments], _canManageRoles, _canManageSignIn, _microsoftReady, _canPickUsers);
+        _groups = await Administration.GroupsAsync(_organizationId);
+        _memberships = await Administration.MembershipsAsync(_organizationId);
+        Loaded = new PageData([.. _users], [.. _roles], [.. _assignments], _canManageRoles, _canManageSignIn, _microsoftReady, _canPickUsers)
+        {
+            Groups = [.. _groups], Memberships = [.. _memberships], CanManageGroups = _canManageGroups, CanViewAccess = _canViewAccess,
+        };
     }
 
     /// <summary>Sensitive changes need a recent "Confirm it's you".</summary>
@@ -292,7 +344,7 @@
         if (roleId == Guid.Empty || !await ConfirmedAsync()) return;
         try
         {
-            await AccessService.AssignRoleAsync(_organizationId, _userId, user.Id, roleId, null);
+            await AccessService.AssignRoleAsync(await ActorAsync(), user.Id, roleId);
             Current.Invalidate();
             await LoadAsync();
         }
@@ -306,13 +358,59 @@
     {
         var user = _users.FirstOrDefault(u => u.Id == assignment.UserId);
         if (!await Dialogs.ConfirmAsync($"Remove the role {assignment.RoleName}?",
-                $"{user?.DisplayName ?? user?.UserName ?? "The user"} loses the permissions of this role{(assignment.CustomerName is { } c ? $" for {c}" : "")} at once.",
+                $"{user?.DisplayName ?? user?.UserName ?? "The user"} loses the permissions of this role at once.",
                 "Remove role", danger: true, stepUp: !VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)))
         {
             return;
         }
         if (!await ConfirmedAsync()) return;
-        await AccessService.RemoveRoleAsync(_organizationId, _userId, assignment.UserId, assignment.RoleId, assignment.CustomerId);
-        await LoadAsync();
+        try
+        {
+            await AccessService.RemoveRoleAsync(await ActorAsync(), assignment.UserId, assignment.RoleId);
+            await LoadAsync();
+        }
+        catch (AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    /// <summary>The signed-in user's access, read again so a change made in this circuit counts.</summary>
+    private async Task<UserAccess> ActorAsync()
+    {
+        Current.Invalidate();
+        return await Current.GetAsync((await AuthenticationState).User);
+    }
+
+    private async Task EditGroupsAsync(UserRow row)
+    {
+        if (!await ConfirmedAsync()) return;
+        var parameters = new DialogParameters<GroupPickerDialog>
+        {
+            { d => d.Groups, _groups },
+            { d => d.Selected, _memberships.Where(m => m.UserId == row.Id && !m.FromMapping).Select(m => m.GroupId).ToHashSet() },
+            { d => d.Mapped, _memberships.Where(m => m.UserId == row.Id && m.FromMapping).Select(m => m.GroupId).ToHashSet() },
+        };
+        var dialog = await Dialogs.ShowAsync<GroupPickerDialog>($"Groups of {row.DisplayName ?? row.UserName}", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        if (await dialog.Result is not { Canceled: false, Data: IReadOnlyCollection<Guid> chosen }) return;
+        try
+        {
+            await Administration.SetGroupsOfAsync(await ActorAsync(), row.Id, chosen);
+            Snackbar.Add($"The groups of {row.UserName} were changed; the user sees the change at once.", Severity.Success);
+            await LoadAsync();
+        }
+        catch (AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task ShowAccessAsync(UserRow row)
+    {
+        var summary = await Administration.SummaryAsync(await ActorAsync(), row.Id);
+        var parameters = new DialogParameters<AccessSummaryDialog> { { d => d.Summary, summary } };
+        await Dialogs.ShowAsync<AccessSummaryDialog>($"What {row.DisplayName ?? row.UserName} may do and see", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = true });
     }
 }

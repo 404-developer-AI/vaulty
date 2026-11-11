@@ -89,6 +89,47 @@ public sealed class OrganizationSession : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// A session for a user: besides the organization, row-level security limits every row of a customer or tenant to the
+    /// user's groups. A user with every customer in scope gets the organization session.
+    /// </summary>
+    public static async Task<OrganizationSession> BeginAsync(NpgsqlDataSource dataSource, Access.UserAccess access,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        var session = await BeginAsync(dataSource, access.OrganizationId, cancellationToken).ConfigureAwait(false);
+        if (access.Scope.All) return session;
+        try
+        {
+            static string List(IEnumerable<Guid> ids) => "{" + string.Join(',', ids) + "}";
+            // The tenant list holds every tenant the user sees, those of whole customers included: read now, while the
+            // session is not yet limited, so the policies only test the list.
+            await using (var lists = new NpgsqlCommand(
+                             """
+                             SELECT set_config('vaulty.scope_whole', @whole, true), set_config('vaulty.scope_customers', @customers, true),
+                                    set_config('vaulty.scope_tenants', coalesce((SELECT array_agg(id)::text FROM vaulty.tenants
+                                                                                WHERE customer_id = ANY(@wholeIds) OR id = ANY(@tenantIds)), '{}'), true)
+                             """, session.Connection, session.Transaction))
+            {
+                lists.Parameters.AddWithValue("whole", List(access.Scope.WholeCustomers));
+                lists.Parameters.AddWithValue("customers", List(access.Scope.PartialCustomers.Keys));
+                lists.Parameters.AddWithValue("wholeIds", access.Scope.WholeCustomers.ToArray());
+                lists.Parameters.AddWithValue("tenantIds", access.Scope.PartialCustomers.Values.SelectMany(t => t).ToArray());
+                await lists.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            await using (var restrict = new NpgsqlCommand("SELECT set_config('vaulty.scope_restricted', '1', true)", session.Connection, session.Transaction))
+            {
+                await restrict.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            return session;
+        }
+        catch
+        {
+            await session.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
     public Task CommitAsync(CancellationToken cancellationToken = default) => Transaction.CommitAsync(cancellationToken);
 
     public async ValueTask DisposeAsync()

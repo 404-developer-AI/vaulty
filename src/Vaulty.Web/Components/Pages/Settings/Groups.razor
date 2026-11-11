@@ -1,0 +1,130 @@
+@page "/settings/groups"
+@attribute [Authorize(Policy = "perm:" + Permissions.GroupsManage)]
+@using Vaulty.Infrastructure.Access
+@inject AccessAdministration Administration
+@inject CurrentAccess Current
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Groups · Vaulty</PageTitle>
+
+<PageHeader Title="Groups"
+            Lede="A group decides which customers and tenants its users see; roles decide what they may do there. A user sees the customers of all their groups together, and without a group sees nothing. Choose who is in a group under Users and roles.">
+    <Actions>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Add" OnClick="@(() => EditAsync(null))">New group</MudButton>
+    </Actions>
+</PageHeader>
+
+<MudTable Items="_groups" Hover="true" Elevation="0" Dense="true" Breakpoint="Breakpoint.None" HorizontalScrollbar="true" Loading="!_loaded">
+    <HeaderContent>
+        <MudTh>Group</MudTh>
+        <MudTh>Customers</MudTh>
+        <MudTh>Users</MudTh>
+        <MudTh><span class="vy-sr-only">Actions</span></MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>
+            <div>@context.Name @if (context.IsDefault) { <span class="vy-status neutral ml-1" title="New users join this group">Default</span> }</div>
+            @if (context.Description is { } description)
+            {
+                <div class="vy-muted">@description</div>
+            }
+        </MudTd>
+        <MudTd>
+            <div>@GroupPickerDialog.Describe(context)</div>
+            <div class="vy-muted">@string.Join("; ", context.Rules.Take(4).Select(Label))@(context.Rules.Count > 4 ? $"; and {context.Rules.Count - 4} more" : "")</div>
+        </MudTd>
+        <MudTd>@context.Members.Count</MudTd>
+        <MudTd>
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => EditAsync(context))">Edit</MudButton>
+            @if (!context.IsDefault)
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="@(() => DeleteAsync(context))">Delete</MudButton>
+            }
+        </MudTd>
+    </RowTemplate>
+</MudTable>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
+    private IReadOnlyList<GroupRow> _groups = [];
+    private IReadOnlyList<ScopeTarget> _targets = [];
+    private bool _loaded;
+    private Guid _organizationId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _organizationId = VaultyWebSetup.OrganizationId((await AuthenticationState).User) ?? Guid.Empty;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _groups = await Administration.GroupsAsync(_organizationId);
+        _targets = await Administration.TargetsAsync(_organizationId);
+        _loaded = true;
+    }
+
+    private string Label(GroupRule rule)
+    {
+        var target = _targets.FirstOrDefault(t => rule.CustomerId is { } c ? t.Id == c : rule.TenantId is { } tenant ? t.Id == tenant
+            : t.Kind == "tag" && string.Equals(t.Tag, rule.Tag, StringComparison.OrdinalIgnoreCase));
+        return $"{(rule.Include ? "" : "not ")}{target?.Label ?? rule.Tag ?? "removed"}";
+    }
+
+    private async Task<UserAccess> ActorAsync()
+    {
+        Current.Invalidate();
+        return await Current.GetAsync((await AuthenticationState).User);
+    }
+
+    private async Task<bool> ConfirmedAsync()
+    {
+        if (VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)) return true;
+        Navigation.NavigateTo($"/account/confirm?returnUrl={Uri.EscapeDataString("/settings/groups")}", forceLoad: true);
+        return false;
+    }
+
+    private async Task EditAsync(GroupRow? group)
+    {
+        if (!await ConfirmedAsync()) return;
+        var parameters = new DialogParameters<GroupEditorDialog> { { d => d.Group, group }, { d => d.Targets, _targets } };
+        var dialog = await Dialogs.ShowAsync<GroupEditorDialog>(group is null ? "New group" : $"Edit {group.Name}", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
+        if (await dialog.Result is not { Canceled: false, Data: GroupDraft draft }) return;
+        try
+        {
+            await Administration.SaveGroupAsync(await ActorAsync(), group?.Id, draft, group?.Version);
+            Snackbar.Add(group is null ? $"The group {draft.Name} was created." : $"The group {draft.Name} was changed; its users see the change at once.",
+                Severity.Success);
+            await LoadAsync();
+        }
+        catch (AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+
+    private async Task DeleteAsync(GroupRow group)
+    {
+        if (!await Dialogs.ConfirmAsync($"Delete the group {group.Name}?",
+                $"Its {group.Members.Count} user(s) no longer see the customers of this group, unless another group of theirs includes them.", "Delete group",
+                danger: true, stepUp: !VaultyWebSetup.HasFreshStepUp((await AuthenticationState).User, Clock)))
+        {
+            return;
+        }
+        if (!await ConfirmedAsync()) return;
+        try
+        {
+            await Administration.DeleteGroupAsync(await ActorAsync(), group.Id);
+            await LoadAsync();
+        }
+        catch (AccessException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+    }
+}

@@ -1,0 +1,71 @@
+@* One Entra security group and the roles and groups its members get at every Microsoft sign-in. *@
+@using Vaulty.Infrastructure.Access
+
+<MudDialog>
+    <DialogContent>
+        <p class="vy-muted mt-0">Find the group in the Microsoft Entra admin center under <strong>Groups</strong> and copy its <strong>Object ID</strong>.</p>
+        <MudTextField @bind-Value="_groupId" Label="Object ID of the Entra group" Variant="Variant.Outlined" Placeholder="00000000-0000-0000-0000-000000000000" AutoFocus="true" />
+        <MudTextField @bind-Value="_name" Label="Name, to recognise it" Variant="Variant.Outlined" Class="mt-2" />
+        <h3 class="mt-4 mb-1">Roles</h3>
+        @foreach (var role in Roles)
+        {
+            <MudCheckBox T="bool" Value="@_roles.Contains(role.Id)" ValueChanged="@(on => Toggle(_roles, role.Id, on))" Label="@role.Name" />
+        }
+        <h3 class="mt-4 mb-1">Groups</h3>
+        @foreach (var group in Groups)
+        {
+            <MudCheckBox T="bool" Value="@_groups.Contains(group.Id)" ValueChanged="@(on => Toggle(_groups, group.Id, on))" Label="@group.Name" />
+        }
+        @if (_error is not null)
+        {
+            <Notice Tone="error" Class="mt-2">@_error</Notice>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    public sealed record MappingDraft(Guid EntraGroupId, string? Name, IReadOnlyCollection<Guid> Roles, IReadOnlyCollection<Guid> Groups);
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public MappingRow? Mapping { get; set; }
+    [Parameter] public IReadOnlyList<RoleDetail> Roles { get; set; } = [];
+    [Parameter] public IReadOnlyList<GroupRow> Groups { get; set; } = [];
+
+    private string? _groupId;
+    private string? _name;
+    private HashSet<Guid> _roles = [];
+    private HashSet<Guid> _groups = [];
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        (_groupId, _name) = (Mapping?.EntraGroupId.ToString(), Mapping?.DisplayName);
+        _roles = [.. Mapping?.RoleIds ?? []];
+        _groups = [.. Mapping?.GroupIds ?? []];
+    }
+
+    private static void Toggle(HashSet<Guid> set, Guid id, bool on)
+    {
+        if (on) set.Add(id);
+        else set.Remove(id);
+    }
+
+    private void Save()
+    {
+        if (!Guid.TryParse(_groupId?.Trim(), out var id) || id == Guid.Empty)
+        {
+            _error = "Enter the object ID of the group as a GUID.";
+            return;
+        }
+        if (_roles.Count + _groups.Count == 0)
+        {
+            _error = "Choose at least one role or group.";
+            return;
+        }
+        Dialog.Close(DialogResult.Ok(new MappingDraft(id, _name, _roles.ToList(), _groups.ToList())));
+    }
+}

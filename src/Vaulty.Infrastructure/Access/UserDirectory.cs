@@ -15,7 +15,8 @@ public sealed record UserRow(Guid Id, string UserName, string? DisplayName, bool
 
 public sealed record RoleRow(Guid Id, string Name, bool BuiltIn, IReadOnlyList<string> Permissions);
 
-public sealed record AssignmentRow(Guid UserId, Guid RoleId, string RoleName, Guid? CustomerId, string? CustomerName);
+/// <param name="FromMapping">Given by an Entra group mapping: it follows the user's Entra groups and is not removed by hand.</param>
+public sealed record AssignmentRow(Guid UserId, Guid RoleId, string RoleName, Guid? CustomerId, string? CustomerName, bool FromMapping = false);
 
 public sealed record AuditRow(long Seq, DateTimeOffset OccurredAt, string Actor, string Action, string? Target, string Details);
 
@@ -58,9 +59,8 @@ public sealed class UserDirectory(NpgsqlDataSource dataSource)
         await using var session = await OrganizationSession.BeginAsync(dataSource, organizationId, cancellationToken).ConfigureAwait(false);
         var rows = await session.Connection.QueryAsync<AssignmentRow>(new CommandDefinition(
             """
-            SELECT a.user_id, a.role_id, r.name AS role_name, a.customer_id, c.name AS customer_name
+            SELECT a.user_id, a.role_id, r.name AS role_name, NULL::uuid AS customer_id, NULL::text AS customer_name, a.mapping_id IS NOT NULL AS from_mapping
               FROM vaulty.role_assignments a JOIN vaulty.roles r ON r.id = a.role_id
-              LEFT JOIN vaulty.customers c ON c.id = a.customer_id
              ORDER BY r.name
             """, transaction: session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         return rows.ToList();
