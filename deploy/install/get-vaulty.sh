@@ -64,8 +64,8 @@ avail_kb=$(df --output=avail -k /opt | tail -1 | tr -d ' ')
 [ "$avail_kb" -ge $((2 * 1024 * 1024)) ] || die "at least 2 GB free space is needed under /opt"
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends curl ca-certificates tar coreutils >/dev/null
+apt-get -o Acquire::Retries=5 update -qq
+apt-get -o Acquire::Retries=5 install -y -qq --no-install-recommends curl ca-certificates tar coreutils >/dev/null
 
 # ---------------------------------------------------------------------------
 # cosign (release signature verification)

@@ -148,3 +148,9 @@ h1:focus, h1:focus-visible { outline: none; }
 .vy-progress-bar { display: flex; align-items: center; gap: 10px; }
 .vy-progress-bar .mud-progress-linear { flex: 1; }
 .vy-progress-percent { min-width: 3.5ch; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Switches read at a glance: on is a solid track in the switch colour, off a grey track; the knob is white on both. */
+.mud-switch-base.mud-checked + .mud-switch-track { opacity: 1; }
+.mud-switch-base.mud-checked [class*="mud-switch-thumb"] { background-color: #fff; }
+.mud-switch-base:not(.mud-checked) + .mud-switch-track { background-color: var(--vy-border-strong); opacity: 1; }
+.mud-switch-base:not(.mud-checked) [class*="mud-switch-thumb"] { background-color: #fff; box-shadow: 0 0 0 1px var(--vy-text-muted); }

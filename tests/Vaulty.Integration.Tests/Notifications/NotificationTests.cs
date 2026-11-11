@@ -308,6 +308,12 @@ public sealed class NotificationTests(PostgresDatabase db) : IClassFixture<Postg
         Assert.Equal(3, (await jobs.ListAsync(viewer, null, null, null, "fINANCE")).Count(j => j.Id == queued || j.Id == running || j.Id == done));
         Assert.DoesNotContain(await jobs.ListAsync(viewer, null, null, null, "Finance%xyz"), j => j.Id == queued);
         Assert.Equal(3, (await jobs.ListAsync(viewer, null, null, null, null, seed.Tenant)).Count);
+        // A record of a run that never began because a backup was running already is not listed.
+        await owner.ExecuteAsync(
+            "INSERT INTO vaulty.jobs (id, organization_id, kind, tenant_id, protected_object_id, state, finished_at, error) VALUES (@id, @org, 'backup', @tenant, @o, 'cancelled', now(), @error)",
+            new { id = Guid.NewGuid(), org = seed.Org, tenant = seed.Tenant, o = seed.Object, error = JobsService.BackupAlreadyRunning });
+        Assert.Equal(3, (await jobs.ListAsync(viewer, null, null, null, null, seed.Tenant)).Count);
+        Assert.Empty(await jobs.ListAsync(viewer, "cancelled", null, null, null, seed.Tenant));
 
         await Assert.ThrowsAsync<AccessException>(() => jobs.CancelAsync(viewer, queued));
         // Not started yet: cancelled at once. Running: the workflow run to cancel is returned. Finished: refused.

@@ -46,6 +46,11 @@ for unit in vaulty-web vaulty-api vaulty-worker@1 vaulty-gc vaulty-temporal post
   state=$(systemctl is-active "$unit" || true)
   [ "$state" = "active" ] || { sudo journalctl -u "$unit" -n 80 --no-pager; fail "$unit is $state"; }
 done
+# systemd ignores a memory limit it cannot parse, so a unit without one is a broken template, not a choice.
+for unit in vaulty-web vaulty-api vaulty-worker@1 vaulty-gc; do
+  limit=$(systemctl show -p MemoryMax --value "$unit")
+  case "$limit" in ''|infinity) fail "$unit has no memory limit (MemoryMax=${limit})" ;; esac
+done
 curl -fsS http://127.0.0.1:5001/api/v1/healthz/ready | grep -q ready || fail "/api/v1/healthz/ready is not ready"
 curl -fsS http://127.0.0.1:5000/healthz >/dev/null || fail "web /healthz does not answer"
 curl -ksS -o /dev/null -w '%{http_code}' https://localhost/ | grep -qE '^(200|302)$' || fail "Caddy does not serve the web app"

@@ -40,7 +40,9 @@ public static class Tuning
         ArgumentNullException.ThrowIfNull(host);
         var ram = Math.Max(1024, host.RamMb);
         var maxConnections = 200;
+        // PostgreSQL and Valkey take "MB"/"GB"; systemd takes "M"/"G" and ignores a limit it cannot parse ("680MB").
         string Mb(long mb) => mb >= 1024 && mb % 1024 == 0 ? $"{mb / 1024}GB" : $"{mb}MB";
+        string Unit(long mb) => mb >= 1024 && mb % 1024 == 0 ? $"{mb / 1024}G" : $"{mb}M";
         var shared = ram / 4;
         var workMem = Math.Clamp(ram / 4 / maxConnections, 4, 64);
         var parallel = Math.Max(2, host.Vcpu);
@@ -58,10 +60,10 @@ public static class Tuning
             ["MAX_PARALLEL_WORKERS"] = parallel.ToString(CultureInfo.InvariantCulture),
             ["MAX_PARALLEL_WORKERS_PER_GATHER"] = Math.Max(1, parallel / 4).ToString(CultureInfo.InvariantCulture),
             ["MAX_PARALLEL_MAINTENANCE_WORKERS"] = Math.Max(1, parallel / 4).ToString(CultureInfo.InvariantCulture),
-            ["WEB_MEMORY_MAX"] = Mb(Math.Max(512, forServices / 8)),
-            ["API_MEMORY_MAX"] = Mb(Math.Max(512, forServices / 8)),
-            ["GC_MEMORY_MAX"] = Mb(Math.Max(512, forServices / 8)),
-            ["WORKER_MEMORY_MAX"] = Mb(workerMax),
+            ["WEB_MEMORY_MAX"] = Unit(Math.Max(512, forServices / 8)),
+            ["API_MEMORY_MAX"] = Unit(Math.Max(512, forServices / 8)),
+            ["GC_MEMORY_MAX"] = Unit(Math.Max(512, forServices / 8)),
+            ["WORKER_MEMORY_MAX"] = Unit(workerMax),
             ["VALKEY_MAXMEMORY"] = Mb(Math.Clamp(ram / 32, 64, 1024)),
             ["TEMPORAL_HISTORY_SHARDS"] = "512",
             ["GITHUB_REPO"] = Updater.Repository,

@@ -185,7 +185,7 @@ public sealed class TemporalWorkflowStarter(Func<Task<ITemporalClient>> client, 
         catch (WorkflowAlreadyStartedException)
         {
             // A discovery of this tenant is already running; the new job record is closed as such.
-            await JobRecords.FinishAsync(dataSource, organizationId, jobId, JobState.Cancelled, "A discovery of this tenant is already running.",
+            await JobRecords.FinishAsync(dataSource, organizationId, jobId, JobState.Cancelled, Infrastructure.Notifications.JobsService.DiscoveryAlreadyRunning,
                 cancellationToken).ConfigureAwait(false);
         }
         return jobId;

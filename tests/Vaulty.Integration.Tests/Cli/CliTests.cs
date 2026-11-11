@@ -258,6 +258,22 @@ public sealed class CliTests
     }
 
     [Fact]
+    public async Task An_unreachable_package_mirror_is_tried_again_and_any_other_apt_failure_stops_at_once()
+    {
+        var host = new FakeHost();
+        var unreachable = 2;
+        host.Script = (file, args) => file == "apt-get" && args.Contains("fail2ban") && unreachable-- > 0
+            ? new ProcessResult(100, "", "E: Failed to fetch https://security.ubuntu.com/ubuntu/pool/f/fail2ban.deb  Temporary failure resolving 'archive.ubuntu.com'")
+            : null;
+        using var log = new StringWriter();
+        var context = Context(host, log);
+        context.RetryDelay = TimeSpan.Zero;
+        Assert.Equal(0, await new Installer().RunAsync(context, resume: false));
+        Assert.Contains("the package mirror could not be reached; trying again (2/3)", log.ToString(), StringComparison.Ordinal);
+        Assert.Equal(3, host.CommandLines.Count(l => l.StartsWith("apt-get", StringComparison.Ordinal) && l.Contains("fail2ban", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public async Task A_failed_step_stops_everything_and_resume_continues_where_it_stopped()
     {
         var host = new FakeHost();
@@ -393,6 +409,14 @@ public sealed class CliTests
         Assert.Equal("6GB", small["EFFECTIVE_CACHE_SIZE"]);
         var large = Tuning.Values(Host with { RamMb = 32768, Vcpu = 8 }, 4);
         Assert.Equal("8GB", large["SHARED_BUFFERS"]);
+        // systemd ignores a memory limit it cannot parse: its units take M or G, never MB or GB.
+        foreach (var values in new[] { small, large, Tuning.Values(Host with { RamMb = 7900, Vcpu = 2 }, 1) })
+        {
+            foreach (var key in new[] { "WEB_MEMORY_MAX", "API_MEMORY_MAX", "GC_MEMORY_MAX", "WORKER_MEMORY_MAX" })
+            {
+                Assert.Matches("^[0-9]+[MG]$", values[key]);
+            }
+        }
         Assert.Equal(4, Tuning.DefaultWorkers(8));
         Assert.Equal(1, Tuning.DefaultWorkers(1));
     }

@@ -27,6 +27,9 @@ public sealed class InstallContext(IHostShell shell, InstallAnswers answers, Hos
     public TextWriter Log { get; } = log;
     public ReportSecrets Secrets { get; set; } = new();
     public bool SignatureVerified { get; init; }
+
+    /// <summary>The wait before trying the package mirror again after a network failure (longer each attempt).</summary>
+    public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(20);
     public int Workers => Answers.Workers ?? Tuning.DefaultWorkers(Host.Vcpu);
     public bool UseDataDisk => Answers.DataDisk is not null;
     public string CredentialKey => Host.Tpm2 ? "host+tpm2" : "host";
@@ -152,7 +155,35 @@ public static class InstallSteps
     private const UnixFileMode Public = RwxRx | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
 
     private static Task Apt(InstallContext c, CancellationToken ct, params string[] packages) =>
-        c.Shell.RunCheckedAsync("apt-get", ["install", "-y", "-qq", "--no-install-recommends", .. packages], cancellationToken: ct);
+        AptGetAsync(c, ct, ["install", "-y", "-qq", "--no-install-recommends", .. packages]);
+
+    private static Task AptUpdate(InstallContext c, CancellationToken ct) => AptGetAsync(c, ct, ["update", "-qq"]);
+
+    /// <summary>
+    /// apt-get, tried again when the package mirror cannot be reached: a DNS or mirror hiccup on a fresh host is common and
+    /// passes, and is no reason to stop an installation halfway. Any other failure stops at once.
+    /// </summary>
+    private static async Task AptGetAsync(InstallContext c, CancellationToken ct, string[] args)
+    {
+        const int Attempts = 4;
+        for (var attempt = 1; ; attempt++)
+        {
+            var result = await c.Shell.RunAsync("apt-get", ["-o", "Acquire::Retries=3", .. args], cancellationToken: ct).ConfigureAwait(false);
+            var output = result.Output + "\n" + result.Error;
+            var unreachable = output.Contains("Temporary failure resolving", StringComparison.Ordinal)
+                || output.Contains("Could not resolve", StringComparison.Ordinal)
+                || output.Contains("Failed to fetch", StringComparison.Ordinal)
+                || output.Contains("Could not connect", StringComparison.Ordinal);
+            if (result.Succeeded) return;
+            if (!unreachable || attempt == Attempts)
+            {
+                var detail = string.IsNullOrWhiteSpace(result.Error) ? result.Output : result.Error;
+                throw new InstallException($"apt-get {string.Join(' ', args.Take(4))} failed ({result.ExitCode}): {Redaction.Apply(detail.Trim())}");
+            }
+            await c.Log.WriteLineAsync($"  the package mirror could not be reached; trying again ({attempt}/{Attempts - 1}) ...").ConfigureAwait(false);
+            await Task.Delay(c.RetryDelay * attempt, ct).ConfigureAwait(false);
+        }
+    }
 
     internal static async Task Preflight(InstallContext c, CancellationToken ct)
     {
@@ -176,7 +207,7 @@ public static class InstallSteps
 
     internal static async Task OsAsync(InstallContext c, CancellationToken ct)
     {
-        await c.Shell.RunCheckedAsync("apt-get", ["update", "-qq"], cancellationToken: ct).ConfigureAwait(false);
+        await AptUpdate(c, ct).ConfigureAwait(false);
         await Apt(c, ct, "unattended-upgrades", "ufw", "fail2ban", "needrestart", "cryptsetup", "ca-certificates", "curl", "gnupg", "postgresql-common", "tar").ConfigureAwait(false);
         c.Shell.WriteFile("/etc/apt/apt.conf.d/52vaulty-unattended-upgrades",
             "Unattended-Upgrade::Allowed-Origins { \"${distro_id}:${distro_codename}-security\"; };\nUnattended-Upgrade::Automatic-Reboot \"true\";\nUnattended-Upgrade::Automatic-Reboot-Time \"04:00\";\n", RwR);
@@ -376,7 +407,7 @@ public static class InstallSteps
                 .ConfigureAwait(false);
             c.Shell.WriteFile("/etc/apt/sources.list.d/docker.list",
                 "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable\n", RwR);
-            await c.Shell.RunCheckedAsync("apt-get", ["update", "-qq"], cancellationToken: ct).ConfigureAwait(false);
+            await AptUpdate(c, ct).ConfigureAwait(false);
             await Apt(c, ct, "docker-ce", "docker-ce-cli", "containerd.io", "docker-compose-plugin").ConfigureAwait(false);
         }
         c.Shell.CreateDirectory("/etc/docker", Public);
@@ -533,7 +564,7 @@ public static class InstallSteps
                 cancellationToken: ct).ConfigureAwait(false);
             c.Shell.WriteFile("/etc/apt/sources.list.d/caddy-stable.list",
                 "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main\n", RwR);
-            await c.Shell.RunCheckedAsync("apt-get", ["update", "-qq"], cancellationToken: ct).ConfigureAwait(false);
+            await AptUpdate(c, ct).ConfigureAwait(false);
             await Apt(c, ct, "caddy").ConfigureAwait(false);
         }
         await RenderCaddyAsync(c, ct).ConfigureAwait(false);

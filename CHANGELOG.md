@@ -201,6 +201,16 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- The memory limits of the Vaulty services take effect: the installer wrote them as "680MB", which systemd does not
+  parse and ignored. Units now get "680M" or "2G"; an update rewrites them, and the installer test checks that every
+  service has a limit.
+- The installer tries the package mirror again (up to three more times) when it cannot be reached, so a passing DNS or
+  mirror failure on a fresh host no longer stops an installation; any other package failure still stops at once.
+- Two test dependencies with a known denial-of-service issue are on fixed versions (`System.Formats.Cbor` 10.0.15, and
+  `Microsoft.AspNetCore.WebUtilities` 2.3.14 pinned above what the HTTP mock brings in); the dependency check is green.
+- Switches show their state at a glance: on is a solid track in the switch colour, off a grey one.
+- The jobs page no longer lists records of runs that never began because one of the same object or tenant was already
+  running (the records stay in the database).
 - "Cancel" says when the request did not reach the job's run, instead of reporting a cancellation that never happened;
   the request is kept with the job for the reconciler. "About less than a minute left" reads "Less than a minute left".
 - The web app and API take the scheme and client address from the reverse proxy on the same host: redirects stay on

@@ -174,6 +174,13 @@ public sealed class JobsService(NpgsqlDataSource dataSource)
 {
     public const int PageSize = 100;
 
+    /// <summary>Why a job record closed before its run began: one of the same object or tenant was running already.</summary>
+    public const string BackupAlreadyRunning = "A backup of this object is already running.";
+    public const string DiscoveryAlreadyRunning = "A discovery of this tenant is already running.";
+
+    // A run that never began because another was going is no job anyone has to see; the record stays in the database.
+    private static readonly string[] NeverRan = [BackupAlreadyRunning, DiscoveryAlreadyRunning];
+
     public async Task<IReadOnlyList<JobRow>> ListAsync(UserAccess access, string? state, string? kind, DateTimeOffset? before, string? search = null,
         Guid? tenantId = null, CancellationToken cancellationToken = default)
     {
@@ -198,8 +205,9 @@ public sealed class JobsService(NpgsqlDataSource dataSource)
              WHERE (@state::text IS NULL OR j.state = @state) AND (@kind::text IS NULL OR j.kind = @kind) AND (@before::timestamptz IS NULL OR j.created_at < @before)
                AND (@tenantId::uuid IS NULL OR j.tenant_id = @tenantId)
                AND (@pattern::text IS NULL OR o.display_name ILIKE @pattern OR t.display_name ILIKE @pattern OR j.id::text ILIKE @pattern)
+               AND NOT (j.state = 'cancelled' AND j.started_at IS NULL AND j.workflow_id IS NULL AND j.error = ANY(@neverRan))
              ORDER BY j.created_at DESC LIMIT @limit
-            """, new { state, kind, before, tenantId, pattern = Pattern(search), limit = PageSize * 2 }, session.Transaction,
+            """, new { state, kind, before, tenantId, pattern = Pattern(search), neverRan = NeverRan, limit = PageSize * 2 }, session.Transaction,
             cancellationToken: cancellationToken)).ConfigureAwait(false);
         return rows.Where(r => r.CustomerId is { } c ? access.Allows(Permissions.JobsView, c) : access.Allows(Permissions.JobsView, null))
             .Take(PageSize)

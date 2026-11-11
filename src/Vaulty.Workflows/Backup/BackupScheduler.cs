@@ -56,7 +56,7 @@ public sealed class BackupStarter(ITemporalClient client, NpgsqlDataSource dataS
         }
         catch (WorkflowAlreadyStartedException)
         {
-            await JobRecords.FinishAsync(dataSource, organizationId, jobId, JobState.Cancelled, "A backup of this object is already running.", cancellationToken)
+            await JobRecords.FinishAsync(dataSource, organizationId, jobId, JobState.Cancelled, Infrastructure.Notifications.JobsService.BackupAlreadyRunning, cancellationToken)
                 .ConfigureAwait(false);
             return null;
         }
