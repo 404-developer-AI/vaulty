@@ -235,3 +235,16 @@ internal sealed class SoftwareAuthenticator : IDisposable
 
     public void Dispose() => _key.Dispose();
 }
+
+internal static class Session
+{
+    /// <summary>The session a response just started: the principal in its sign-in cookie, read with the app's own keys.</summary>
+    public static System.Security.Claims.ClaimsPrincipal StartedBy<T>(WebApplicationFactory<T> factory, HttpResponseMessage response) where T : class
+    {
+        var cookie = response.Headers.GetValues("Set-Cookie").Select(c => c.Split(';')[0])
+            .Last(c => c.StartsWith("__Host-vaulty=", StringComparison.Ordinal))["__Host-vaulty=".Length..];
+        var options = factory.Services.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions>>()
+            .Get(Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme);
+        return Assert.IsType<Microsoft.AspNetCore.Authentication.AuthenticationTicket>(options.TicketDataFormat.Unprotect(cookie)).Principal;
+    }
+}

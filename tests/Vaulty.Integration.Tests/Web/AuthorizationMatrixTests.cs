@@ -248,6 +248,23 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         Assert.Contains("max-age", response.Headers.GetValues("Strict-Transport-Security").Single(), StringComparison.Ordinal);
     }
 
+    [PostgresFact]
+    public async Task A_sign_in_with_an_authenticator_code_counts_as_confirmation_for_thirty_minutes()
+    {
+        var (_, _, _, userId) = await SeedOrganizationWithUserAsync(withMfa: true, password: "member password long");
+        var client = app.Client();
+        var login = await (await client.GetAsync("/account/login")).Content.ReadAsStringAsync();
+        var first = await client.PostFormAsync("/account/login", Html.FormTokenOf(login), ("username", $"member-{userId:N}@contoso.example"),
+            ("password", "member password long"));
+        var second = await (await client.GetAsync(first.Headers.Location)).Content.ReadAsStringAsync();
+        var done = await client.PostFormAsync("/account/login/second-factor", Html.FormTokenOf(second), ("code", Totp.Code(MemberKey)));
+
+        var session = Session.StartedBy(app.Factory, done);
+        Assert.True(VaultyWebSetup.HasFreshStepUp(session, TimeProvider.System));
+        var later = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(DateTimeOffset.UtcNow.AddMinutes(31));
+        Assert.False(VaultyWebSetup.HasFreshStepUp(session, later));
+    }
+
     private async Task<(HttpClient Client, Guid UserId)> SignedInUserWithoutRolesAsync()
     {
         var (_, _, _, userId) = await SeedOrganizationWithUserAsync(withMfa: true, password: "member password long");

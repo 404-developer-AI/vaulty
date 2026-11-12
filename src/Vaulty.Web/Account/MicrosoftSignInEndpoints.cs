@@ -128,7 +128,7 @@ public static class MicrosoftSignInEndpoints
         if (result is null) return Results.Redirect("/account/login?error=expired");
         return result.Purpose switch
         {
-            MicrosoftLoginPurpose.SignIn => await SignInAsync(result, signIn, signInManager, users, audit, messages, groups),
+            MicrosoftLoginPurpose.SignIn => await SignInAsync(result, signIn, signInManager, users, audit, messages, groups, clock),
             MicrosoftLoginPurpose.Link => await FinishLinkAsync(context, result, signIn, signInManager, messages),
             MicrosoftLoginPurpose.StepUp => await FinishStepUpAsync(context, result, signIn, signInManager, users, audit, messages, clock),
             _ => await FinishCheckAsync(context, result, signIn, current),
@@ -136,7 +136,7 @@ public static class MicrosoftSignInEndpoints
     }
 
     private static async Task<IResult> SignInAsync(MicrosoftLoginResult result, MicrosoftSignInService signIn, VaultySignInManager signInManager,
-        UserManager<User> users, AccountAudit audit, SignInMessages messages, Vaulty.Infrastructure.Access.EntraGroupSync groups)
+        UserManager<User> users, AccountAudit audit, SignInMessages messages, Vaulty.Infrastructure.Access.EntraGroupSync groups, TimeProvider clock)
     {
         IResult Refuse(string message) => Results.Redirect($"/account/login?error=microsoft&detail={Uri.EscapeDataString(messages.Protect(message))}");
         if (result.Account is not { } account) return Refuse(result.Error ?? "The sign-in with Microsoft did not complete. Start again.");
@@ -158,7 +158,8 @@ public static class MicrosoftSignInEndpoints
         if (user is null) return Refuse("This Vaulty user is disabled.");
         var settings = await signIn.GetAsync(user.OrganizationId);
         var mfaSource = account.MfaProven ? "entra" : settings.MicrosoftHandlesSecondFactor ? "delegated" : null;
-        var outcome = await signInManager.MicrosoftSignInAsync(user, mfaSource);
+        var outcome = await signInManager.MicrosoftSignInAsync(user, mfaSource,
+            provenNow: account.AuthenticatedAt is { } at && clock.GetUtcNow() - at <= MicrosoftLogins.FreshSignIn);
         var details = new { method = "microsoft", mfa = mfaSource ?? "vaulty", amr = account.Methods, acr = account.AuthenticationClass };
         if (outcome.RequiresTwoFactor)
         {

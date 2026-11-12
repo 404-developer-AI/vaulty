@@ -43,10 +43,13 @@ public static class VaultyClaims
 
     /// <summary>The HttpContext item a sign-in sets so the claims factory adds the method and the second-factor source.</summary>
     public const string SignInItem = "vaulty:signin";
+    /// <summary>Set by a sign-in that proved the user just now (authenticator code, passkey, fresh Microsoft sign-in).</summary>
+    public const string ProvenNowItem = "vaulty:proven-now";
 }
 
 /// <summary>What a sign-in with Microsoft hands to the claims factory for the new session.</summary>
-public sealed record MicrosoftSessionFacts(string? MfaSource);
+/// <param name="ProvenNow">The user signed in at Microsoft just now, instead of reusing an older Microsoft session.</param>
+public sealed record MicrosoftSessionFacts(string? MfaSource, bool ProvenNow = false);
 
 public static class VaultyPolicies
 {
@@ -66,7 +69,8 @@ public sealed class VaultyHostOptions
     public int MasterKeyVersion { get; set; } = 1;
     public static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
     public static readonly TimeSpan AbsoluteTimeout = TimeSpan.FromHours(8);
-    public static readonly TimeSpan StepUpValidity = TimeSpan.FromMinutes(5);
+    /// <summary>How long a confirmation ("Confirm it's you", or a sign-in that proved the user) covers sensitive actions.</summary>
+    public static readonly TimeSpan StepUpValidity = TimeSpan.FromMinutes(30);
 }
 
 public static class VaultyWebSetup
@@ -305,7 +309,13 @@ public sealed class VaultyClaimsFactory(UserManager<User> users, IOptions<Identi
         if (method is not null) identity.AddClaim(new Claim(VaultyClaims.Method, method));
         if (mfaSource is not null) identity.AddClaim(new Claim(VaultyClaims.MfaSource, mfaSource));
         var keep = same ? existing!.FindFirst(VaultyClaims.AuthTime)?.Value : null;
-        identity.AddClaim(new Claim(VaultyClaims.AuthTime, keep ?? clock.GetUtcNow().ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        var now = clock.GetUtcNow().ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        identity.AddClaim(new Claim(VaultyClaims.AuthTime, keep ?? now));
+        // A new sign-in that proved the user just now counts as a confirmation, so sensitive actions right after signing in
+        // do not ask again. A password alone, a recovery code or a reused Microsoft session does not count.
+        var provenNow = http.HttpContext?.Items[VaultyClaims.ProvenNowItem] is true ||
+                        http.HttpContext?.Items[VaultyClaims.SignInItem] is MicrosoftSessionFacts { ProvenNow: true, MfaSource: not null };
+        if (!same && provenNow) identity.AddClaim(new Claim(VaultyClaims.StepUp, now));
         return identity;
     }
 }
@@ -321,10 +331,10 @@ public sealed class VaultySignInManager(UserManager<User> userManager, IHttpCont
     /// starts at once; otherwise a user with a passkey or authenticator app continues on the second-factor page, exactly as
     /// after a password.
     /// </summary>
-    public async Task<SignInResult> MicrosoftSignInAsync(User user, string? mfaSource)
+    public async Task<SignInResult> MicrosoftSignInAsync(User user, string? mfaSource, bool provenNow = false)
     {
         ArgumentNullException.ThrowIfNull(user);
-        Context.Items[VaultyClaims.SignInItem] = new MicrosoftSessionFacts(mfaSource);
+        Context.Items[VaultyClaims.SignInItem] = new MicrosoftSessionFacts(mfaSource, provenNow);
         if (!await CanSignInAsync(user).ConfigureAwait(false)) return SignInResult.NotAllowed;
         if (await UserManager.IsLockedOutAsync(user).ConfigureAwait(false)) return SignInResult.LockedOut;
         return await SignInOrTwoFactorAsync(user, isPersistent: false, loginProvider: null, bypassTwoFactor: mfaSource is not null).ConfigureAwait(false);

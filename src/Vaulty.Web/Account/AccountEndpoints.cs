@@ -105,6 +105,7 @@ public static class AccountEndpoints
         var user = await signIn.GetTwoFactorAuthenticationUserAsync();
         if (user is null) return Results.Redirect("/account/login?error=expired");
         var cleaned = (code ?? "").Replace(" ", "", StringComparison.Ordinal).Replace("-", "", StringComparison.Ordinal);
+        if (recovery != true) signIn.Context.Items[VaultyClaims.ProvenNowItem] = true;
         var result = recovery == true
             ? await signIn.TwoFactorRecoveryCodeSignInAsync(cleaned)
             : await signIn.TwoFactorAuthenticatorSignInAsync(cleaned, isPersistent: false, rememberClient: false);
@@ -133,6 +134,7 @@ public static class AccountEndpoints
         await antiforgery.ValidateRequestAsync(context);
         // A passkey after a password or a Microsoft sign-in is a second factor; on its own it is a local sign-in.
         var secondFactor = await signIn.GetTwoFactorAuthenticationUserAsync() is not null;
+        signIn.Context.Items[VaultyClaims.ProvenNowItem] = true;
         var result = await signIn.PasskeySignInAsync(body.Credential);
         if (!result.Succeeded)
         {

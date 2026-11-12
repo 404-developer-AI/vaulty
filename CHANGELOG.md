@@ -296,6 +296,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Changed
 
+- "Confirm it's you" asks less often: a confirmation now covers sensitive actions for 30 minutes instead of 5, and a
+  sign-in that proved the user at that moment counts as one (an authenticator code, a passkey, or a sign-in at
+  Microsoft that was not an older Microsoft session). A password alone, a recovery code or a reused Microsoft session
+  does not count.
 - The repository engine reuses one pack buffer per writer and pooled chunk buffers, so streaming a 2 GB file adds less
   than 30 MB of memory. The stored format is unchanged.
 - Each item's sealed metadata now also holds the reference to its stored preview, its limited-fidelity flag and its

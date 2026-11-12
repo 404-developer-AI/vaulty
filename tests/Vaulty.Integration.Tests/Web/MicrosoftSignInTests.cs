@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using Vaulty.Infrastructure.Web;
 using Vaulty.Core.Domain;
 using Vaulty.Graph.Onboarding;
 using Vaulty.Infrastructure.Access;
@@ -373,6 +374,19 @@ public sealed partial class MicrosoftSignInTests(SignInWebFixture app) : IClassF
         {
             await signIn.SetOptionsAsync(app.Organization, "test", enabled: true, microsoftHandlesSecondFactor: true, signInOnly: false);
         }
+    }
+
+    [PostgresFact]
+    public async Task A_fresh_Microsoft_sign_in_counts_as_confirmation_and_a_reused_Microsoft_session_does_not()
+    {
+        var (_, objectId) = await UserAsync("fresh");
+        var fresh = await SignInWithMicrosoftAsync(app.Client(), objectId);
+        Assert.True(VaultyWebSetup.HasFreshStepUp(Session.StartedBy(app.Factory, fresh), TimeProvider.System));
+
+        var reused = await SignInWithMicrosoftAsync(app.Client(), objectId, c => c["auth_time"] = DateTimeOffset.UtcNow.AddHours(-3).ToUnixTimeSeconds());
+        var session = Session.StartedBy(app.Factory, reused);
+        Assert.NotNull(VaultyWebSetup.UserId(session));
+        Assert.False(VaultyWebSetup.HasFreshStepUp(session, TimeProvider.System));
     }
 
     [PostgresFact]
