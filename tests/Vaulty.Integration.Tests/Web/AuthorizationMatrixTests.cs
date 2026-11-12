@@ -236,6 +236,13 @@ public sealed class AuthorizationMatrixTests(WebAppFixture app) : IClassFixture<
         var csp = Assert.Single(response.Headers.GetValues("Content-Security-Policy"));
         Assert.Contains("script-src 'self' 'nonce-", csp, StringComparison.Ordinal);
         Assert.Contains("frame-ancestors 'none'", csp, StringComparison.Ordinal);
+        // The sign-in form posts to Vaulty, which redirects to Microsoft; browsers check that redirect against form-action.
+        Assert.Contains("form-action 'self' https://login.microsoftonline.com;", csp, StringComparison.Ordinal);
+        // Every script element needs the nonce, or the browser refuses it (an inline import map included).
+        var html = await response.Content.ReadAsStringAsync();
+        var scripts = System.Text.RegularExpressions.Regex.Matches(html, "<script[^>]*>");
+        Assert.NotEmpty(scripts);
+        Assert.All(scripts, s => Assert.Contains("nonce=", s.Value, StringComparison.Ordinal));
         Assert.Equal("DENY", response.Headers.GetValues("X-Frame-Options").Single());
         Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
         Assert.Contains("max-age", response.Headers.GetValues("Strict-Transport-Security").Single(), StringComparison.Ordinal);

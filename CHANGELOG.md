@@ -310,6 +310,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- Signing in with Microsoft did nothing in a browser: the content security policy allowed forms to post only to
+  Vaulty itself, and browsers apply that rule to the redirect to Microsoft that follows. The Microsoft sign-in host is
+  now allowed as a form target. The page also carried an inline import map without the script nonce, which the
+  browser refused; it is gone, because no script depends on it.
 - Refreshing a session after the periodic security check kept the user's claims but restarted the session's own: the
   8-hour session limit counted from the last check instead of from the sign-in. The sign-in time, sign-in method and
   step-up time now carry over.

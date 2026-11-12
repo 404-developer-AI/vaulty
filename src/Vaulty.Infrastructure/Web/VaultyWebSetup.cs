@@ -425,8 +425,12 @@ public static class SecurityHeaders
         await next().ConfigureAwait(false);
     });
 
+    /// <summary>
+    /// Browsers apply form-action to the redirects that follow a form post as well, so the Microsoft sign-in host has to
+    /// be allowed: the sign-in, link and step-up forms post to Vaulty, which answers with a redirect to Microsoft.
+    /// </summary>
     public static string ContentSecurityPolicy(string nonce) =>
-        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; " +
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self' https://login.microsoftonline.com; " +
         $"script-src 'self' 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; " +
         "connect-src 'self' wss: ws:; frame-src 'self'; worker-src 'self'";
 }
