@@ -252,7 +252,7 @@ public sealed class MailboxBackupTests(TemporalFixture fixture, ITestOutputHelpe
         await harness.SeedTenantAsync();
         var mailbox = await harness.SeedMailboxAsync();
         harness.StartWorker();
-        // Cancelled as soon as it runs; whatever step it is in, the snapshot must not stay staged.
+        // Cancelled as soon as it runs; whatever step it is in (even before the snapshot exists), the snapshot is recorded as failed.
         var cancelled = await Assert.ThrowsAnyAsync<Exception>(() => harness.BackupAsync(mailbox, async handle => await handle.CancelAsync()));
         Assert.True(Temporalio.Exceptions.TemporalException.IsCanceledException(cancelled) || cancelled is Temporalio.Exceptions.WorkflowFailedException,
             cancelled.GetType().Name);
@@ -269,6 +269,70 @@ public sealed class MailboxBackupTests(TemporalFixture fixture, ITestOutputHelpe
         // The next run backs the mailbox up normally.
         var (next, _) = await harness.BackupAsync(mailbox);
         Assert.False(next.IsPartial);
+    }
+
+    [TemporalFact]
+    public async Task A_cancellation_before_the_snapshot_exists_still_records_it_as_failed()
+    {
+        // The cancellation can land before the first step created the snapshot, or while it is still running; the step
+        // that creates it afterwards must not bring it back as staged.
+        using var simulator = new MailboxSimulator(items: 1, seed: 5);
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var mailbox = await harness.SeedMailboxAsync();
+        var store = new BackupStore(harness.DataSource, TimeProvider.System);
+        var target = new BackupTarget(harness.Org, harness.Tenant, mailbox, Guid.CreateVersion7());
+
+        await using var owner = new NpgsqlConnection(fixture.Database.Migrator);
+        async Task<(string State, string Exceptions, long Sequence)> SnapshotAsync() => await owner.QuerySingleAsync<(string, string, long)>(
+            "SELECT state, exceptions::text, sequence FROM vaulty.snapshots WHERE protected_object_id = @mailbox", new { mailbox });
+
+        await store.CancelledAsync(target);
+        var cancelled = await SnapshotAsync();
+        Assert.Equal("failed", cancelled.State);
+        Assert.Contains("cancelled", cancelled.Exceptions, StringComparison.Ordinal);
+        Assert.Equal(1, cancelled.Sequence);
+
+        // The first step, still running when the cancellation was handled, creates the snapshot afterwards: it stays failed.
+        Assert.Equal(1, await store.PrepareSnapshotAsync(target));
+        Assert.Equal(cancelled, await SnapshotAsync());
+
+        // Handling the cancellation again changes nothing and records it once.
+        await store.CancelledAsync(target);
+        Assert.Equal(cancelled, await SnapshotAsync());
+        Assert.Equal(1, await owner.ExecuteScalarAsync<int>(
+            "SELECT count(*) FROM vaulty.audit_events WHERE action = 'backup.cancelled' AND target = @target", new { target = $"object:{mailbox}" }));
+        Assert.Equal(0, await owner.ExecuteScalarAsync<int>("SELECT count(*) FROM vaulty.alerts WHERE protected_object_id = @mailbox", new { mailbox }));
+
+        // The next run takes the next sequence number.
+        Assert.Equal(2, await store.PrepareSnapshotAsync(target with { SnapshotId = Guid.CreateVersion7() }));
+    }
+
+    [TemporalFact]
+    public async Task A_failure_before_the_snapshot_exists_still_records_it_as_failed_and_raises_an_alert()
+    {
+        using var simulator = new MailboxSimulator(items: 1, seed: 6);
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var mailbox = await harness.SeedMailboxAsync();
+        var store = new BackupStore(harness.DataSource, TimeProvider.System);
+        var target = new BackupTarget(harness.Org, harness.Tenant, mailbox, Guid.CreateVersion7());
+
+        await using var owner = new NpgsqlConnection(fixture.Database.Migrator);
+        async Task<(string State, string Exceptions, long Sequence)> SnapshotAsync() => await owner.QuerySingleAsync<(string, string, long)>(
+            "SELECT state, exceptions::text, sequence FROM vaulty.snapshots WHERE protected_object_id = @mailbox", new { mailbox });
+
+        await store.FailAsync(target, "The database could not be reached.");
+        var failed = await SnapshotAsync();
+        Assert.Equal("failed", failed.State);
+        Assert.Contains("The database could not be reached.", failed.Exceptions, StringComparison.Ordinal);
+        Assert.Equal(1, failed.Sequence);
+        Assert.Equal(1, await owner.ExecuteScalarAsync<int>(
+            "SELECT count(*) FROM vaulty.alerts WHERE protected_object_id = @mailbox AND kind = 'backup.failed'", new { mailbox }));
+
+        // A step that creates the snapshot afterwards leaves it failed.
+        Assert.Equal(1, await store.PrepareSnapshotAsync(target));
+        Assert.Equal(failed, await SnapshotAsync());
     }
 
     [Fact]
