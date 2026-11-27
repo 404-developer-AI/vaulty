@@ -376,7 +376,8 @@ public static class InstallSteps
             return;
         }
         c.Secrets.PgBackRestCipher ??= Installer.Random(32);
-        foreach (var (name, value) in new[] { ("pgbackrest-s3", $"{p.AccessKey}\n{p.SecretKey}"), ("pgbackrest-cipher", c.Secrets.PgBackRestCipher) })
+        // One credential per value, named as systemd/postgresql-credentials.conf loads them and bin/vaulty-pgbackrest reads them.
+        foreach (var (name, value) in PgBackRestCredentials(p, c.Secrets.PgBackRestCipher))
         {
             if (c.Shell.FileExists(Paths.Credential(name))) continue;
             await c.Shell.RunCheckedAsync("systemd-creds", ["encrypt", $"--name={name}", $"--with-key={c.CredentialKey}", "-", Paths.Credential(name)], value,
@@ -390,13 +391,29 @@ public static class InstallSteps
         c.Shell.CreateDirectory("/etc/systemd/system/postgresql@17-main.service.d", Public);
         c.Shell.WriteFile("/etc/systemd/system/postgresql@17-main.service.d/vaulty-credentials.conf",
             c.Shell.ReadFile(c.Template("systemd/postgresql-credentials.conf")), RwR);
-        c.Shell.WriteFile($"{Paths.PgConf}/conf.d/60-vaulty-archive.conf",
-            $"archive_mode = on\narchive_command = '{Paths.Current}/bin/vaulty-pgbackrest archive-push %p'\narchive_timeout = 300\n", Rw | UnixFileMode.GroupRead);
+        // The stanza must exist before archiving is switched on, or every archive attempt fails and WAL piles up.
+        // The wrapper reads the credentials systemd hands to a unit, so stanza-create runs as a transient unit with them.
         await c.Shell.SystemctlAsync("daemon-reload").ConfigureAwait(false);
+        await c.Shell.RunCheckedAsync("systemd-run", [
+                "--wait", "--pipe", "--quiet", "--uid=postgres", "--gid=postgres",
+                .. PgBackRestCredentials(p, "").Select(credential => $"--property=LoadCredentialEncrypted={credential.Name}:{Paths.Credential(credential.Name)}"),
+                $"{c.ReleaseDirectory}/bin/vaulty-pgbackrest", "stanza-create"],
+            cancellationToken: ct).ConfigureAwait(false);
+        var archive = $"{Paths.PgConf}/conf.d/60-vaulty-archive.conf";
+        c.Shell.WriteFile(archive,
+            $"archive_mode = on\narchive_command = '{Paths.Current}/bin/vaulty-pgbackrest archive-push %p'\narchive_timeout = 300\n", Rw | UnixFileMode.GroupRead);
+        await c.Shell.RunCheckedAsync("chown", ["postgres:postgres", archive], cancellationToken: ct).ConfigureAwait(false);
         await c.Shell.SystemctlAsync("restart", "postgresql@17-main").ConfigureAwait(false);
-        await c.Shell.RunCheckedAsync($"{c.ReleaseDirectory}/bin/vaulty-pgbackrest", ["stanza-create"], cancellationToken: ct).ConfigureAwait(false);
+        await WaitForPostgresAsync(c, ct).ConfigureAwait(false);
         c.Values["PGBACKREST_SUMMARY"] = $"pgBackRest to bucket {p.Bucket} ({p.Region}), {p.RetentionFull} full backups kept, archive_timeout 300 s";
     }
+
+    internal static (string Name, string Value)[] PgBackRestCredentials(PgBackRestAnswers p, string cipher) =>
+    [
+        ("pgbackrest-s3-key", p.AccessKey),
+        ("pgbackrest-s3-key-secret", p.SecretKey),
+        ("pgbackrest-cipher-pass", cipher),
+    ];
 
     internal static async Task DockerAsync(InstallContext c, CancellationToken ct)
     {

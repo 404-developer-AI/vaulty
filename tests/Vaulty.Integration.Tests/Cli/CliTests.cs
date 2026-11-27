@@ -255,6 +255,51 @@ public sealed class CliTests
         }
         Assert.False(host.FileExists(Paths.InstallState));
         Assert.False(host.FileExists(Paths.PendingReport));
+
+        // Without pgBackRest nothing archives WAL: an archive_command that always fails keeps every segment until the disk is full.
+        Assert.Contains("archive_mode = off", host.Files[$"{Paths.PgConf}/conf.d/50-vaulty.conf"], StringComparison.Ordinal);
+        Assert.DoesNotContain("archive_command", host.Files[$"{Paths.PgConf}/conf.d/50-vaulty.conf"], StringComparison.Ordinal);
+        Assert.False(host.FileExists($"{Paths.PgConf}/conf.d/60-vaulty-archive.conf"));
+    }
+
+    [Fact]
+    public async Task PgBackRest_gets_the_credentials_its_unit_loads_and_archiving_starts_only_after_the_stanza_exists()
+    {
+        var host = new FakeHost();
+        var archive = $"{Paths.PgConf}/conf.d/60-vaulty-archive.conf";
+        var archiveExistedAtStanzaCreate = (bool?)null;
+        host.Script = (file, args) =>
+        {
+            if (file == "systemd-run" && args.Contains("stanza-create")) archiveExistedAtStanzaCreate = host.Files.ContainsKey(archive);
+            return null;
+        };
+        var answers = Answers with { PgBackRest = new PgBackRestAnswers("https://s3.example.com", "eu-west-1", "vaulty-pg", "EXAMPLEACCESSKEY", "EXAMPLESECRETKEY", 30) };
+        using var log = new StringWriter();
+        Assert.True(await new Installer().RunAsync(Context(host, log, answers), resume: false) == 0, log.ToString());
+
+        // Every credential the PostgreSQL drop-in loads is written under that name, and the wrapper reads exactly those names.
+        var dropIn = host.ReadFile($"{FakeHost.Release}/templates/systemd/postgresql-credentials.conf");
+        var wrapper = File.ReadAllText(Path.Combine(FakeHost.Repository, "deploy", "install", "bin", "vaulty-pgbackrest"));
+        var loaded = System.Text.RegularExpressions.Regex.Matches(dropIn, @"^LoadCredentialEncrypted=([^:]+):(\S+)\r?$", System.Text.RegularExpressions.RegexOptions.Multiline)
+            .Select(m => (Name: m.Groups[1].Value, Path: m.Groups[2].Value)).ToList();
+        Assert.Equal(3, loaded.Count);
+        foreach (var (name, path) in loaded)
+        {
+            Assert.Equal(Paths.Credential(name), path);
+            Assert.True(host.Files.ContainsKey(path), $"{name} is loaded by PostgreSQL but never written");
+            Assert.Contains(host.Commands, c => c.File == "systemd-creds" && c.Args[0] == "encrypt" && c.Args.Contains($"--name={name}"));
+            Assert.Contains($"read_cred {name})", wrapper, StringComparison.Ordinal);
+        }
+        Assert.Equal("EXAMPLESECRETKEY", host.Files[Paths.Credential("pgbackrest-s3-key-secret")]);
+
+        // stanza-create runs as postgres with the same credentials, before archiving is switched on.
+        var stanza = host.Commands.Single(c => c.File == "systemd-run" && c.Args.Contains("stanza-create"));
+        Assert.Contains("--uid=postgres", stanza.Args);
+        foreach (var (name, path) in loaded) Assert.Contains($"--property=LoadCredentialEncrypted={name}:{path}", stanza.Args);
+        Assert.False(archiveExistedAtStanzaCreate);
+        Assert.Contains("archive_mode = on", host.Files[archive], StringComparison.Ordinal);
+        Assert.Contains(host.CommandLines, l => l == $"chown postgres:postgres {archive}");
+        Assert.DoesNotContain(host.CommandLines, l => l.Contains("EXAMPLESECRETKEY", StringComparison.Ordinal));
     }
 
     [Fact]
