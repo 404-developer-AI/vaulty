@@ -314,6 +314,14 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- A host installed without pgBackRest filled its disk: the PostgreSQL configuration switched WAL archiving on with an
+  archive command that could only fail, so PostgreSQL kept every WAL segment until the disk was full and then stopped.
+  Archiving is now off unless pgBackRest is configured. With pgBackRest, the installer wrote its credentials under
+  names that the PostgreSQL unit and the archive wrapper do not load, ran `stanza-create` without those credentials,
+  and left the archive configuration unreadable for PostgreSQL; each credential now has the name the unit loads,
+  `stanza-create` runs as `postgres` with them before archiving is switched on, and the file belongs to `postgres`.
+  An existing host keeps its configuration on update: set `archive_mode = off` in its `conf.d/50-vaulty.conf` and
+  restart PostgreSQL.
 - Signing in with Microsoft did nothing in a browser: the content security policy allowed forms to post only to
   Vaulty itself, and browsers apply that rule to the redirect to Microsoft that follows. The Microsoft sign-in host is
   now allowed as a form target. The page also carried an inline import map without the script nonce, which the

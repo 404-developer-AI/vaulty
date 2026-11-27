@@ -20,15 +20,16 @@ work_mem = {{WORK_MEM}}
 maintenance_work_mem = {{MAINTENANCE_WORK_MEM}}
 huge_pages = try
 
-# WAL, checkpoints and archiving (PITR with pgBackRest)
+# WAL and checkpoints
 wal_level = replica
 wal_compression = zstd
 max_wal_size = 4GB
 min_wal_size = 1GB
 checkpoint_completion_target = 0.9
-archive_mode = on
-archive_command = '/opt/vaulty/current/bin/vaulty-pgbackrest archive-push %p'
-archive_timeout = 300
+# Archiving (point-in-time recovery with pgBackRest) is switched on in conf.d/60-vaulty-archive.conf, and only
+# when pgBackRest is configured. While archiving fails PostgreSQL keeps every WAL segment until the disk is full,
+# so it is never on here.
+archive_mode = off
 
 # Planner: SSD/NVMe
 random_page_cost = 1.1
