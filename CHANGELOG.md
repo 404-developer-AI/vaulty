@@ -314,6 +314,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- A backup cancelled before its first step had created the snapshot, or while that step was still running, left no
+  failed snapshot behind, and the step could then create the snapshot as staged after the cancellation was handled, so
+  it stayed staged for good. A cancelled backup now always records its snapshot as failed with the reason, and a
+  snapshot created afterwards stays failed.
 - A host installed without pgBackRest filled its disk: the PostgreSQL configuration switched WAL archiving on with an
   archive command that could only fail, so PostgreSQL kept every WAL segment until the disk was full and then stopped.
   Archiving is now off unless pgBackRest is configured. With pgBackRest, the installer wrote its credentials under

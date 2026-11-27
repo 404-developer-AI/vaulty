@@ -87,24 +87,36 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(target);
         await using var session = await Session(target, cancellationToken).ConfigureAwait(false);
+        var (sequence, _) = await EnsureSnapshotAsync(session, target, "staged", "[]", cancellationToken).ConfigureAwait(false);
+        await session.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return sequence;
+    }
+
+    /// <summary>
+    /// The snapshot row of <paramref name="target"/>, created in <paramref name="state"/> with the next sequence number when
+    /// it does not exist yet. Serialized per protected object, so two runs never take the same sequence number and a row
+    /// that exists is never replaced.
+    /// </summary>
+    private async Task<(long Sequence, bool Created)> EnsureSnapshotAsync(OrganizationSession session, BackupTarget target, string state,
+        string exceptions, CancellationToken cancellationToken)
+    {
         await session.Connection.ExecuteAsync(new CommandDefinition(
             "SELECT pg_advisory_xact_lock(hashtextextended('vaulty.snapshot:' || @object::text, 0))", new { @object = target.ProtectedObjectId },
             session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         var existing = await session.Connection.ExecuteScalarAsync<long?>(new CommandDefinition(
             "SELECT sequence FROM vaulty.snapshots WHERE id = @SnapshotId", target, session.Transaction, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
-        if (existing is { } seq) return seq;
+        if (existing is { } seq) return (seq, false);
         var next = 1 + await session.Connection.ExecuteScalarAsync<long>(new CommandDefinition(
             "SELECT coalesce(max(sequence), 0) FROM vaulty.snapshots WHERE protected_object_id = @ProtectedObjectId", target, session.Transaction,
             cancellationToken: cancellationToken)).ConfigureAwait(false);
         await session.Connection.ExecuteAsync(new CommandDefinition(
             """
-            INSERT INTO vaulty.snapshots (id, organization_id, tenant_id, protected_object_id, state, started_at, sequence)
-            VALUES (@SnapshotId, @OrganizationId, @TenantId, @ProtectedObjectId, 'staged', @now, @next)
-            """, new { target.SnapshotId, target.OrganizationId, target.TenantId, target.ProtectedObjectId, now = clock.GetUtcNow(), next },
+            INSERT INTO vaulty.snapshots (id, organization_id, tenant_id, protected_object_id, state, started_at, sequence, exceptions)
+            VALUES (@SnapshotId, @OrganizationId, @TenantId, @ProtectedObjectId, @state, @now, @next, @exceptions::jsonb)
+            """, new { target.SnapshotId, target.OrganizationId, target.TenantId, target.ProtectedObjectId, state, now = clock.GetUtcNow(), next, exceptions },
             session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
-        await session.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return next;
+        return (next, true);
     }
 
     /// <summary>The current version of each source item: committed and not deleted, or already staged by this snapshot.</summary>
@@ -492,18 +504,22 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
         return new CommitResult(partial, counts, allExceptions, rootHash);
     }
 
-    /// <summary>Marks a snapshot that could not be committed as failed; its staged data is ignored and cleaned up later.</summary>
     /// <summary>
     /// A backup cancelled on purpose: its staged snapshot is closed as failed with the reason, so it never stays staged
     /// (which would hold a place in the tenant's budget for good). A choice, not a fault: no alert is raised.
+    /// The cancellation can land before the first step created the snapshot, or while that step is still running (the
+    /// workflow does not wait for it): the snapshot is then recorded as failed here, and a step that creates it afterwards
+    /// finds it and leaves it failed.
     /// </summary>
     public async Task CancelledAsync(BackupTarget target, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(target);
         await using var session = await Session(target, cancellationToken).ConfigureAwait(false);
-        var closed = await session.Connection.ExecuteAsync(new CommandDefinition(
+        var reason = JsonSerializer.Serialize(new[] { new { error_code = "cancelled", detail = "The backup was cancelled." } });
+        var (_, created) = await EnsureSnapshotAsync(session, target, "failed", reason, cancellationToken).ConfigureAwait(false);
+        var closed = created ? 1 : await session.Connection.ExecuteAsync(new CommandDefinition(
             "UPDATE vaulty.snapshots SET state = 'failed', exceptions = @reason::jsonb WHERE id = @SnapshotId AND state = 'staged'",
-            new { target.SnapshotId, reason = JsonSerializer.Serialize(new[] { new { error_code = "cancelled", detail = "The backup was cancelled." } }) },
-            session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            new { target.SnapshotId, reason }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
         if (closed > 0)
         {
             await Audit.AuditLog.WriteAsync(session, "system:backup", "backup.cancelled", $"object:{target.ProtectedObjectId}",
@@ -512,6 +528,7 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Marks a snapshot that could not be committed as failed; its staged data is ignored and cleaned up later.</summary>
     public async Task FailAsync(BackupTarget target, string reason, CancellationToken cancellationToken = default)
     {
         await using var session = await Session(target, cancellationToken).ConfigureAwait(false);
