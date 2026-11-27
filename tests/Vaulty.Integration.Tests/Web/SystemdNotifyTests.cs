@@ -26,8 +26,7 @@ public sealed class SystemdNotifyTests
         var dotnet = Run("which", "dotnet").Output.Trim();
         foreach (var assembly in new[] { typeof(Vaulty.Api.ApiMarker).Assembly, typeof(Vaulty.Web.WebMarker).Assembly })
         {
-            // Known to stall now and then on a loaded CI runner before the host logs anything; one more attempt, then fail.
-            if (!StartsAsNotifyUnit(dotnet, assembly.Location, out _)) Assert.True(StartsAsNotifyUnit(dotnet, assembly.Location, out var detail), detail);
+            Assert.True(StartsAsNotifyUnit(dotnet, assembly.Location, out var detail), detail);
         }
     }
 
@@ -35,7 +34,11 @@ public sealed class SystemdNotifyTests
     {
         {
             var unit = $"vaulty-notify-test-{Guid.NewGuid():N}";
+            // The working directory is the content root. Like the installed units, it must be the application directory:
+            // a unit without one starts in "/", and the configuration reload watcher of a Development host then watches
+            // the whole file system recursively before the host logs a line, which can take minutes.
             var start = Run("sudo", "systemd-run", $"--unit={unit}", "--collect", "-p", "Type=notify", "-p", "TimeoutStartSec=120",
+                $"--working-directory={Path.GetDirectoryName(assemblyPath)}",
                 "--setenv=DOTNET_ENVIRONMENT=Development", "--setenv=DOTNET_CLI_HOME=/tmp", "--setenv=ASPNETCORE_URLS=http://127.0.0.1:0",
                 $"--setenv=VAULTY_DEV_MASTER_KEY={Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))}",
                 "--setenv=Vaulty__Database__ConnectionString=Host=/nonexistent-socket-directory;Database=none;Timeout=2",
