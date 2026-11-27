@@ -308,6 +308,33 @@ public sealed class MailboxBackupTests(TemporalFixture fixture, ITestOutputHelpe
         Assert.Equal(2, await store.PrepareSnapshotAsync(target with { SnapshotId = Guid.CreateVersion7() }));
     }
 
+    [TemporalFact]
+    public async Task A_failure_before_the_snapshot_exists_still_records_it_as_failed_and_raises_an_alert()
+    {
+        using var simulator = new MailboxSimulator(items: 1, seed: 6);
+        await using var harness = new BackupHarness(fixture, simulator);
+        await harness.SeedTenantAsync();
+        var mailbox = await harness.SeedMailboxAsync();
+        var store = new BackupStore(harness.DataSource, TimeProvider.System);
+        var target = new BackupTarget(harness.Org, harness.Tenant, mailbox, Guid.CreateVersion7());
+
+        await using var owner = new NpgsqlConnection(fixture.Database.Migrator);
+        async Task<(string State, string Exceptions, long Sequence)> SnapshotAsync() => await owner.QuerySingleAsync<(string, string, long)>(
+            "SELECT state, exceptions::text, sequence FROM vaulty.snapshots WHERE protected_object_id = @mailbox", new { mailbox });
+
+        await store.FailAsync(target, "The database could not be reached.");
+        var failed = await SnapshotAsync();
+        Assert.Equal("failed", failed.State);
+        Assert.Contains("The database could not be reached.", failed.Exceptions, StringComparison.Ordinal);
+        Assert.Equal(1, failed.Sequence);
+        Assert.Equal(1, await owner.ExecuteScalarAsync<int>(
+            "SELECT count(*) FROM vaulty.alerts WHERE protected_object_id = @mailbox AND kind = 'backup.failed'", new { mailbox }));
+
+        // A step that creates the snapshot afterwards leaves it failed.
+        Assert.Equal(1, await store.PrepareSnapshotAsync(target));
+        Assert.Equal(failed, await SnapshotAsync());
+    }
+
     [Fact]
     public async Task A_step_without_progress_of_its_own_heartbeats_until_it_ends()
     {

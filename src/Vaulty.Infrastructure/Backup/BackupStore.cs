@@ -528,14 +528,23 @@ public sealed class BackupStore(NpgsqlDataSource dataSource, TimeProvider clock)
         await session.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Marks a snapshot that could not be committed as failed; its staged data is ignored and cleaned up later.</summary>
+    /// <summary>
+    /// Marks a snapshot that could not be committed as failed; its staged data is ignored and cleaned up later. A run that
+    /// failed before its first step created the snapshot gets one recorded as failed here, so the failure is visible on
+    /// the protected object and a step that creates it afterwards leaves it failed.
+    /// </summary>
     public async Task FailAsync(BackupTarget target, string reason, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(target);
         await using var session = await Session(target, cancellationToken).ConfigureAwait(false);
-        await session.Connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE vaulty.snapshots SET state = 'failed', exceptions = @reason::jsonb WHERE id = @SnapshotId AND state = 'staged'",
-            new { target.SnapshotId, reason = JsonSerializer.Serialize(new[] { new { error_code = "failed", detail = reason } }) }, session.Transaction,
-            cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var exceptions = JsonSerializer.Serialize(new[] { new { error_code = "failed", detail = reason } });
+        var (_, created) = await EnsureSnapshotAsync(session, target, "failed", exceptions, cancellationToken).ConfigureAwait(false);
+        if (!created)
+        {
+            await session.Connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE vaulty.snapshots SET state = 'failed', exceptions = @exceptions::jsonb WHERE id = @SnapshotId AND state = 'staged'",
+                new { target.SnapshotId, exceptions }, session.Transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        }
         await Audit.AuditLog.WriteAsync(session, "system:backup", "backup.failed", $"object:{target.ProtectedObjectId}",
             new { snapshot = target.SnapshotId, reason }, cancellationToken).ConfigureAwait(false);
         var objectName = await session.Connection.ExecuteScalarAsync<string>(new CommandDefinition(
